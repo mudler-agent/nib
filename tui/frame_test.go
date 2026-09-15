@@ -165,6 +165,14 @@ func TestFrameFitsTheTerminal(t *testing.T) {
 				MaxVisible: 8,
 			}
 		}},
+		{"inline surface, model picker", inline.New(), func(m *Model) {
+			m.modelPicker.open(1)
+			m.modelPicker.setModels(modelPickerFrameItems(20), "model-19", 20)
+		}},
+		{"full surface, model picker", full.New(), func(m *Model) {
+			m.modelPicker.open(1)
+			m.modelPicker.setModels(modelPickerFrameItems(20), "model-19", 20)
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -182,6 +190,14 @@ func TestFrameFitsTheTerminal(t *testing.T) {
 			}
 		})
 	}
+}
+
+func modelPickerFrameItems(n int) []string {
+	items := make([]string, n)
+	for i := range items {
+		items[i] = "model-" + strconv.Itoa(i)
+	}
+	return items
 }
 
 // fakeSessions builds n stored session records for the /resume picker.

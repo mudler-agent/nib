@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/mudler/nib/theme"
 	"github.com/mudler/nib/types"
@@ -350,6 +351,11 @@ type Model struct {
 	// Unified `/` completion state
 	completion compState
 
+	// Model picker state. modelPickerRequest monotonically identifies endpoint
+	// lookups so a response from a cancelled picker cannot populate a newer one.
+	modelPicker        modelPicker
+	modelPickerRequest uint64
+
 	// Pending message queue: text typed while a run is in flight. Entries are
 	// editable until they fire (FIFO) into the live run at step boundaries.
 	// queueSel is the entry highlighted for ^e/^x when the composer is empty.
@@ -414,6 +420,13 @@ type responseMsg struct {
 	content string
 	err     error
 	blocked []attachments.Blocked
+}
+
+// modelListMsg is the result of an asynchronous model-picker endpoint lookup.
+type modelListMsg struct {
+	requestID uint64
+	models    []string
+	err       error
 }
 
 // compactResultMsg is the outcome of a manual /compact run.
@@ -829,6 +842,41 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.logVP, vpCmd = m.logVP.Update(msg)
 			return m, vpCmd
 		}
+		// The picker owns ordinary keys while open. Ctrl+C deliberately falls
+		// through to the application's existing interrupt-or-quit path.
+		if m.modelPicker.active && msg.Type != tea.KeyCtrlC {
+			visible := m.modelPickerVisibleRowsForFrame()
+			switch msg.Type {
+			case tea.KeyEsc:
+				m.modelPicker.close()
+			case tea.KeyUp:
+				m.modelPicker.move(-1, visible)
+			case tea.KeyDown:
+				m.modelPicker.move(1, visible)
+			case tea.KeyBackspace:
+				m.modelPicker.backspace(visible)
+			case tea.KeyEnter:
+				if choice, ok := m.modelPicker.choice(); ok {
+					m.session.SetModel(choice)
+					m.appendMessage(ChatMessage{Role: "agent", Content: "model: " + choice})
+					m.modelPicker.close()
+				}
+			case tea.KeySpace:
+				m.modelPicker.appendQuery(" ", visible)
+			case tea.KeyRunes:
+				printable := make([]rune, 0, len(msg.Runes))
+				for _, r := range msg.Runes {
+					if unicode.IsPrint(r) {
+						printable = append(printable, r)
+					}
+				}
+				if len(printable) > 0 {
+					m.modelPicker.appendQuery(string(printable), visible)
+				}
+			}
+			m.updateViewport()
+			return m, nil
+		}
 		// Tool approval is a distinct key-driven mode: in choice mode the chat
 		// input is hidden and a numbered menu takes single keypresses (1/2/3,
 		// with y/a/A as silent legacy aliases, n/Esc deny, e edits); edit mode
@@ -1161,6 +1209,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		wasAtBottom := m.viewport.AtBottom()
 		m.width = msg.Width
 		m.height = msg.Height
+		if m.modelPicker.active {
+			m.modelPicker.scrollSelectionIntoView(m.modelPickerVisibleRowsForFrame())
+		}
 		m.updateDimensions()
 		// Content is wrapped to a width that no longer exists, and the offset was
 		// clamped against the old height — both have to be recomputed.
@@ -1189,6 +1240,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Start listening for callbacks
 		cmds = append(cmds, m.listenStatus(), m.listenReasoningEvents(), m.listenToolRequest(), m.listenToolResult(), m.listenAskRequest(), m.listenAgentEvents(), m.shellTick(), m.loopTick(), m.listenWakeup(), m.listenPark(), m.listenCompact(), m.listenPrune())
+
+	case modelListMsg:
+		if !m.modelPicker.active || !m.modelPicker.loading || msg.requestID != m.modelPicker.requestID {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.modelPicker.close()
+			m.appendMessage(ChatMessage{Role: "error", Content: msg.err.Error()})
+		} else {
+			visible := m.modelPickerVisibleRowsForFrame()
+			m.modelPicker.setModels(msg.models, m.session.Model(), visible)
+			if m.modelPicker.query != "" {
+				m.modelPicker.filter(visible)
+			}
+		}
+		m.updateViewport()
+		return m, nil
 
 	case responseMsg:
 		// The run returned: it is no longer parked (all background work drained).
@@ -1662,6 +1730,8 @@ func (m *Model) dispatchResolved(input string) tea.Cmd {
 		m.interruptArmed = false
 		m.status = "Compacting conversation…"
 		return m.compactCmd()
+	case slash.KindModelPick:
+		return m.openModelPicker()
 	case slash.KindModelList:
 		// Bounded: dispatchResolved runs on the Update goroutine, so an endpoint
 		// that accepts the connection and never answers would freeze the TUI.
@@ -1772,6 +1842,25 @@ func (m *Model) dispatchResolved(input string) tea.Cmd {
 			return m.sendMessage(action.Text)
 		}
 		return m.sendWithAttachmentsCmd(action.Text, files, overrides)
+	}
+}
+
+// openModelPicker resets the picker and starts a separately identifiable
+// asynchronous endpoint lookup.
+func (m *Model) openModelPicker() tea.Cmd {
+	m.modelPickerRequest++
+	m.modelPicker.open(m.modelPickerRequest)
+	return m.loadModelsCmd(m.modelPickerRequest)
+}
+
+// loadModelsCmd bounds model discovery without blocking Bubble Tea's Update
+// goroutine.
+func (m Model) loadModelsCmd(requestID uint64) tea.Cmd {
+	return func() tea.Msg {
+		lookupCtx, cancel := context.WithTimeout(m.ctx, chat.ModelListTimeout)
+		defer cancel()
+		models, err := m.session.ListModels(lookupCtx)
+		return modelListMsg{requestID: requestID, models: models, err: err}
 	}
 }
 
@@ -2176,6 +2265,21 @@ func (m Model) effectiveHeight() int {
 	return m.height
 }
 
+// modelPickerVisibleRowsForFrame returns how many model rows fit while the
+// frame keeps one body row and all presenter-owned chrome visible. The picker
+// itself adds a search row and a key-hint row around these results.
+func (m Model) modelPickerVisibleRowsForFrame() int {
+	vs := m.viewState()
+	fixed := m.presenter.HeaderHeight(vs) + m.dialogsHeight(vs) + m.footerHeight(vs)
+	fixed += 2 // separators around the composer
+	fixed += 2 // picker search and key-hint rows
+	fixed++    // minimum conversation body row while the picker is open
+	if rows := m.effectiveHeight() - fixed; rows > 1 {
+		return rows
+	}
+	return 1
+}
+
 // renderComposer builds the composer block: the `/` completion popup, the
 // pending-message queue, and the input line (or the not-ready notice, or
 // nothing at all in the modes where the viewport's own dialog block carries
@@ -2185,6 +2289,14 @@ func (m Model) effectiveHeight() int {
 // made possible, so the two can no longer drift the way a guessed constant
 // invited.
 func (m Model) renderComposer(w int) string {
+	if m.modelPicker.active {
+		current := ""
+		if m.session != nil {
+			current = m.session.Model()
+		}
+		return renderModelPicker(m.modelPicker, current, w, m.modelPickerVisibleRowsForFrame()+3)
+	}
+
 	var composer strings.Builder
 	if comp := renderCompletion(m.completion, strings.TrimSpace(m.textarea.Value()), w); comp != "" {
 		composer.WriteString(comp)
@@ -2266,8 +2378,12 @@ func (m *Model) applyDimensions(vs render.ViewState, footerHeight int) {
 	budget := m.layoutBudget(vs, footerHeight)
 
 	vpHeight := m.effectiveHeight() - budget
-	if vpHeight < 5 {
-		vpHeight = 5
+	minimumViewportHeight := 5
+	if m.modelPicker.active {
+		minimumViewportHeight = 1
+	}
+	if vpHeight < minimumViewportHeight {
+		vpHeight = minimumViewportHeight
 	}
 
 	m.footerBudget = footerHeight
@@ -2450,7 +2566,7 @@ func (m Model) showingViewport() bool {
 	if m.showLogs {
 		return false
 	}
-	return len(m.messages) > 0 || m.loading || m.awaitingApproval || m.awaitingAsk || m.awaitingResume
+	return len(m.messages) > 0 || m.loading || m.awaitingApproval || m.awaitingAsk || m.awaitingResume || m.modelPicker.active
 }
 
 // reasoningBoxHit reports whether a terminal-relative mouse Y lands inside

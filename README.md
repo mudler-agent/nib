@@ -206,8 +206,8 @@ session-only and single (setting a new one replaces the old).
 ### `/model` and `/models`: switch model mid-session
 
 - `/models` lists the models the configured endpoint serves, marking the
-  current one with `*`. Bare `/model` lists too, so forgetting the name gets
-  you the menu rather than an error.
+  current one with `*`. In the TUI, bare `/model` opens a searchable model
+  picker; in the CLI, bare `/model` prints the same listing as `/models`.
 - `/model <name>` switches the session to that model.
 
 The switch **keeps the conversation**: history carries over to the new model.

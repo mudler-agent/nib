@@ -271,8 +271,8 @@ func TestEnterCompletionModelModelsExactSelectionSubmits(t *testing.T) {
 	}
 
 	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd != nil {
-		cmd()
+	if cmd == nil {
+		t.Fatal("exact '/model' + Enter should start asynchronous picker loading")
 	}
 	nm := next.(Model)
 
@@ -280,8 +280,11 @@ func TestEnterCompletionModelModelsExactSelectionSubmits(t *testing.T) {
 		t.Fatalf("exact '/model' + Enter should submit and clear the composer, got %q", got)
 	}
 	msg := lastMessage(t, nm)
-	if msg.Role != "agent" {
-		t.Fatalf("exact '/model' + Enter should dispatch and post the model listing, got role %q content %q", msg.Role, msg.Content)
+	if msg.Role != "user" || msg.Content != "/model" {
+		t.Fatalf("exact '/model' + Enter should submit the command, got role %q content %q", msg.Role, msg.Content)
+	}
+	if !nm.modelPicker.active || !nm.modelPicker.loading {
+		t.Fatalf("exact '/model' + Enter should open a loading picker, got %+v", nm.modelPicker)
 	}
 }
 

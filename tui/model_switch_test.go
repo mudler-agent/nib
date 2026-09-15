@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/mudler/nib/chat"
 	"github.com/mudler/nib/types"
 )
@@ -76,16 +78,219 @@ func TestDispatchModelListPostsTheListing(t *testing.T) {
 	}
 }
 
-// Bare /model lists rather than erroring, so a user who forgets the name gets
-// the menu.
-func TestDispatchBareModelLists(t *testing.T) {
+func TestDispatchBareModelOpensAsyncPickerWhileModelsStillLists(t *testing.T) {
 	m := newModelSwitchTestModel(t, "model-a", "model-b")
 
-	if cmd := m.dispatchResolved("/model"); cmd != nil {
-		t.Fatal("bare /model must not start a turn")
+	cmd := m.dispatchResolved("/model")
+	if cmd == nil {
+		t.Fatal("bare /model returned no asynchronous loading command")
 	}
-	if msg := lastMessage(t, m); !strings.Contains(msg.Content, "model-b") {
-		t.Fatalf("bare /model posted %q, want the listing", msg.Content)
+	if !m.modelPicker.active || !m.modelPicker.loading || m.modelPickerRequest != 1 {
+		t.Fatalf("picker state after /model = %+v, request = %d", m.modelPicker, m.modelPickerRequest)
+	}
+	if len(m.messages) != 0 {
+		t.Fatalf("bare /model blocked long enough to post transcript output: %+v", m.messages)
+	}
+
+	listed := newModelSwitchTestModel(t, "model-a", "model-b")
+	if listCmd := listed.dispatchResolved("/models"); listCmd != nil {
+		t.Fatal("/models must remain synchronous transcript output")
+	}
+	if msg := lastMessage(t, listed); !strings.Contains(msg.Content, "model-b") {
+		t.Fatalf("/models posted %q, want the listing", msg.Content)
+	}
+}
+
+func TestModelPickerLoadingSuccessSelectsCurrentModel(t *testing.T) {
+	m := newModelSwitchTestModel(t, "model-a", "model-b", "model-c")
+	m.session.SetModel("model-b")
+	cmd := m.openModelPicker()
+
+	msg, ok := cmd().(modelListMsg)
+	if !ok {
+		t.Fatalf("load command returned %T, want modelListMsg", cmd())
+	}
+	next, _ := m.Update(msg)
+	m = next.(Model)
+	if m.modelPicker.loading {
+		t.Fatal("picker remained loading after the endpoint response")
+	}
+	if got, ok := m.modelPicker.choice(); !ok || got != "model-b" {
+		t.Fatalf("initial choice = %q, %v; want current model-b", got, ok)
+	}
+}
+
+func TestModelPickerLoadingFailureClosesAndReportsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"error":{"message":"nope"}}`, http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+	m := newModelSwitchTestModel(t, "model-a")
+	m.cfg.BaseURL = srv.URL + "/v1"
+	s, err := chat.NewSession(context.Background(), m.cfg, chat.Callbacks{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+	m.session = s
+
+	cmd := m.openModelPicker()
+	next, _ := m.Update(cmd())
+	m = next.(Model)
+	if m.modelPicker.active {
+		t.Fatal("picker remained active after endpoint failure")
+	}
+	if msg := lastMessage(t, m); msg.Role != "error" || !strings.Contains(msg.Content, "500") {
+		t.Fatalf("endpoint failure = %+v, want error containing 500", msg)
+	}
+}
+
+func TestModelPickerEscCancelsAndLateResponsesAreIgnored(t *testing.T) {
+	m := newModelSwitchTestModel(t, "model-a", "model-b")
+	oldCmd := m.openModelPicker()
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = next.(Model)
+	if m.modelPicker.active || m.quitting {
+		t.Fatalf("Esc picker state = %+v, quitting = %v", m.modelPicker, m.quitting)
+	}
+
+	newCmd := m.openModelPicker()
+	next, _ = m.Update(oldCmd())
+	m = next.(Model)
+	if !m.modelPicker.active || !m.modelPicker.loading || len(m.modelPicker.all) != 0 {
+		t.Fatalf("late response replaced active request: %+v", m.modelPicker)
+	}
+
+	next, _ = m.Update(newCmd())
+	m = next.(Model)
+	if m.modelPicker.loading || len(m.modelPicker.all) != 2 {
+		t.Fatalf("current response was not accepted: %+v", m.modelPicker)
+	}
+}
+
+func TestModelPickerKeysTakePriorityAndEditRuneSafely(t *testing.T) {
+	m := newModelSwitchTestModel(t, "café", "cafeteria", "tea")
+	m.modelPicker.open(1)
+	m.modelPicker.setModels([]string{"café", "cafeteria", "tea"}, "café", 4)
+	m.awaitingApproval = true
+	m.queue = []string{"queued-a", "queued-b"}
+	m.queueSel = 1
+	m.textarea.SetValue("composer draft")
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f', '\n', 'é'}})
+	m = next.(Model)
+	if m.modelPicker.query != "fé" {
+		t.Fatalf("picker query = %q, want only printable runes", m.modelPicker.query)
+	}
+	if m.textarea.Value() != "composer draft" || m.queueSel != 1 || !m.awaitingApproval {
+		t.Fatalf("picker key leaked to lower-priority state: textarea=%q queueSel=%d approval=%v", m.textarea.Value(), m.queueSel, m.awaitingApproval)
+	}
+
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	m = next.(Model)
+	if m.modelPicker.query != "f" {
+		t.Fatalf("query after Backspace = %q, want f", m.modelPicker.query)
+	}
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeySpace})
+	m = next.(Model)
+	if m.modelPicker.query != "f " {
+		t.Fatalf("query after printable Space = %q, want %q", m.modelPicker.query, "f ")
+	}
+}
+
+func TestModelPickerNavigationAndEnterSwitch(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]string{{"id": "model-a"}, {"id": "model-b"}}})
+	}))
+	t.Cleanup(srv.Close)
+	cfg := types.Config{Model: "model-a", BaseURL: srv.URL + "/v1"}
+	s, err := chat.NewSession(context.Background(), cfg, chat.Callbacks{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+	m := newQueueTestModel()
+	m.ctx, m.cfg, m.session = context.Background(), cfg, s
+	cmd := m.openModelPicker()
+	next, _ := m.Update(cmd())
+	m = next.(Model)
+
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = next.(Model)
+	if choice, _ := m.modelPicker.choice(); choice != "model-b" {
+		t.Fatalf("Down selected %q, want model-b", choice)
+	}
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	m = next.(Model)
+	if choice, _ := m.modelPicker.choice(); choice != "model-a" {
+		t.Fatalf("Up selected %q, want model-a", choice)
+	}
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = next.(Model)
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+	if m.modelPicker.active || m.session.Model() != "model-b" {
+		t.Fatalf("Enter picker=%+v model=%q, want closed on model-b", m.modelPicker, m.session.Model())
+	}
+	if msg := lastMessage(t, m); msg.Role != "agent" || msg.Content != "model: model-b" {
+		t.Fatalf("switch confirmation = %+v", msg)
+	}
+	if requests != 1 {
+		t.Fatalf("model endpoint requests = %d, want one load and no switch validation", requests)
+	}
+}
+
+func TestModelPickerEnterWithoutMatchIsNoOp(t *testing.T) {
+	m := newModelSwitchTestModel(t, "model-a", "model-b")
+	m.modelPicker.open(1)
+	m.modelPicker.setModels([]string{"model-a", "model-b"}, "model-a", 4)
+	m.modelPicker.appendQuery("missing", 4)
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+	if cmd != nil || !m.modelPicker.active || m.session.Model() != "model-a" || len(m.messages) != 0 {
+		t.Fatalf("no-match Enter changed state: cmd=%v picker=%+v model=%q messages=%+v", cmd != nil, m.modelPicker, m.session.Model(), m.messages)
+	}
+}
+
+func TestViewRendersPickerInPlaceOfComposer(t *testing.T) {
+	m := newModelSwitchTestModel(t, "model-a", "model-b")
+	m.width, m.height = 80, 12
+	m.textarea.SetValue("composer-secret")
+	m.modelPicker.open(1)
+
+	view := m.View()
+	if !strings.Contains(view, "search:") || !strings.Contains(view, "loading models") {
+		t.Fatalf("view does not contain picker: %q", view)
+	}
+	if strings.Contains(view, "composer-secret") {
+		t.Fatalf("view exposed the composer while picker active: %q", view)
+	}
+}
+
+func TestModelPickerResizeKeepsSelectionVisibleWithinFrame(t *testing.T) {
+	models := modelPickerFrameItems(20)
+	m := newModelSwitchTestModel(t, models...)
+	m.width, m.height, m.maxHeight = 80, 24, 12
+	m.modelPicker.open(1)
+	m.modelPicker.setModels(models, "model-19", 20)
+	m.updateDimensions()
+
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 12})
+	m = next.(Model)
+	visible := m.modelPickerVisibleRowsForFrame()
+	if m.modelPicker.selected < m.modelPicker.offset || m.modelPicker.selected >= m.modelPicker.offset+visible {
+		t.Fatalf("selected=%d offset=%d visible=%d: selection is outside the resized window", m.modelPicker.selected, m.modelPicker.offset, visible)
+	}
+	if got := lipgloss.Height(m.View()); got > m.effectiveHeight() {
+		vs := m.viewState()
+		footer, footerHeight := m.renderFooter(vs, m.width)
+		t.Fatalf("frame height=%d effective=%d viewport=%d composer=%d header=%d footer=%d/%d chrome=%d visible=%d",
+			got, m.effectiveHeight(), m.viewport.Height, lipgloss.Height(m.renderComposer(m.width)),
+			m.presenter.HeaderHeight(vs), lipgloss.Height(footer), footerHeight, m.chromeBudget, visible)
 	}
 }
 
