@@ -526,7 +526,7 @@ func RunCLI(ctx context.Context, cfg types.Config, streams Streams, shellJobs *w
 					fmt.Fprintln(out, theme.Subtle.Render(compactNotice(before, after)))
 				}
 				continue
-			case slash.KindModelList:
+			case slash.KindModelPick, slash.KindModelList:
 				// Bounded like the switch below: the user is waiting at the
 				// prompt, so an endpoint that accepts the connection and never
 				// answers must not wedge the loop.

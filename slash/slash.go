@@ -31,6 +31,7 @@ const (
 	KindGoalClear             // clear the current goal
 	KindAttach                // stage/list/clear file attachments
 	KindModelList             // list available models
+	KindModelPick             // pick a model from the available models
 	KindModelSet              // switch the session model to Model
 	KindYolo                  // toggle (or explicitly set) session-wide auto-approval
 	KindResume                // resume a recorded session (ResumeID) or open the picker
@@ -121,11 +122,9 @@ func Resolve(input string, cmds []types.CommandConfig, skills []types.Skill, age
 	case "models":
 		return Action{Kind: KindModelList}
 	case "model":
-		// Bare /model lists too, so a user who forgets the name gets the
-		// menu instead of an error.
 		name := strings.TrimSpace(rest)
 		if name == "" {
-			return Action{Kind: KindModelList}
+			return Action{Kind: KindModelPick}
 		}
 		return Action{Kind: KindModelSet, Model: name}
 	case "loop":

@@ -32,11 +32,25 @@ func TestResolveCLIInputModel(t *testing.T) {
 	if a := resolveCLIInput("/models", cfg); a.Kind != slash.KindModelList {
 		t.Fatalf("/models resolved to %+v", a)
 	}
-	if a := resolveCLIInput("/model", cfg); a.Kind != slash.KindModelList {
-		t.Fatalf("bare /model should list, resolved to %+v", a)
+	if a := resolveCLIInput("/model", cfg); a.Kind != slash.KindModelPick {
+		t.Fatalf("bare /model should pick, resolved to %+v", a)
 	}
 	if a := resolveCLIInput("/model foo", cfg); a.Kind != slash.KindModelSet || a.Model != "foo" {
 		t.Fatalf("/model foo resolved to %+v", a)
+	}
+}
+
+func TestCLIModelPickerListsWithTheCurrentMarked(t *testing.T) {
+	out, errOut := runCLIScript(t, modelsEndpoint(t, "model-a", "model-b"), "/model\nexit\n")
+
+	if !strings.Contains(out, "* model-a") {
+		t.Fatalf("current model not marked in %q", out)
+	}
+	if !strings.Contains(out, "  model-b") {
+		t.Fatalf("other model missing from %q", out)
+	}
+	if errOut != "" {
+		t.Fatalf("nothing should have reached stderr, got %q", errOut)
 	}
 }
 

@@ -117,16 +117,22 @@ func TestResolveModel(t *testing.T) {
 		agents []types.AgentTypeConfig
 	)
 
-	if a := Resolve("/models", cmds, skills, agents); a.Kind != KindModelList {
-		t.Fatalf("/models: %+v", a)
+	cases := []struct {
+		input string
+		kind  Kind
+		model string
+	}{
+		{input: "/models", kind: KindModelList},
+		{input: "/model", kind: KindModelPick},
+		{input: "/model qwen3.5-4b", kind: KindModelSet, model: "qwen3.5-4b"},
 	}
-	if a := Resolve("/model", cmds, skills, agents); a.Kind != KindModelList {
-		t.Fatalf("bare /model should list: %+v", a)
+	for _, tc := range cases {
+		a := Resolve(tc.input, cmds, skills, agents)
+		if a.Kind != tc.kind || a.Model != tc.model {
+			t.Errorf("Resolve(%q) = %+v, want kind %v and model %q", tc.input, a, tc.kind, tc.model)
+		}
 	}
-	a := Resolve("/model qwen3.5-4b", cmds, skills, agents)
-	if a.Kind != KindModelSet || a.Model != "qwen3.5-4b" {
-		t.Fatalf("/model <name>: %+v", a)
-	}
+
 	if a := Resolve("/model   spaced-name  ", cmds, skills, agents); a.Kind != KindModelSet || a.Model != "spaced-name" {
 		t.Fatalf("/model should trim: %+v", a)
 	}
