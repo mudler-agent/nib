@@ -37,6 +37,12 @@ const (
 	SlashHint    = "/ for skills"
 	Starting     = "starting…"
 
+	ModelPickerLoading     = "loading models…"
+	ModelPickerEmpty       = "no models available."
+	ModelPickerNoMatches   = "no matching models."
+	ModelPickerSearchLabel = "search:"
+	ModelPickerKeyHint     = "type to filter · ↑↓ move · enter select · esc cancel"
+
 	CLIWelcome = "a calm assistant for your terminal."
 	CLIExit    = "ctrl+c or 'exit' to leave · 'help' for commands"
 
