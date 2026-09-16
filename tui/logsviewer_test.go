@@ -15,7 +15,7 @@ import (
 // newLogsModel builds a session-ready Model with a couple of fake sub-agent
 // jobs so unifiedJobs() returns a stable, navigable list.
 func newLogsModel() Model {
-	return Model{
+	return newTestModel(Model{
 		textarea:     textarea.New(),
 		viewport:     viewport.New(80, 10),
 		logVP:        viewport.New(80, 10),
@@ -26,7 +26,7 @@ func newLogsModel() Model {
 			{ID: "a1", Type: "explore", Status: chat.AgentStatusRunning},
 			{ID: "a2", Type: "plan", Status: chat.AgentStatusCompleted},
 		},
-	}
+	})
 }
 
 // TestLogsViewerToggleAndNavigate drives the Ctrl+O viewer through list

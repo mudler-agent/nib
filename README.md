@@ -472,8 +472,9 @@ nib --yolo          # or: NIB_YOLO=1 nib
 ```
 
 While it's active, nib shows it on screen: a `yolo` badge in the TUI header and
-a one-line notice in the CLI banner. If opt-in prompt-injection protection is
-enabled, its fresh-approval boundary remains active after external content.
+a one-line notice in the CLI banner. Yolo mode also skips the fresh-approval
+boundary for external content when opt-in prompt-injection protection is active.
+Pre-tool hooks still run and can enforce configured policies.
 
 ## Tool Approval
 
@@ -512,13 +513,15 @@ In the **TUI**, approval is a single keypress (no Enter):
 In the **CLI** (`--cli`) the prompt is line-based: type `y`, `a`, `all`, `n`, or a free-form
 change, then Enter. Read-only calls (reads, searches, safe read-only shell) already skip the
 prompt by default; set `approval_mode: strict` to be prompted for those too. To skip prompting
-entirely, set `approval_mode: auto` / `allowed_tools` in your config, or run with `--yolo`
-(env: `NIB_YOLO=1`) to auto-approve ordinary tool calls. When
+entirely, set `approval_mode: auto` in your config, or run with `--yolo`
+(env: `NIB_YOLO=1`) to auto-approve every tool call. The `allowed_tools` setting
+only skips prompts for the named tools. When
 `prompt_injection_protection.enabled: true`, web, browser, attachment, and configured MCP
 results are tracked as untrusted external data. A separate, tool-free LLM pass
 identifies exact prompt-injection spans for redaction before they reach the main
 agent; classification failures withhold the external text. Subsequent
-consequential calls require fresh approval even under a broad session/turn grant.
+consequential calls require fresh approval under turn-wide and narrower grants.
+Session-wide auto-approval skips that prompt, but pre-tool hooks still run.
 
 ## MCP Servers
 

@@ -12,6 +12,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/mudler/nib/tui/render"
 )
 
 // The double-quit deadlock, guarded.
@@ -56,7 +58,7 @@ func TestSigintDoesNotDeadlockTheTUIProgram(t *testing.T) {
 		// in v1.3.10, and that upstream race is not what this test is about.
 		in, inWriter := io.Pipe()
 
-		p := tea.NewProgram(idleTUIModel{}, tuiProgramOptions(ctx, in, io.Discard)...)
+		p := tea.NewProgram(idleTUIModel{}, tuiProgramOptions(ctx, in, io.Discard, render.Caps{})...)
 		done := make(chan error, 1)
 		go func() {
 			_, runErr := p.Run()

@@ -82,3 +82,35 @@ func (s *Session) countTurn() { s.usage.turn() }
 // Usage returns what this session has spent so far. Safe to call from any
 // goroutine, which the TUI does on every render.
 func (s *Session) Usage() SessionUsage { return s.usage.snapshot() }
+
+// EstimatedUsage derives a byte/4 estimate of the session's prompt and
+// completion tokens from the current conversation (estimateUsageSplit),
+// mirroring the fallback ContextTokens already applies for the context badge.
+// It exists for a session whose real counter is unhelpful — chiefly a
+// streamed one: cogito's bundled clients never populate StreamEvent.Usage, so
+// every streamed turn adds zero to Usage() (see this file's doc comment).
+//
+// This method always estimates from the fragment, regardless of what Usage()
+// holds; deciding whether to prefer the measured figure over this one is the
+// caller's job (the TUI's usageBadge does it). Deliberately kept OFF the
+// Usage() / Close() path: only Usage() feeds trace.WriteUsage's usage.json,
+// so an estimate can never land under those measured field names, which the
+// package doc calls a contract benchmark harnesses read. A caller that
+// displays this figure must mark it as an estimate (theme.UsageEstimatedPrefix)
+// rather than presenting it as measured spend.
+//
+// The byte/4 proxy is not guaranteed to be a floor the way Usage() is:
+// content that compresses well under a real BPE tokenizer (long runs of
+// whitespace or repeated characters) can make the true count lower than this
+// guess. That is acceptable only because every caller marks the figure as an
+// estimate rather than folding it into SessionUsage's own
+// never-an-overstatement contract.
+func (s *Session) EstimatedUsage() SessionUsage {
+	prompt, completion := estimateUsageSplit(s.fragment.Messages)
+	return SessionUsage{
+		PromptTokens:     prompt,
+		CompletionTokens: completion,
+		TotalTokens:      prompt + completion,
+		Turns:            s.Usage().Turns,
+	}
+}

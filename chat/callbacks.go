@@ -52,7 +52,7 @@ type ToolCallRequest struct {
 	AgentID   string // non-empty when the requesting caller is a sub-agent
 	// ExternalSources identifies untrusted data still present in the active
 	// conversation. A non-empty value forces consequential calls through the
-	// approval gate even when the normal policy would auto-approve them.
+	// approval gate unless session-wide auto-approval is active.
 	ExternalSources []string
 }
 

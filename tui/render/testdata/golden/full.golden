@@ -1,0 +1,220 @@
+=== caps ===
+{AltScreen:true Mouse:true OverlayDialogs:true}
+
+=== header plain ===
+nib                                            ~/src/project
+────────────────────────────────────────────────────────────
+
+=== header with yolo badge ===
+nib  yolo                                      ~/src/project
+────────────────────────────────────────────────────────────
+
+=== header height ===
+2
+
+=== content width user ===
+58
+
+=== content width assistant ===
+58
+
+=== content width agent ===
+58
+
+=== content width tool ===
+58
+
+=== content width error ===
+58
+
+=== content width narrow clamp ===
+1
+
+=== message user first ===
+▏ hello there
+
+
+=== message user consecutive ===
+▏ second turn
+
+
+=== message assistant first ===
+▏ assistant answer
+
+
+=== message assistant consecutive ===
+▏ second answer
+
+
+=== message agent ===
+↳ agent started
+
+
+=== message agent hugnext ===
+↳ agent started
+
+=== message tool ===
+· read file.go
+  tool output body
+
+
+=== message tool from sub-agent ===
+· ↳ abcdef12 · read file.go
+  tool output body
+
+
+=== message error ===
+× it went wrong
+
+
+=== message multiline assistant ===
+▏ first para
+
+▏ second para
+
+
+=== message unknown role ===
+
+
+=== reasoning idle ===
+
+
+=== reasoning indicator only ===
+| Working
+
+=== reasoning expanded with trace ===
+| Working
+✻ reasoning
+  │ thinking about it
+  ctrl+r collapse
+
+=== reasoning collapsed with hidden lines ===
+| Working
+✻ reasoning
+  │ line-6
+  │ line-7
+  │ line-8
+  … 5 more · ctrl+r expand
+
+=== reasoning collapsed with nothing hidden ===
+| Working
+✻ reasoning
+  │ short
+
+=== dialog approval five option ===
+▏ bash wants to run
+▏   path  main.go
+▏   mode  0644
+▏ needs the fix applied
+▏ 
+▏ [1] run it once
+▏ [2] always allow `touch …`  (this session)
+▏ [3] yes to everything this turn
+▏ [4] yes to everything this session
+▏ [n] no · [e] edit
+
+=== dialog approval edit mode ===
+▏ write main.go
+▏   path  main.go
+▏   mode  0644
+▏ enter to send
+
+=== dialog approval unstructured ===
+▏ run something
+▏ a raw prose block describing the call
+▏ [y] yes
+
+=== dialog approval no options ===
+▏ write main.go
+▏   path  main.go
+▏   mode  0644
+
+=== dialog approval two option menu ===
+▏ write main.go
+▏ 
+▏ [y] yes
+▏ [n] no
+
+=== dialog ask ===
+▏ which one?
+▏   ○ alpha
+▏ ▸ ◉ beta
+▏ type instead of picking also works
+
+=== dialog ask multiselect ===
+▏ pick some
+▏   ◼ red
+▏   ◻ green
+▏   ◼ blue
+
+=== dialog resume ===
+▏ resume a session
+▏   ○ fix the bug · 3m ago · 4 messages
+▏ ▸ ◉ add tests · 1h ago · 2 messages
+▏ up/down move · enter resume · esc cancel
+
+=== dialog unknown kind ===
+
+
+=== footer help only ===
+tab complete
+
+=== footer help and badges ===
+tab complete                                         12k ctx
+
+=== footer new output marker ===
+↓ new output
+tab complete
+
+=== footer error line ===
+tab complete
+× something failed
+
+=== footer jobs row ===
+tab complete
+* 2 jobs running                                            
+
+=== footer shell row ===
+tab complete
+> 1 shell job                                               
+
+=== footer loops row ===
+tab complete
+~ loop every 5m
+
+=== footer goal row ===
+tab complete
+o goal: ship it
+
+=== footer unset kind row ===
+tab complete
+unset kind row
+
+=== footer every row ===
+↓ new output
+tab complete                                         12k ctx
+× something failed
+* 2 jobs running                                            
+> 1 shell job                                               
+~ loop every 5m
+o goal: ship it
+
+=== footer height every row ===
+7
+
+=== frame without dialogs ===
+nib                                            ~/src/project
+────────────────────────────────────────────────────────────
+BODY-MARKER
+COMPOSER-MARKER
+tab complete
+
+=== frame with dialogs ===
+nib                                            ~/src/project
+────────────────────────────────────────────────────────────
+BODY-ONLY-CONTENT
+▏ OVERLAY-MARKER-QUESTION
+▏ ▸ ◉ OVERLAY-MARKER-OPTION
+COMPOSER-MARKER
+tab complete
+

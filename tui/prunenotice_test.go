@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/mudler/nib/tui/render/inline"
 	"github.com/mudler/nib/types"
 )
 
@@ -59,7 +60,7 @@ func TestSessionReadyStartsThePruneListener(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	m := NewModel(ctx, types.Config{}, 40, nil)
+	m := NewModel(ctx, types.Config{}, 40, nil, inline.New())
 	m.pruneChan <- [2]int{2, 4000}
 
 	updated, cmd := m.Update(sessionReadyMsg{})

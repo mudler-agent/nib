@@ -99,13 +99,13 @@ func TestLastSuggestedCommand(t *testing.T) {
 // Output() to the last suggested command and quits, so the shell widget can
 // insert it at the prompt.
 func TestCtrlYYanksCommand(t *testing.T) {
-	m := Model{
+	m := newTestModel(Model{
 		sessionReady: true,
 		cancel:       func() {},
 		messages: []ChatMessage{
 			{Role: "assistant", Content: "```\nfind . -type f -size +100M\n```"},
 		},
-	}
+	})
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
 	mn := next.(Model)
 	if !mn.quitting {
@@ -119,13 +119,13 @@ func TestCtrlYYanksCommand(t *testing.T) {
 // TestCtrlYNoCommandStaysOpen verifies Ctrl+Y is a no-op (no quit, no output)
 // when there is no command to yank.
 func TestCtrlYNoCommandStaysOpen(t *testing.T) {
-	m := Model{
+	m := newTestModel(Model{
 		sessionReady: true,
 		cancel:       func() {},
 		messages: []ChatMessage{
 			{Role: "assistant", Content: "I can't help with that right now.\nTry rephrasing your request."},
 		},
-	}
+	})
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
 	mn := next.(Model)
 	if mn.quitting {

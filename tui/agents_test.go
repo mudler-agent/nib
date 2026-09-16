@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/mudler/nib/chat"
+	"github.com/mudler/nib/tui/render"
 )
 
 func TestAgentTranscriptLine(t *testing.T) {
@@ -90,20 +91,30 @@ func TestAgentTranscriptLineCompactsTask(t *testing.T) {
 	}
 }
 
-func TestRenderJobsFooterEmpty(t *testing.T) {
-	if got := renderJobsFooter(nil, 80); got != "" {
-		t.Fatalf("empty jobs should render nothing, got %q", got)
+// TestJobsFooterRowEmpty and TestJobsFooterRowCounts exercise jobsFooterRow,
+// the live path View() actually calls (renderJobsFooter, the fully-styled
+// string-returning function these tests used to pin, was deleted once it had
+// zero production call sites left — see the Task 6 fix-round-2 report).
+func TestJobsFooterRowEmpty(t *testing.T) {
+	if _, ok := jobsFooterRow(nil); ok {
+		t.Fatal("empty jobs should report nothing to show")
 	}
 }
 
-func TestRenderJobsFooterCounts(t *testing.T) {
+func TestJobsFooterRowCounts(t *testing.T) {
 	jobs := []agentJob{
 		{ID: "a1", Type: "explore", Task: "scan repo", Status: chat.AgentStatusRunning},
 		{ID: "b2", Type: "plan", Task: "draft", Status: chat.AgentStatusCompleted},
 	}
-	out := renderJobsFooter(jobs, 80)
-	if !strings.Contains(out, "1 running") {
-		t.Fatalf("footer should report running count, got %q", out)
+	row, ok := jobsFooterRow(jobs)
+	if !ok {
+		t.Fatal("expected a row for non-empty jobs")
+	}
+	if !strings.Contains(row.Text, "1 running") {
+		t.Fatalf("footer should report running count, got %q", row.Text)
+	}
+	if row.Kind != render.FooterJobs {
+		t.Fatalf("expected FooterJobs kind, got %v", row.Kind)
 	}
 }
 

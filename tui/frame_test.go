@@ -1,0 +1,321 @@
+package tui
+
+import (
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/viewport"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/mudler/nib/chat"
+	"github.com/mudler/nib/tui/render"
+	"github.com/mudler/nib/tui/render/full"
+	"github.com/mudler/nib/tui/render/inline"
+)
+
+// frameModel builds a Model sized like a real 80x24 terminal, with the
+// components View and updateViewport touch.
+func frameModel() Model {
+	m := newTestModel(Model{
+		viewport: viewport.New(80, 10),
+		textarea: textarea.New(),
+		width:    80,
+		height:   24,
+	})
+	m.updateDimensions()
+	return m
+}
+
+// TestViewStateIsComplete pins the ViewState contract: viewState() alone
+// produces the whole per-frame projection. It used to stop at the transcript
+// and let View fill in Help/Badges/Err/Footers/NewOutput by MUTATING the struct
+// between presenter calls, so Header and Footer saw different states and a
+// full-frame presenter composing from one ViewState got zero-valued footers.
+func TestViewStateIsComplete(t *testing.T) {
+	m := frameModel()
+	m = withMessages(m, ChatMessage{Role: "user", Content: "hello"})
+	m.jobs = []agentJob{{ID: "a1", Type: "explore", Status: chat.AgentStatusRunning}}
+	m.err = errFrameTest
+
+	vs := m.viewState()
+
+	if vs.Help == "" {
+		t.Error("viewState did not populate Help")
+	}
+	if vs.Err != errFrameTest.Error() {
+		t.Errorf("viewState Err = %q, want %q", vs.Err, errFrameTest.Error())
+	}
+	if len(vs.Footers) != 1 || vs.Footers[0].Kind != render.FooterJobs {
+		t.Errorf("viewState Footers = %+v, want one FooterJobs row", vs.Footers)
+	}
+	if vs.Brand == "" || vs.Status == "" {
+		t.Errorf("viewState left Brand/Status empty: %q / %q", vs.Brand, vs.Status)
+	}
+}
+
+// TestViewDoesNotMutateViewState is the other half of the same contract: View
+// must render Header and Footer from one value, so whatever Footer sees was
+// already there when Header was called.
+func TestViewDoesNotMutateViewState(t *testing.T) {
+	m := frameModel()
+	m = withMessages(m, ChatMessage{Role: "user", Content: "hello"})
+	m.jobs = []agentJob{{ID: "a1", Type: "explore", Status: chat.AgentStatusRunning}}
+
+	before := m.viewState()
+	_ = m.View()
+	after := m.viewState()
+
+	if before.Help != after.Help || len(before.Footers) != len(after.Footers) || before.Err != after.Err {
+		t.Errorf("View left the frame projection different: before %+v, after %+v", before, after)
+	}
+	// The footer rows must reach the rendered frame from the same projection
+	// Header rendered from — i.e. without View filling them in afterwards.
+	out := m.View()
+	if !strings.Contains(out, "jobs: 1 running") {
+		t.Errorf("rendered frame lost the job row: %q", out)
+	}
+}
+
+// TestNewOutputResolvedInViewState: the scroll-position signal is a projection
+// decision (is the viewport even on screen, and is it parked at the bottom),
+// not something View computes on the side.
+func TestNewOutputResolvedInViewState(t *testing.T) {
+	m := frameModel()
+	for i := 0; i < 60; i++ {
+		m = withMessages(m, ChatMessage{Role: "user", Content: "history line"})
+	}
+	m.updateViewport()
+	if vs := m.viewState(); vs.NewOutput {
+		t.Error("NewOutput set while parked at the bottom")
+	}
+	m.viewport.SetYOffset(0)
+	if vs := m.viewState(); !vs.NewOutput {
+		t.Error("NewOutput not set while scrolled up with content below the fold")
+	}
+	// The log viewer owns the body: there is no transcript viewport to be
+	// scrolled up in, so the marker must be off.
+	m.showLogs = true
+	if vs := m.viewState(); vs.NewOutput {
+		t.Error("NewOutput set while the log viewer owns the body")
+	}
+	if len(m.viewState().Footers) != 0 {
+		t.Error("footer rows rendered while the log viewer owns the body")
+	}
+}
+
+// TestViewportBudgetsAgainstFooterHeight is the C1 regression: the layout used
+// to reserve a fixed three rows for a footer that emits between one and seven,
+// so a session with a running sub-agent and a live loop was two rows over
+// budget. On the alt screen that makes bubbletea scroll the composed frame and
+// the header walks off the top.
+func TestViewportBudgetsAgainstFooterHeight(t *testing.T) {
+	m := frameModel()
+	bare := m.viewport.Height
+
+	// A sub-agent job and an error line: two footer rows the fixed budget never
+	// accounted for.
+	m.jobs = []agentJob{{ID: "a1", Type: "explore", Status: chat.AgentStatusRunning}}
+	m.err = errFrameTest
+	m.updateDimensions()
+
+	if got := m.viewport.Height; got != bare-2 {
+		t.Errorf("viewport height with two extra footer rows = %d, want %d", got, bare-2)
+	}
+}
+
+// TestFrameFitsTheTerminal is the property the budget exists for: whatever the
+// footer is doing, the composed frame must not be taller than the terminal.
+//
+// The presenter is part of each case, not a constant: every case here used to
+// run on frameModel()'s default inline.New(), whose Frame never places
+// v.Dialogs (the core bakes them into the viewport's scrollback instead), so a
+// pending dialog cost inline nothing and this test could not see the rows
+// full.Frame writes between body and composer. That is exactly how a
+// ten-row approval card shipped as an eight-row overflow on the default
+// surface.
+func TestFrameFitsTheTerminal(t *testing.T) {
+	cases := []struct {
+		name      string
+		presenter render.Presenter
+		setup     func(m *Model)
+	}{
+		{"bare", inline.New(), func(m *Model) {}},
+		{"one job", inline.New(), func(m *Model) {
+			m.jobs = []agentJob{{ID: "a1", Type: "explore", Status: chat.AgentStatusRunning}}
+		}},
+		{"job, error and a scrolled-up viewport", inline.New(), func(m *Model) {
+			m.jobs = []agentJob{{ID: "a1", Type: "explore", Status: chat.AgentStatusRunning}}
+			m.err = errFrameTest
+			m.viewport.SetYOffset(0)
+		}},
+		{"full surface, pending approval", full.New(), func(m *Model) {
+			m.awaitingApproval = true
+			m.pendingTool = &chat.ToolCallRequest{
+				Name:      "bash",
+				Arguments: `{"command":"ls -la"}`,
+				Reasoning: "listing the directory before editing anything in it",
+			}
+		}},
+		{"full surface, resume picker", full.New(), func(m *Model) {
+			m.awaitingResume = true
+			m.resumeList = &render.SelectList{
+				Items:      resumeItems(fakeSessions(12)),
+				MaxVisible: 8,
+			}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := frameModel()
+			m.presenter = tc.presenter
+			for i := 0; i < 60; i++ {
+				m = withMessages(m, ChatMessage{Role: "user", Content: "history line"})
+			}
+			tc.setup(&m)
+			m.updateDimensions()
+			m.updateViewport()
+
+			if got := lipgloss.Height(m.View()); got > m.height {
+				t.Errorf("frame is %d rows tall, terminal is %d: the header scrolls off the top", got, m.height)
+			}
+		})
+	}
+}
+
+// fakeSessions builds n stored session records for the /resume picker.
+func fakeSessions(n int) []chat.SessionRecord {
+	out := make([]chat.SessionRecord, n)
+	for i := range out {
+		out[i] = chat.SessionRecord{
+			ID:      "s" + strconv.Itoa(i),
+			Title:   "session number " + strconv.Itoa(i),
+			Updated: time.Now().Add(-time.Duration(i) * time.Hour),
+		}
+	}
+	return out
+}
+
+// TestFooterBudgetRecomputesMidTurn: a job starting is not a WindowSizeMsg, but
+// it changes the footer's height all the same. The budget has to follow it,
+// otherwise the frame only becomes correct again the next time the terminal is
+// resized.
+func TestFooterBudgetRecomputesMidTurn(t *testing.T) {
+	m := frameModel()
+	for i := 0; i < 60; i++ {
+		m = withMessages(m, ChatMessage{Role: "user", Content: "history line"})
+	}
+	m.updateViewport()
+	bare := m.viewport.Height
+
+	bareFrame := lipgloss.Height(m.View())
+
+	// Mid-turn: a sub-agent job appears. No resize, just a re-render.
+	m.jobs = []agentJob{{ID: "a1", Type: "explore", Status: chat.AgentStatusRunning}}
+	m.updateViewport()
+	// The user-visible symptom: before the fix the frame grew by the job row
+	// instead of the viewport giving the row up, so on the alt screen
+	// bubbletea scrolled the frame and the header walked off the top.
+	if got := lipgloss.Height(m.View()); got != bareFrame {
+		t.Errorf("frame height changed from %d to %d when a job row appeared", bareFrame, got)
+	}
+	if got := m.viewport.Height; got != bare-1 {
+		t.Errorf("viewport height after a job row appeared = %d, want %d", got, bare-1)
+	}
+	if got := lipgloss.Height(m.View()); got > m.height {
+		t.Errorf("frame is %d rows tall, terminal is %d", got, m.height)
+	}
+
+	// And back: the row goes away, the row comes back to the viewport.
+	m.jobs = nil
+	m.updateViewport()
+	if got := m.viewport.Height; got != bare {
+		t.Errorf("viewport height after the job row went away = %d, want %d", got, bare)
+	}
+}
+
+// recordingPresenter wraps the inline presenter and records what the model
+// asked it for, so a test can prove the model ASKS rather than reconstructing
+// one surface's chrome for both.
+type recordingPresenter struct {
+	render.Presenter
+	width      int
+	askedRoles []render.Role
+}
+
+func (p *recordingPresenter) ContentWidth(role render.Role, w int) int {
+	p.askedRoles = append(p.askedRoles, role)
+	return p.width
+}
+
+// TestMarkdownWidthComesFromThePresenter is the I2 regression: the model used
+// to rebuild the inline widget's `nib · ` label itself to work out the glamour
+// wrap width, and applied that to BOTH surfaces. The moment `full` gets its own
+// gutter, assistant markdown would wrap to the wrong column with no test
+// failing. It must ask the presenter instead.
+func TestMarkdownWidthComesFromThePresenter(t *testing.T) {
+	const stubWidth = 31
+	rec := &recordingPresenter{Presenter: inline.New(), width: stubWidth}
+	m := newTestModel(Model{
+		viewport:  viewport.New(80, 10),
+		textarea:  textarea.New(),
+		width:     80,
+		height:    24,
+		presenter: rec,
+	})
+	m = withMessages(m,
+		ChatMessage{Role: "assistant", Content: "an answer"},
+		ChatMessage{Role: "agent", AgentID: "a1", Content: "a sub-agent line"},
+	)
+	m.updateViewport()
+
+	var sawAssistant, sawAgent bool
+	for _, role := range rec.askedRoles {
+		switch role {
+		case render.RoleAssistant:
+			sawAssistant = true
+		case render.RoleAgent:
+			sawAgent = true
+		}
+	}
+	if !sawAssistant || !sawAgent {
+		t.Errorf("model did not ask the presenter for content widths: asked %v", rec.askedRoles)
+	}
+	if _, ok := m.mdRenderers[stubWidth]; !ok {
+		t.Errorf("markdown was not pre-rendered at the presenter's width %d; renderers built for %v",
+			stubWidth, rendererWidths(m))
+	}
+}
+
+func rendererWidths(m Model) []int {
+	var out []int
+	for w := range m.mdRenderers {
+		out = append(out, w)
+	}
+	return out
+}
+
+// TestToolLabelFormattedModelSide is the I5 regression: the presenters used to
+// import chat and format the tool label themselves, which was the only reason
+// render.Message carried Name and Arguments. The label now arrives formatted.
+func TestToolLabelFormattedModelSide(t *testing.T) {
+	want := toolLabel("bash", `{"command":"ls -la"}`)
+	if want == "bash" {
+		t.Fatalf("precondition: toolLabel should summarise the call, got %q", want)
+	}
+
+	m := frameModel()
+	m = withMessages(m, ChatMessage{Role: "tool", Name: "bash", Arguments: `{"command":"ls -la"}`, Content: "output"})
+	m.updateViewport()
+	if out := m.viewport.View(); !strings.Contains(out, want) {
+		t.Errorf("rendered tool block lost the formatted label %q: %q", want, out)
+	}
+}
+
+// errFrameTest is a fixed error for the footer's error line.
+var errFrameTest = frameTestError("something failed")
+
+type frameTestError string
+
+func (e frameTestError) Error() string { return string(e) }

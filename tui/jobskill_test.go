@@ -8,12 +8,12 @@ import (
 )
 
 func TestUnifiedJobsAgents(t *testing.T) {
-	m := Model{
+	m := newTestModel(Model{
 		jobs: []agentJob{
 			{ID: "agent-123456789", Type: "explore", Task: "look around", Status: chat.AgentStatusRunning},
 		},
 		// shellJobs left nil — List has a nil guard.
-	}
+	})
 
 	jobs := m.unifiedJobs()
 	if len(jobs) != 1 || jobs[0].Kind != "agent" || jobs[0].ID != "agent-123456789" {
@@ -35,7 +35,7 @@ func TestLastLinesAndClip(t *testing.T) {
 }
 
 func TestJobActivityTailPrependsPrompt(t *testing.T) {
-	m := Model{}
+	m := newTestModel(Model{})
 	m.jobs = []agentJob{{ID: "a1", Type: "explore", Task: "the full multi-word prompt that should appear in details"}}
 	out := m.jobActivityTail(jobRef{Kind: "agent", ID: "a1"})
 	if !strings.Contains(out, "prompt:") {
@@ -47,7 +47,7 @@ func TestJobActivityTailPrependsPrompt(t *testing.T) {
 }
 
 func TestKillSelectedOutOfRangeIsNoop(t *testing.T) {
-	m := Model{jobs: []agentJob{{ID: "a1", Status: chat.AgentStatusRunning}}}
+	m := newTestModel(Model{jobs: []agentJob{{ID: "a1", Status: chat.AgentStatusRunning}}})
 	// These must not panic and must not set a "Killed" status.
 	m.killSelected(0)
 	m.killSelected(99)

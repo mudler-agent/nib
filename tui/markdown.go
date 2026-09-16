@@ -6,6 +6,7 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/glamour/ansi"
 	"github.com/mudler/nib/theme"
+	"github.com/mudler/nib/tui/render"
 )
 
 // nibMarkdownRenderer builds a glamour renderer styled to match nib's
@@ -21,15 +22,15 @@ func nibMarkdownRenderer(width int) (*glamour.TermRenderer, error) {
 }
 
 // renderMarkdownWith renders content with r, trimming surrounding blank lines.
-// If r is nil or rendering fails it falls back to plain wrapText so output is
+// If r is nil or rendering fails it falls back to plain render.Wrap so output is
 // always shown.
 func renderMarkdownWith(r *glamour.TermRenderer, content string, width int) string {
 	if r == nil {
-		return wrapText(content, width)
+		return render.Wrap(content, width)
 	}
 	out, err := r.Render(content)
 	if err != nil {
-		return wrapText(content, width)
+		return render.Wrap(content, width)
 	}
 	return strings.Trim(out, "\n")
 }

@@ -149,3 +149,55 @@ func TestResolveGoal(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveYolo(t *testing.T) {
+	on, off := true, false
+	cases := []struct {
+		in   string
+		want *bool
+	}{
+		{"/yolo", nil},
+		{"/yolo on", &on},
+		{"/yolo off", &off},
+	}
+	for _, c := range cases {
+		got := Resolve(c.in, nil, nil, nil)
+		if got.Kind != KindYolo {
+			t.Fatalf("%q: Kind = %v, want KindYolo", c.in, got.Kind)
+		}
+		switch {
+		case c.want == nil && got.YoloOn != nil:
+			t.Errorf("%q: YoloOn = %v, want nil (toggle)", c.in, *got.YoloOn)
+		case c.want != nil && (got.YoloOn == nil || *got.YoloOn != *c.want):
+			t.Errorf("%q: YoloOn = %v, want %v", c.in, got.YoloOn, *c.want)
+		}
+	}
+}
+
+func TestResolveYoloInvalid(t *testing.T) {
+	got := Resolve("/yolo bogus", nil, nil, nil)
+	if got.Kind != KindError {
+		t.Fatalf("Kind = %v, want KindError", got.Kind)
+	}
+}
+
+func TestResolveResume(t *testing.T) {
+	cases := []struct {
+		in      string
+		wantAll bool
+		wantID  string
+	}{
+		{"/resume", false, ""},
+		{"/resume --all", true, ""},
+		{"/resume abc123", false, "abc123"},
+	}
+	for _, c := range cases {
+		got := Resolve(c.in, nil, nil, nil)
+		if got.Kind != KindResume {
+			t.Fatalf("%q: Kind = %v, want KindResume", c.in, got.Kind)
+		}
+		if got.ResumeAll != c.wantAll || got.ResumeID != c.wantID {
+			t.Errorf("%q: all=%v id=%q, want all=%v id=%q", c.in, got.ResumeAll, got.ResumeID, c.wantAll, c.wantID)
+		}
+	}
+}

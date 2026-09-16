@@ -31,17 +31,19 @@ type compItem struct {
 // buildCompItems builds the tagged completion list: the built-in verbs first,
 // then the command, skill, and agent registries.
 func buildCompItems(cmds []types.CommandConfig, skills []types.Skill, agents []types.AgentTypeConfig) []compItem {
-	items := make([]compItem, 0, 6+len(cmds)+len(skills)+len(agents))
+	items := make([]compItem, 0, 7+len(cmds)+len(skills)+len(agents))
 	items = append(items,
-		compItem{Cat: compBuiltin, Name: "loop", Desc: "recurring or self-paced task", Insert: "/loop "},
-		compItem{Cat: compBuiltin, Name: "compact", Desc: "compact the conversation", Insert: "/compact "},
-		compItem{Cat: compBuiltin, Name: "goal", Desc: "set a goal nib checks before stopping", Insert: "/goal "},
-		compItem{Cat: compBuiltin, Name: "model", Desc: "switch the session model", Insert: "/model "},
-		compItem{Cat: compBuiltin, Name: "models", Desc: "list the models this endpoint serves", Insert: "/models "},
+		compItem{Cat: compBuiltin, Name: theme.CompLoopName, Desc: theme.CompLoopDesc, Insert: "/" + theme.CompLoopName + " "},
+		compItem{Cat: compBuiltin, Name: theme.CompCompactName, Desc: theme.CompCompactDesc, Insert: "/" + theme.CompCompactName + " "},
+		compItem{Cat: compBuiltin, Name: theme.CompGoalName, Desc: theme.CompGoalDesc, Insert: "/" + theme.CompGoalName + " "},
+		compItem{Cat: compBuiltin, Name: theme.CompModelName, Desc: theme.CompModelDesc, Insert: "/" + theme.CompModelName + " "},
+		compItem{Cat: compBuiltin, Name: theme.CompModelsName, Desc: theme.CompModelsDesc, Insert: "/" + theme.CompModelsName + " "},
 		// skill and agent are deliberately absent: their registries already
 		// contribute one entry per name below, which completes to a usable line,
 		// where a bare "/skill " would complete to a usage error.
-		compItem{Cat: compBuiltin, Name: "attach", Desc: "stage a file for the next message", Insert: "/attach "},
+		compItem{Cat: compBuiltin, Name: theme.CompAttachName, Desc: theme.CompAttachDesc, Insert: "/" + theme.CompAttachName + " "},
+		compItem{Cat: compBuiltin, Name: theme.CompYoloName, Desc: theme.CompYoloDesc, Insert: "/" + theme.CompYoloName + " "},
+		compItem{Cat: compBuiltin, Name: theme.CompResumeName, Desc: theme.CompResumeDesc, Insert: "/" + theme.CompResumeName + " "},
 	)
 	for _, c := range cmds {
 		items = append(items, compItem{Cat: compCmd, Name: c.Name, Desc: c.Description, Insert: "/" + c.Name + " "})
@@ -133,6 +135,33 @@ func (c *compState) accept() (string, bool) {
 		return "", false
 	}
 	return it.Insert, true
+}
+
+// exact reports whether input already equals the currently SELECTED match's
+// full Insert token, modulo the trailing space ("/yolo" with "yolo"
+// highlighted, say) — nothing is left to complete, so a caller like KeyEnter
+// should submit rather than accept. Comparing against the selection rather
+// than requiring a sole match matters for a genuine prefix pair like the
+// built-in "/model" and "/models": typing "/model" in full still produces two
+// matches (filterComp is substring, and "models" contains "model"), so a
+// sole-match gate would never fire for it — reintroducing the double-Enter
+// papercut for exactly the verb that caused it. Moving the selection onto
+// "models" instead makes this false again, so Enter still completes to the
+// longer verb.
+//
+// This is keyed on Insert, not "/"+it.Name: for compBuiltin and compCmd items
+// Insert is "/" + Name + " ", so the two agree, but compSkill and compAgent
+// items complete to "/skill <name> " / "/agent <name> " while Name is just
+// the bare name — "/" + it.Name would then equal the typed text for a FULL
+// skill/agent name too, wrongly reporting nothing left to complete and
+// causing KeyEnter to submit "/explore" as a verb instead of accepting the
+// "/agent explore " completion.
+func (c *compState) exact(input string) bool {
+	it, ok := c.current()
+	if !ok {
+		return false
+	}
+	return it.Insert == input+" "
 }
 
 // ghost returns the suffix of the selected item's Insert beyond the current

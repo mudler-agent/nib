@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/mudler/nib/hooks"
 	"github.com/mudler/nib/types"
 )
 
@@ -44,5 +45,33 @@ func TestDecideToolCallPreHook(t *testing.T) {
 	dec = s.decideToolCall(ToolCallRequest{Name: "other", Arguments: "{}"})
 	if !dec.Approved {
 		t.Fatal("expected non-matching tool to fall through to the user gate (approve)")
+	}
+}
+
+func TestYoloWithExternalProvenanceStillHonorsDenyingHook(t *testing.T) {
+	dir := t.TempDir()
+	block := filepath.Join(dir, "block.sh")
+	if err := os.WriteFile(block, []byte("#!/bin/sh\necho '{\"block\": true, \"reason\": \"policy denied\"}'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	s := newTestSessionWithExternalSource(t)
+	s.SetAutoApprove(true)
+	s.hooks = hooks.New([]types.HookConfig{{Event: "PreToolUse", Matcher: "bash", Command: block, Dir: dir}})
+	asked := false
+	s.callbacks.OnToolCall = func(ToolCallRequest) ToolCallResponse {
+		asked = true
+		return ToolCallResponse{Approved: true}
+	}
+
+	dec := s.decideToolCall(ToolCallRequest{Name: "bash", Arguments: `{"script":"touch /tmp/x"}`})
+	if dec.Approved {
+		t.Fatal("yolo bypassed a denying PreToolUse hook")
+	}
+	if dec.Adjustment != "policy denied" {
+		t.Fatalf("hook reason = %q, want %q", dec.Adjustment, "policy denied")
+	}
+	if asked {
+		t.Fatal("denying hook fell through to the approval UI")
 	}
 }

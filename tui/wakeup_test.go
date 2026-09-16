@@ -15,13 +15,13 @@ import (
 func newWakeupTestModel() Model {
 	ta := textarea.New()
 	ta.Focus()
-	return Model{
+	return newTestModel(Model{
 		textarea:     ta,
 		viewport:     viewport.New(80, 10),
 		spinner:      spinner.New(),
 		session:      &chat.Session{},
 		sessionReady: true,
-	}
+	})
 }
 
 func TestWakeupFireStaleGenIgnored(t *testing.T) {

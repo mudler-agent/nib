@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/mudler/nib/theme"
+	"github.com/mudler/nib/tui/render"
 )
 
 // jobRef is a unified reference to a killable job — either a sub-agent or a
@@ -96,7 +97,7 @@ func (m *Model) syncLogViewport() {
 	if width <= 0 {
 		width = m.width
 	}
-	m.logVP.SetContent(theme.Help.Render(wrapText(content, width-1)))
+	m.logVP.SetContent(theme.Help.Render(render.Wrap(content, width-1)))
 	m.logVP.GotoBottom()
 }
 
@@ -108,7 +109,7 @@ func (m Model) renderLogsViewer() string {
 	b.WriteString("\n\n")
 	if m.logOpenID != "" {
 		// Open one job's full log.
-		b.WriteString(theme.Meta.Render(m.logOpenKind + " " + shortID(m.logOpenID)))
+		b.WriteString(theme.Meta.Render(m.logOpenKind + " " + render.ShortID(m.logOpenID)))
 		b.WriteString("\n")
 		b.WriteString(m.logVP.View())
 		return b.String()
@@ -129,7 +130,7 @@ func (m Model) renderLogsViewer() string {
 	for i, j := range jobs {
 		label := strings.ReplaceAll(j.Label, "\n", " ")
 		label = clipLine(label, m.width-30)
-		row := fmt.Sprintf("[%d] %-6s %-8s %-9s %s", i+1, j.Kind, shortID(j.ID), j.Status, label)
+		row := fmt.Sprintf("[%d] %-6s %-8s %-9s %s", i+1, j.Kind, render.ShortID(j.ID), j.Status, label)
 		if i == sel {
 			b.WriteString(theme.Prompt.Render(theme.PromptGlyph) + " " + theme.Brand.Render(row))
 		} else {

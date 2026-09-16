@@ -34,7 +34,7 @@ func TestRenderMarkdownWith_PlainPassthrough(t *testing.T) {
 }
 
 func TestRenderMarkdownWith_NilFallsBack(t *testing.T) {
-	// nil renderer → falls back to wrapText, never panics.
+	// nil renderer → falls back to render.Wrap, never panics.
 	out := renderMarkdownWith(nil, "hello world", 80)
 	if !strings.Contains(out, "hello world") {
 		t.Fatalf("fallback lost text: %q", out)

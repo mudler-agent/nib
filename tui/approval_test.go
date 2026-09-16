@@ -19,14 +19,14 @@ func TestApprovalChoiceKeysResolve(t *testing.T) {
 	// buffered response channel so resolveApproval's returned cmd never blocks.
 	newModel := func() (Model, chan chat.ToolCallResponse) {
 		ch := make(chan chat.ToolCallResponse, 1)
-		m := Model{
+		m := newTestModel(Model{
 			textarea:         textarea.New(),
 			viewport:         viewport.New(80, 10),
 			awaitingApproval: true,
 			approvalEditing:  false,
 			pendingTool:      &chat.ToolCallRequest{Name: "bash", Arguments: `{"script":"git status"}`},
 			toolResponseChan: ch,
-		}
+		})
 		return m, ch
 	}
 
@@ -115,13 +115,13 @@ func TestApprovalChoiceKeysResolve(t *testing.T) {
 // (empty AlwaysPrefix) when no safe bash prefix can be derived.
 func TestApprovalAlwaysWholeTool(t *testing.T) {
 	ch := make(chan chat.ToolCallResponse, 1)
-	m := Model{
+	m := newTestModel(Model{
 		textarea:         textarea.New(),
 		viewport:         viewport.New(80, 10),
 		awaitingApproval: true,
 		pendingTool:      &chat.ToolCallRequest{Name: "bash", Arguments: `{"script":"a && b"}`},
 		toolResponseChan: ch,
-	}
+	})
 	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
 	if cmd != nil {
 		cmd()
@@ -135,17 +135,27 @@ func TestApprovalAlwaysWholeTool(t *testing.T) {
 	}
 }
 
-func TestTruncateLine(t *testing.T) {
-	if got := truncateLine("hello", 10); got != "hello" {
-		t.Fatalf("fits: got %q", got)
+// TestResolveApprovalClearsStaleReasoning guards the confusing-UX bug where the
+// reasoning trace captured before a tool approval was re-rendered underneath the
+// post-approval status line, making it look like the model was re-thinking the
+// step the user had just answered.
+func TestResolveApprovalClearsStaleReasoning(t *testing.T) {
+	ch := make(chan chat.ToolCallResponse, 1)
+	m := newTestModel(Model{
+		textarea:         textarea.New(),
+		viewport:         viewport.New(80, 10),
+		awaitingApproval: true,
+		pendingTool:      &chat.ToolCallRequest{Name: "bash", Arguments: `{"script":"ls"}`},
+		toolResponseChan: ch,
+		reasoning:        "stale trace from before the approval",
+	})
+
+	next, cmd := m.resolveApproval(chat.ToolCallResponse{Approved: true})
+	if cmd != nil {
+		cmd()
 	}
-	if got := truncateLine("hello world", 5); got != "hell…" {
-		t.Fatalf("truncates: got %q", got)
-	}
-	if got := truncateLine("hello", 0); got != "…" {
-		t.Fatalf("non-positive budget must clamp, got %q", got)
-	}
-	if got := truncateLine("héllo wörld", 6); got != "héllo…" {
-		t.Fatalf("rune-aware: got %q", got)
+
+	if got := next.(Model).reasoning; got != "" {
+		t.Errorf("reasoning = %q, want empty after an approval resolves", got)
 	}
 }

@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/mudler/cogito"
@@ -70,6 +71,58 @@ func TestAddUsageIgnoresEmptyReports(t *testing.T) {
 
 	if got := s.Usage().TotalTokens; got != 8 {
 		t.Fatalf("TotalTokens = %d, want 8", got)
+	}
+}
+
+// EstimatedUsage is the fallback the TUI badge reaches for once a streamed
+// session's real counter reports zero: a byte/4 estimate of the conversation
+// so far, split by role (assistant content counts as completion, everything
+// else as prompt). It always estimates from the fragment, regardless of what
+// Usage() holds — the decision to prefer one over the other belongs to the
+// caller, not to this method.
+func TestEstimatedUsageDerivesNonZeroFromConversation(t *testing.T) {
+	s := &Session{
+		fragment: cogito.NewFragment(
+			openai.ChatCompletionMessage{Role: "user", Content: strings.Repeat("a request that is not trivially short. ", 4)},
+			openai.ChatCompletionMessage{Role: "assistant", Content: strings.Repeat("a reasonably long reply. ", 4)},
+		),
+	}
+
+	got := s.EstimatedUsage()
+	if got.TotalTokens == 0 {
+		t.Fatal("a non-empty conversation produced a zero estimate")
+	}
+	if got.PromptTokens == 0 {
+		t.Fatal("the user message did not count toward the prompt side")
+	}
+	if got.CompletionTokens == 0 {
+		t.Fatal("the assistant message did not count toward the completion side")
+	}
+}
+
+// EstimatedUsage must never make Usage() (and therefore usage.json, which
+// trace.WriteUsage feeds only from Usage()) look like something was measured.
+func TestEstimatedUsageDoesNotMutateRealUsage(t *testing.T) {
+	s := &Session{
+		fragment: cogito.NewFragment(
+			openai.ChatCompletionMessage{Role: "user", Content: "hello there, this is a real message"},
+		),
+	}
+
+	_ = s.EstimatedUsage()
+
+	if got := s.Usage(); got != (SessionUsage{}) {
+		t.Fatalf("Usage() = %+v after EstimatedUsage, want zero: the estimate leaked into the measured counter", got)
+	}
+}
+
+// A session with an empty fragment (no conversation yet) has nothing to
+// derive an estimate from, so it must not manufacture spend out of nothing.
+func TestEstimatedUsageIsZeroForAnEmptyFragment(t *testing.T) {
+	s := &Session{fragment: cogito.NewEmptyFragment()}
+
+	if got := s.EstimatedUsage(); got != (SessionUsage{}) {
+		t.Fatalf("EstimatedUsage() = %+v, want zero for an empty conversation", got)
 	}
 }
 

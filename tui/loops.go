@@ -9,6 +9,7 @@ import (
 	"github.com/mudler/nib/loop"
 	"github.com/mudler/nib/slash"
 	"github.com/mudler/nib/theme"
+	"github.com/mudler/nib/tui/render"
 )
 
 // durationToCron maps a /loop interval to a cron expression. Sub-minute
@@ -36,28 +37,31 @@ func durationToCron(d time.Duration) string {
 	}
 }
 
-// renderLoopsFooter renders a one-line summary of active cron loops, plus a
-// self-paced indicator when selfPaced > 0. Returns "" when nothing is active.
-func renderLoopsFooter(r *loop.Registry, selfPaced, width int) string {
+// loopsFooterRow returns the plain {Glyph, Text, Kind} data for the loops
+// footer, and whether there is one to show. The presenter styles it
+// (render.FooterLoops gets the original theme.Subtle, unfilled treatment —
+// see inline.Footer).
+func loopsFooterRow(r *loop.Registry, selfPaced int) (render.FooterRow, bool) {
 	if r == nil {
 		if selfPaced == 0 {
-			return ""
+			return render.FooterRow{}, false
 		}
-		return theme.Subtle.Render(fmt.Sprintf("%s %d loop(s): %d self-paced  (/loop list · /loop stop)", theme.Loop, selfPaced, selfPaced))
+		text := fmt.Sprintf("%d loop(s): %d self-paced  (/loop list · /loop stop)", selfPaced, selfPaced)
+		return render.FooterRow{Glyph: theme.Loop, Text: text, Kind: render.FooterLoops}, true
 	}
 	jobs := r.List()
 	if len(jobs) == 0 && selfPaced == 0 {
-		return ""
+		return render.FooterRow{}, false
 	}
 	var parts []string
 	for _, j := range jobs {
-		parts = append(parts, fmt.Sprintf("%s %s%s%s", j.ID, j.Expr, theme.Arrow, truncateRunes(j.Prompt, 24)))
+		parts = append(parts, fmt.Sprintf("%s %s%s%s", j.ID, j.Expr, theme.Arrow, render.TruncateRunes(j.Prompt, 24)))
 	}
 	if selfPaced > 0 {
 		parts = append(parts, fmt.Sprintf("%d self-paced", selfPaced))
 	}
-	line := fmt.Sprintf("%s %d loop(s): %s  (/loop list · /loop stop)", theme.Loop, len(jobs)+selfPaced, strings.Join(parts, " · "))
-	return theme.Subtle.Render(line)
+	text := fmt.Sprintf("%d loop(s): %s  (/loop list · /loop stop)", len(jobs)+selfPaced, strings.Join(parts, " · "))
+	return render.FooterRow{Glyph: theme.Loop, Text: text, Kind: render.FooterLoops}, true
 }
 
 // dispatchLoop runs a due loop payload, routing by run-state: inject into a
@@ -76,7 +80,7 @@ func (m *Model) dispatchLoop(payload string) tea.Cmd {
 	switch {
 	case live && m.parked:
 		if m.session.Inject(text) {
-			m.messages = append(m.messages, ChatMessage{Role: "user", Content: payload})
+			m.appendMessage(ChatMessage{Role: "user", Content: payload})
 			m.parked = false
 			m.loading = true
 			m.interruptArmed = false
@@ -90,7 +94,7 @@ func (m *Model) dispatchLoop(payload string) tea.Cmd {
 		m.updateViewport()
 		return nil
 	case m.sessionReady && m.session != nil && !m.awaitingApproval && !m.awaitingAsk:
-		m.messages = append(m.messages, ChatMessage{Role: "user", Content: payload})
+		m.appendMessage(ChatMessage{Role: "user", Content: payload})
 		m.loading = true
 		m.interruptArmed = false
 		m.status = "Thinking…"
@@ -106,7 +110,7 @@ func (m *Model) startLoop(a slash.Action) tea.Cmd {
 	// Validate the payload up front so a bad command fails loudly, not silently.
 	pa := slash.Resolve(a.Payload, m.cfg.Commands, m.cfg.Skills, m.cfg.Agents)
 	if pa.Kind == slash.KindError {
-		m.messages = append(m.messages, ChatMessage{Role: "error", Content: "loop payload: " + pa.Err})
+		m.appendMessage(ChatMessage{Role: "error", Content: "loop payload: " + pa.Err})
 		m.updateViewport()
 		return nil
 	}
@@ -118,7 +122,7 @@ func (m *Model) startLoop(a slash.Action) tea.Cmd {
 	if a.Interval == 0 {
 		// Self-paced: run once + inject the convention; the model re-arms.
 		m.selfPaced++
-		m.messages = append(m.messages, ChatMessage{Role: "user", Content: a.Payload})
+		m.appendMessage(ChatMessage{Role: "user", Content: a.Payload})
 		m.loading = true
 		m.interruptArmed = false
 		m.status = "Thinking…"
@@ -130,12 +134,12 @@ func (m *Model) startLoop(a slash.Action) tea.Cmd {
 	expr := durationToCron(a.Interval)
 	j, err := m.loops.Add(expr, a.Payload, true, false)
 	if err != nil {
-		m.messages = append(m.messages, ChatMessage{Role: "error", Content: "loop: " + err.Error()})
+		m.appendMessage(ChatMessage{Role: "error", Content: "loop: " + err.Error()})
 		m.updateViewport()
 		return nil
 	}
-	m.messages = append(m.messages, ChatMessage{Role: "agent", Content: fmt.Sprintf("Looping %q %s (%s). Stop with /loop stop %s.", a.Payload, a.Interval, j.ID, j.ID)})
-	m.messages = append(m.messages, ChatMessage{Role: "user", Content: a.Payload})
+	m.appendMessage(ChatMessage{Role: "agent", Content: fmt.Sprintf("Looping %q %s (%s). Stop with /loop stop %s.", a.Payload, a.Interval, j.ID, j.ID)})
+	m.appendMessage(ChatMessage{Role: "user", Content: a.Payload})
 	m.loading = true
 	m.interruptArmed = false
 	m.status = "Thinking…"

@@ -16,12 +16,12 @@ import (
 func newQueueTestModel() Model {
 	ta := textarea.New()
 	ta.Focus()
-	return Model{
+	return newTestModel(Model{
 		textarea:     ta,
 		viewport:     viewport.New(80, 10),
 		spinner:      spinner.New(),
 		sessionReady: true,
-	}
+	})
 }
 
 func TestEnterQueuesWhileWorking(t *testing.T) {
@@ -55,7 +55,7 @@ func TestTypingAllowedWhileWorking(t *testing.T) {
 }
 
 func TestQueueMutators(t *testing.T) {
-	m := Model{queue: []string{"a", "b", "c"}, queueSel: 0}
+	m := newTestModel(Model{queue: []string{"a", "b", "c"}, queueSel: 0})
 
 	m.queueMoveSel(1)
 	if m.queueSel != 1 {
@@ -216,7 +216,7 @@ func TestRedispatchGoesFirstWithoutEcho(t *testing.T) {
 	// second transcript echo.
 	m.redispatch = []string{"whats 2+2?"}
 	m.queue = []string{"and another"}
-	m.messages = []ChatMessage{{Role: "user", Content: "whats 2+2?"}}
+	m = withMessages(m, ChatMessage{Role: "user", Content: "whats 2+2?"})
 
 	next, cmd := m.Update(responseMsg{content: "done"})
 	nm := next.(Model)

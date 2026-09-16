@@ -10,10 +10,10 @@ import (
 // Ctrl+C on an in-flight (loading) turn interrupts but keeps the session open,
 // and a second Ctrl+C exits.
 func TestCtrlCInterruptThenExit(t *testing.T) {
-	m := Model{
+	m := newTestModel(Model{
 		loading: true,
 		cancel:  func() {}, // quit() calls this; no real context needed here
-	}
+	})
 
 	// First Ctrl+C: interrupt, stay open.
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
@@ -36,7 +36,7 @@ func TestCtrlCInterruptThenExit(t *testing.T) {
 // TestCtrlCWhenIdleExits verifies Ctrl+C exits immediately when no turn is
 // running (nothing to interrupt).
 func TestCtrlCWhenIdleExits(t *testing.T) {
-	m := Model{cancel: func() {}}
+	m := newTestModel(Model{cancel: func() {}})
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	if !next.(Model).quitting {
 		t.Fatal("Ctrl+C while idle should quit immediately")

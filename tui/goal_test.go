@@ -3,17 +3,29 @@ package tui
 import (
 	"strings"
 	"testing"
+
+	"github.com/mudler/nib/tui/render"
 )
 
-func TestRenderGoalFooter(t *testing.T) {
-	if f := renderGoalFooter("", 80); f != "" {
-		t.Fatalf("no goal should render empty, got %q", f)
+// TestGoalFooterRow exercises goalFooterRow, the live path View() actually
+// calls (renderGoalFooter, the fully-styled string-returning function this
+// test used to pin, was deleted once it had zero production call sites left
+// — see the Task 6 fix-round-2 report).
+func TestGoalFooterRow(t *testing.T) {
+	if _, ok := goalFooterRow(""); ok {
+		t.Fatal("no goal should report nothing to show")
 	}
-	f := renderGoalFooter("make all tests pass", 80)
-	if !strings.Contains(f, "make all tests pass") {
-		t.Fatalf("footer missing goal text: %q", f)
+	row, ok := goalFooterRow("make all tests pass")
+	if !ok {
+		t.Fatal("expected a row when a goal is set")
 	}
-	if !strings.Contains(f, "/goal clear") {
-		t.Fatalf("footer should hint how to clear: %q", f)
+	if !strings.Contains(row.Text, "make all tests pass") {
+		t.Fatalf("row missing goal text: %q", row.Text)
+	}
+	if !strings.Contains(row.Text, "/goal clear") {
+		t.Fatalf("row should hint how to clear: %q", row.Text)
+	}
+	if row.Kind != render.FooterGoal {
+		t.Fatalf("expected FooterGoal kind, got %v", row.Kind)
 	}
 }

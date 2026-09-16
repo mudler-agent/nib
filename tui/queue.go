@@ -75,7 +75,7 @@ func (m *Model) releaseQueueFront() bool {
 	if m.queueSel < 0 {
 		m.queueSel = 0
 	}
-	m.messages = append(m.messages, ChatMessage{Role: "user", Content: front})
+	m.appendMessage(ChatMessage{Role: "user", Content: front})
 	m.parked = false
 	m.loading = true
 	m.interruptArmed = false

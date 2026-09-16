@@ -8,6 +8,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/mudler/nib/tui/render"
 )
 
 // idleTUIModel never quits on its own, so the only thing that can end a program
@@ -33,7 +35,7 @@ func TestTUIProgramUnwindsOnContextCancel(t *testing.T) {
 	in, inWriter := io.Pipe()
 	defer inWriter.Close()
 
-	p := tea.NewProgram(idleTUIModel{}, tuiProgramOptions(ctx, in, io.Discard)...)
+	p := tea.NewProgram(idleTUIModel{}, tuiProgramOptions(ctx, in, io.Discard, render.Caps{})...)
 
 	done := make(chan error, 1)
 	go func() {

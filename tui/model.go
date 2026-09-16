@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/mudler/nib/theme"
@@ -24,7 +25,9 @@ import (
 	"github.com/mudler/nib/chat"
 	"github.com/mudler/nib/loop"
 	wizmcp "github.com/mudler/nib/mcp"
+	"github.com/mudler/nib/plugin"
 	"github.com/mudler/nib/slash"
+	"github.com/mudler/nib/tui/render"
 )
 
 // ChatMessage represents a message in the chat history
@@ -41,6 +44,71 @@ type ChatMessage struct {
 	Transient bool
 }
 
+// appendMessage appends one or more entries to the transcript. Beyond that it
+// claims no invariant over the transcript itself. (It used to be the
+// choke-point a now-deleted []render.Message cache keyed its invalidation on;
+// that cache fed ViewState.Messages, which no Presenter ever read. Nothing
+// stops a caller assigning m.messages directly, and applyResume does exactly
+// that when it rebuilds a restored transcript from scratch.)
+//
+// It does claim one narrow thing of its own: calling it always closes off
+// m.streamingActive. appendStreamedContent is the only caller allowed to
+// mutate the transcript's tail message in place instead of appending; every
+// other append here means that tail is no longer a live streaming target.
+func (m *Model) appendMessage(msgs ...ChatMessage) {
+	m.streamingActive = false
+	m.messages = append(m.messages, msgs...)
+}
+
+// bumpTurnGen marks the start of a genuinely new turn dispatch (see
+// turnGen's doc) — called from sendMessage/sendWithAttachmentsCmd,
+// synchronously, before either returns its Cmd. A nil turnGen (a bare
+// Model{} literal in a test not exercising generations) makes this a no-op
+// rather than a panic.
+func (m Model) bumpTurnGen() {
+	if m.turnGen != nil {
+		m.turnGen.Add(1)
+	}
+}
+
+// currentTurnGen reads turnGen, defaulting to 0 when nil (see bumpTurnGen) —
+// the same default a zero-value reasoningEvent.gen carries, so a test that
+// never sets either one up still compares equal and sees unfiltered delivery.
+func (m Model) currentTurnGen() int32 {
+	if m.turnGen == nil {
+		return 0
+	}
+	return m.turnGen.Load()
+}
+
+// appendStreamedContent applies one live "content" delta (Callbacks.OnStream,
+// via reasoningEventContentDelta) to the transcript: the FIRST delta of a
+// turn starts a new in-progress assistant message, and every delta after that
+// — while streamingActive stays true — appends into that SAME message rather
+// than appending a new one, so the reply grows in place.
+//
+// Callers are expected to have already dropped a delta whose gen doesn't
+// match currentTurnGen() (see the reasoningEventsMsg case in Update) — that
+// closes off a stale delta from a turn that already ended arriving during a
+// LATER turn. What's left for the guard here is the narrower window within
+// the SAME generation: a delta for the turn that just ended, arriving after
+// responseMsg/parkMsg already reconciled and cleared streamingActive, but
+// before the NEXT turn has dispatched (so turnGen hasn't moved yet either).
+// m.loading is false in exactly that window, so gating on it drops the
+// delta instead of fabricating a bubble for a turn that is, from Update's
+// perspective, already over.
+func (m *Model) appendStreamedContent(delta string) {
+	if delta == "" || !m.loading {
+		return
+	}
+	if m.streamingActive && len(m.messages) > 0 {
+		m.messages[len(m.messages)-1].Content += delta
+		return
+	}
+	m.appendMessage(ChatMessage{Role: "assistant", Content: delta})
+	m.streamingActive = true
+}
+
 // Model represents the TUI state
 type Model struct {
 	// UI components
@@ -48,6 +116,12 @@ type Model struct {
 	textarea textarea.Model
 	spinner  spinner.Model
 
+	// presenter renders every block. Chosen once at construction from the run
+	// mode; the model never branches on mode itself. Every production path
+	// (NewModel, always called with a Presenter from app.go) sets it; a test
+	// that builds a Model directly must go through newTestModel so this is
+	// never nil when updateViewport or View run.
+	presenter render.Presenter
 	// Chat state
 	messages     []ChatMessage
 	session      *chat.Session
@@ -62,7 +136,36 @@ type Model struct {
 	width     int
 	height    int
 	maxHeight int // Configured max height (0 = no limit)
-	loading   bool
+	// footerBudget is how many footer rows the current viewport height was
+	// budgeted against (Presenter.FooterHeight at the time). The footer grows
+	// and shrinks mid-turn as jobs start, loops run and errors come and go, so
+	// syncLayout compares this against the current answer and re-budgets when
+	// they differ — a WindowSizeMsg is not the only thing that changes it.
+	footerBudget int
+	// chromeBudget is the total non-body height (see layoutBudget) the current
+	// viewport height was budgeted against. syncLayout re-budgets whenever the
+	// live answer differs, so an approval card or a /resume picker appearing —
+	// rows full.Frame writes between body and composer, and which nothing
+	// reserved before this — takes its rows from the viewport rather than
+	// from the top of the screen.
+	chromeBudget int
+	// footerCache memoizes the last rendered Footer string, so the two call
+	// sites that need it for the same frame — syncLayout's height budget
+	// (needed before body can be laid out) and View's own frame composition
+	// (needed after) — render it once between them instead of twice on every
+	// spinner tick. See renderFooter. It lives behind a pointer for the same
+	// reason the viewport's own sizes are plain fields: View is a
+	// value-receiver method, but every
+	// copy of Model shares this pointee. nil on a bare Model{} literal, which
+	// renderFooter falls back to an uncached render for.
+	footerCache *footerCache
+	loading     bool
+	// forceFollow makes the next updateViewport scroll to the bottom regardless
+	// of where the user had scrolled to. Set only by user-initiated actions
+	// (sending a message, answering an approval or a question) — passive
+	// re-renders keep respecting the reading position. One-shot: consumed by
+	// the render it applies to.
+	forceFollow bool
 	// interruptArmed is set after a first Ctrl+C interrupts an in-flight turn,
 	// so a second Ctrl+C exits instead of just re-interrupting. Reset when a new
 	// turn starts and when the turn ends.
@@ -76,6 +179,20 @@ type Model struct {
 	// event, so the terminal responseMsg can avoid re-appending an identical
 	// final reply.
 	lastParkedReply string
+	// streamingActive is true while m.messages' tail entry is an in-progress
+	// assistant reply still receiving live "content" deltas (see
+	// appendStreamedContent). It is the analogue of lastParkedReply for the
+	// streaming path: responseMsg/parkMsg check it to RECONCILE that tail
+	// message with their own authoritative text instead of appending a
+	// second, duplicate copy of the reply.
+	//
+	// appendMessage clears it unconditionally on every call, so any transcript
+	// entry other than a streamed delta mutating its own tail (a tool call, a
+	// turn boundary, an error notice, …) closes the streaming target off —
+	// otherwise a stray, late-arriving delta (see reasoningChan's ordering
+	// doc for why one can race past a turn boundary) could mutate an
+	// unrelated message instead of being safely dropped.
+	streamingActive bool
 	// wakeupGen invalidates pending reminder/self-paced wake-up ticks: a fired
 	// tea.Tick is honored only if its captured gen still matches. Bumped by
 	// /loop stop to cancel a self-paced loop. Poll wake-ups ride pollGen instead.
@@ -87,6 +204,30 @@ type Model struct {
 	// unaffected — they ride wakeupGen — so a real reminder scheduled during
 	// background work still fires. See the parkMsg resume branch / wakeupFireMsg.
 	pollGen int
+	// turnGen is the same invalidate-stale-async-work idiom as wakeupGen/
+	// pollGen above, applied to reasoningChan's delta events (reasoningEvent-
+	// Delta and reasoningEventContentDelta): each is stamped with the CURRENT
+	// generation at the moment OnStream enqueues it, and Update drops one
+	// whose gen doesn't match — it belongs to a turn that has already ended,
+	// with a new one now in flight.
+	//
+	// It has to be pointer-backed, unlike wakeupGen/pollGen: those are only
+	// ever bumped and compared from inside Update, all on the SAME evolving
+	// Model value. OnStream's closure, by contrast, is built once in
+	// initSession (session lifetime) and closes over whatever Model snapshot
+	// existed then; a plain int field on it would never see a later Update
+	// copy's bump. A pointer is the one thing every copy — the frozen
+	// initSession snapshot included — still shares, the same reason
+	// reasoningChan itself works as a hand-off despite value-receiver Update.
+	//
+	// Bumped exactly where a new turn actually dispatches: sendMessage and
+	// sendWithAttachmentsCmd (see bumpTurnGen), synchronously, before either
+	// returns its Cmd — so the bump happens-before that Cmd's goroutine ever
+	// runs, which is happens-before any OnStream call the NEW turn produces.
+	// Injecting into an already-live parked run (releaseQueueFront) does NOT
+	// bump it: that's the same underlying SendMessage call continuing, not a
+	// new turn.
+	turnGen *atomic.Int32
 	// selfPaced counts active self-paced loops (for the footer). 0 or 1 in
 	// practice. Incremented on /loop <prompt>; reset to 0 by /loop stop. Note: it
 	// is NOT auto-cleared when a self-paced loop ends naturally (the TUI has no
@@ -99,6 +240,34 @@ type Model struct {
 	loopsPath string // .nib/loops.json for durable jobs
 	status    string
 	reasoning string
+	// reasoningCollapsed caps the live thinking trace to a few trailing lines
+	// so it does not flood the transcript. Per-session, persists across
+	// turns: it is a Model field (not derived per-frame), toggled only by
+	// ctrl+r — and, on a mouse-capable surface, by clicking the box itself
+	// (Phase 3 Task 16).
+	reasoningCollapsed bool
+	// reasoningResetPending marks that the next reasoningEventDelta must start
+	// a fresh trace instead of appending to m.reasoning. Set whenever a
+	// step-boundary reasoningEventBoundary (Callbacks.OnReasoning, which fires
+	// with the COMPLETE block for the step that just ended) is processed:
+	// that text is authoritative for the step that just finished, but the
+	// next step's streamed deltas are a new trace, not a continuation of it.
+	// Without this, the first delta of every step after the first would be
+	// appended onto the previous step's complete text and the box would
+	// duplicate it.
+	reasoningResetPending bool
+	// reasoningSpanStart/End record the content-relative row span [start, end)
+	// the reasoning box occupies in the viewport's virtualized scrollback for
+	// THIS render — recomputed on every updateViewport pass, never cached
+	// across frames. The box's height changes between collapsed (~7 rows) and
+	// expanded (many more), so a span captured once would go stale the moment
+	// the user expands it, making the very next click land on the wrong row.
+	// Both are 0 (an empty span, start == end) whenever updateViewport did not
+	// render a box this frame (not loading, or no reasoning text yet) — a
+	// click can never match an empty span. See the tea.MouseMsg case in
+	// Update, which compares a translated click row against this span.
+	reasoningSpanStart int
+	reasoningSpanEnd   int
 	// err holds the most recent fatal error, shown as a persistent banner
 	// above the composer. It is set only for errors that leave the session
 	// unusable (session init failure) — a failed turn already records its
@@ -118,14 +287,56 @@ type Model struct {
 	approvalEditing bool
 
 	// ask_user state
-	pendingAsk      *chat.AskRequest
-	awaitingAsk     bool
+	pendingAsk  *chat.AskRequest
+	awaitingAsk bool
+	// askList holds the live selection state for a pending ask_user question —
+	// which row is highlighted (single-select) or checked (multi-select). Built
+	// alongside pendingAsk in the askMsg branch, cleared alongside it once the
+	// question is answered (see resolveAsk). nil whenever awaitingAsk is false;
+	// every call site guards on it being non-nil rather than assuming
+	// awaitingAsk implies it, since a Model built directly (tests, a bare
+	// Model{} literal) may set one without the other.
+	askList         *render.SelectList
 	askRequestChan  chan chat.AskRequest
 	askResponseChan chan string
 	wakeupChan      chan chat.WakeupRequest
 	parkChan        chan parkEvent // park/resume signals from the live run
 	compactChan     chan [2]int    // {before, after} token counts from auto-compaction
 	pruneChan       chan [2]int    // {results, freedTokens} from tool-output pruning
+
+	// /resume picker state (Phase 3 Task 15). Set synchronously by
+	// dispatchResolved's KindResume case — unlike ask_user's askMsg, there is
+	// no blocking channel here (a session listing is a local file read, not
+	// something a live session goroutine has to hand back a channel for).
+	// awaitingResume mirrors awaitingAsk's contract: resumeList is nil
+	// whenever it is false, and every call site guards on the pointer rather
+	// than assuming the bool implies it.
+	awaitingResume bool
+	// resumeList holds the live selection state, formatted one row per
+	// resumeSessions entry (see buildResumeDialog / resumeItems). resumeSessions
+	// is the parallel slice of full records resumeList.Selected indexes into —
+	// the list only ever carries display strings, never an id a Presenter
+	// would have to parse back out.
+	resumeList     *render.SelectList
+	resumeSessions []chat.SessionRecord
+	// resumeDeleteArmed is Task 20's delete confirm: true right after the
+	// picker's delete key ('d') has been pressed once, cleared by a second
+	// 'd' (which performs the delete) or by any other key (which cancels it
+	// instead). See handleResumeDeleteKey (tui/resume.go) for the full
+	// rationale.
+	resumeDeleteArmed bool
+
+	// store persists the transcript at every turn boundary and on exit (see
+	// recordSession) and backs /resume's listing. sessionID and sessionTitle
+	// are this conversation's own record key and cached display title;
+	// sessionCreated is stamped once at construction (or copied from a
+	// resumed record) rather than recomputed, so a session's Created date
+	// survives across many autosaves. All three are seeded by NewModel and
+	// overwritten by a successful /resume (see applyResume).
+	store          *chat.SessionStore
+	sessionID      string
+	sessionTitle   string
+	sessionCreated time.Time
 
 	// contextTokens is the current conversation size shown in the footer badge.
 	// Updated after each turn and after compaction; 0 hides the badge.
@@ -134,9 +345,6 @@ type Model struct {
 	// sessionUsage is what the session has spent so far, shown in the footer
 	// beside the context badge. Refreshed wherever contextTokens is.
 	sessionUsage chat.SessionUsage
-
-	// Animation state
-	statusPhase int
 
 	// Sub-agent jobs state
 	jobs           []agentJob
@@ -176,10 +384,39 @@ type Model struct {
 
 	// Channels for async communication with callbacks
 	statusChan       chan string
-	reasoningChan    chan string
 	toolRequestChan  chan chat.ToolCallRequest
 	toolResponseChan chan chat.ToolCallResponse
 	toolResultChan   chan chat.ToolResult
+	// reasoningChan carries BOTH step-boundary reasoning (Callbacks.OnReasoning,
+	// the COMPLETE block for a step) and live streamed reasoning deltas
+	// (Callbacks.OnStream's "reasoning" kind), as a single ordered stream of
+	// reasoningEvent values distinguished by their kind field.
+	//
+	// This is deliberately ONE channel rather than two. cogito emits every
+	// delta for a step and only then fires the step-boundary callback, all on
+	// one goroutine — so the producer's own order is already correct. But
+	// bubbletea relays each tea.Cmd's result through its own independently
+	// scheduled goroutine (see tea.go's per-Cmd `go func(){ p.Send(cmd()) }`),
+	// so splitting boundary and delta onto separate channels/listeners lets
+	// Update observe them out of producer order: a buffered delta channel can
+	// have a send return (and its listener relay it) without a rendezvous,
+	// while a separate listener parked on the boundary channel since session
+	// start can relay near-instantly — so the boundary for a step can reach
+	// Update before that same step's final delta does, clobbering the
+	// authoritative text with a stale trailing fragment. A single channel
+	// with a single listener removes the second goroutine entirely: FIFO
+	// ordering on one channel preserves the producer's order by construction,
+	// with no sequence number or generation counter to keep in sync.
+	//
+	// Sends are blocking (never select+default): unlike statusChan (a plain
+	// status string where dropping a stale one is harmless — only the latest
+	// matters), losing either kind of reasoning event here is a real
+	// correctness bug: a dropped delta leaves a gap in the accumulated trace,
+	// and a dropped boundary means reasoningResetPending never gets armed, so
+	// the next step's deltas silently keep appending onto stale text forever.
+	// The buffer just gives a fast token burst some slack before backpressure
+	// kicks in.
+	reasoningChan chan reasoningEvent
 }
 
 // responseMsg is sent when the AI responds
@@ -215,8 +452,49 @@ type parkMsg parkEvent
 // statusMsg is sent for status updates
 type statusMsg string
 
-// reasoningMsg is sent for reasoning updates
-type reasoningMsg string
+// reasoningEventKind distinguishes the kinds of streamed update carried on
+// reasoningChan.
+type reasoningEventKind int
+
+const (
+	// reasoningEventDelta is one (possibly coalesced) chunk of a live streamed
+	// reasoning trace (Callbacks.OnStream's "reasoning" kind).
+	reasoningEventDelta reasoningEventKind = iota
+	// reasoningEventBoundary carries the COMPLETE reasoning block for a step
+	// that just ended (Callbacks.OnReasoning).
+	reasoningEventBoundary
+	// reasoningEventContentDelta is one (possibly coalesced) chunk of the
+	// live streamed assistant REPLY (Callbacks.OnStream's "content" kind —
+	// cogito's "answer text delta"). Carried on the SAME reasoningChan as the
+	// two reasoning kinds above for the same reason the boundary/delta split
+	// was fixed: cogito emits every delta for a step (reasoning or content)
+	// from one goroutine, in true order, and a second channel/listener pair
+	// for content would let bubbletea's independent per-Cmd goroutine relay
+	// reorder it relative to the reasoning events — see reasoningChan's doc.
+	// Applied in Update by appendStreamedContent, not by the reasoning-box
+	// logic below.
+	reasoningEventContentDelta
+)
+
+// reasoningEvent is one item read off reasoningChan. The kinds are handled
+// with different precedence in Update — see reasoningResetPending (for the
+// two reasoning kinds) and streamingActive (for reasoningEventContentDelta).
+//
+// gen is the turn generation (Model.turnGen) that was current at the moment
+// OnStream enqueued this event — see turnGen's doc. Only reasoningEventDelta
+// and reasoningEventContentDelta are checked against it; a mismatch means
+// this event belongs to a turn that has already ended and a later one is now
+// in flight, and Update drops it rather than applying it.
+type reasoningEvent struct {
+	kind reasoningEventKind
+	text string
+	gen  int32
+}
+
+// reasoningEventsMsg carries one or more reasoningEvent values, in the exact
+// order the producer emitted them onto reasoningChan (see listenReasoningEvents
+// for why a batch and not always exactly one).
+type reasoningEventsMsg []reasoningEvent
 
 // toolCallMsg is sent when a tool call needs approval
 type toolCallMsg chat.ToolCallRequest
@@ -230,6 +508,10 @@ type agentEventMsg chat.AgentEvent
 // toolResultPreviewLines bounds how many lines of a tool result we show inline.
 const toolResultPreviewLines = 12
 
+// spinnerFPS matches the 80ms frame advance used by comparable harnesses —
+// fast enough to read as motion, slow enough to stay off the CPU.
+const spinnerFPS = time.Second / 12
+
 // toolResultMsg carries a finished tool's output to the UI.
 type toolResultMsg chat.ToolResult
 
@@ -240,7 +522,7 @@ type sessionReadyMsg struct {
 }
 
 // NewModel creates a new TUI model
-func NewModel(ctx context.Context, cfg types.Config, height int, shellJobs *wizmcp.ShellJobs, transports ...mcp.Transport) Model {
+func NewModel(ctx context.Context, cfg types.Config, height int, shellJobs *wizmcp.ShellJobs, p render.Presenter, transports ...mcp.Transport) Model {
 	ctx, cancel := context.WithCancel(ctx)
 
 	ta := textarea.New()
@@ -260,8 +542,8 @@ func NewModel(ctx context.Context, cfg types.Config, height int, shellJobs *wizm
 	vp.SetContent("")
 
 	s := spinner.New()
-	s.Spinner = spinner.Points
-	s.Style = theme.Help
+	s.Spinner = spinner.Spinner{Frames: theme.SpinnerFrames(), FPS: spinnerFPS}
+	s.Style = theme.Running
 
 	// Calculate max height - negative means percentage, positive means lines
 	maxH := height
@@ -269,34 +551,63 @@ func NewModel(ctx context.Context, cfg types.Config, height int, shellJobs *wizm
 		maxH = 0 // Will be calculated on first WindowSizeMsg
 	}
 
+	// Rooted at the per-user BaseDir, not the process's cwd — see the store
+	// field's own comment on the Model literal below for why. MaxSessions
+	// applies cfg.SessionRetention (0 leaves chat.DefaultMaxSessions, 200, in
+	// effect — see SessionStore.maxSessions).
+	sessionStore := chat.NewSessionStore(filepath.Join(plugin.BaseDirIn(cfg.BaseDir), "sessions"))
+	sessionStore.MaxSessions = cfg.SessionRetention
+
 	m := Model{
-		viewport:         vp,
-		logVP:            viewport.New(80, 10),
-		textarea:         ta,
-		spinner:          s,
-		messages:         []ChatMessage{},
-		ctx:              ctx,
-		cancel:           cancel,
-		maxHeight:        maxH,
-		transports:       transports,
-		shellJobs:        shellJobs,
-		cfg:              cfg,
-		height:           height,
-		agentEventChan:   make(chan chat.AgentEvent, 16),
-		statusChan:       make(chan string, 10),
-		reasoningChan:    make(chan string, 10),
-		toolRequestChan:  make(chan chat.ToolCallRequest),
-		toolResponseChan: make(chan chat.ToolCallResponse),
-		toolResultChan:   make(chan chat.ToolResult, 64),
-		askRequestChan:   make(chan chat.AskRequest),
-		askResponseChan:  make(chan string),
-		wakeupChan:       make(chan chat.WakeupRequest, 8),
-		parkChan:         make(chan parkEvent, 16),
-		compactChan:      make(chan [2]int, 4),
-		pruneChan:        make(chan [2]int, 4),
-		mdRenderers:      make(map[int]*glamour.TermRenderer),
-		loops:            loop.NewRegistry(),
-		loopsPath:        filepath.Join(".nib", "loops.json"),
+		viewport:           vp,
+		logVP:              viewport.New(80, 10),
+		textarea:           ta,
+		spinner:            s,
+		presenter:          p,
+		reasoningCollapsed: true,
+		footerCache:        &footerCache{},
+		messages:           []ChatMessage{},
+		ctx:                ctx,
+		cancel:             cancel,
+		maxHeight:          maxH,
+		transports:         transports,
+		shellJobs:          shellJobs,
+		cfg:                cfg,
+		height:             height,
+		agentEventChan:     make(chan chat.AgentEvent, 16),
+		statusChan:         make(chan string, 10),
+		reasoningChan:      make(chan reasoningEvent, 256),
+		turnGen:            new(atomic.Int32),
+		toolRequestChan:    make(chan chat.ToolCallRequest),
+		toolResponseChan:   make(chan chat.ToolCallResponse),
+		toolResultChan:     make(chan chat.ToolResult, 64),
+		askRequestChan:     make(chan chat.AskRequest),
+		askResponseChan:    make(chan string),
+		wakeupChan:         make(chan chat.WakeupRequest, 8),
+		parkChan:           make(chan parkEvent, 16),
+		compactChan:        make(chan [2]int, 4),
+		pruneChan:          make(chan [2]int, 4),
+		mdRenderers:        make(map[int]*glamour.TermRenderer),
+		loops:              loop.NewRegistry(),
+		loopsPath:          filepath.Join(".nib", "loops.json"),
+		// Rooted at the per-user BaseDir (~/.config/nib by default, the same
+		// root config.yaml/plugins/skills already use), NOT at the process's
+		// cwd the way loopsPath above is: /resume's cwd filter (chat.Session-
+		// Store.List) only means anything — and --all only has anything to
+		// widen TO — if every project's sessions land in one shared store
+		// that a Cwd field can then filter, rather than each project cwd
+		// getting its own separate, mutually invisible .nib/sessions folder.
+		store:          sessionStore,
+		sessionID:      cfg.ResumeSessionID,
+		sessionTitle:   cfg.ResumeSessionTitle,
+		sessionCreated: time.Now(),
+	}
+	// A fresh (non-resumed) session mints its own id; a --resume'd one
+	// (cfg.ResumeSessionID set by app.go before the TUI started) keeps the
+	// stored session's own id, so autosaving continues to update that same
+	// file instead of forking a new one.
+	if m.sessionID == "" {
+		m.sessionID = newSessionID()
 	}
 	m.completion.setRegistries(cfg.Commands, cfg.Skills, cfg.Agents)
 	return m
@@ -321,10 +632,53 @@ func (m Model) initSession() tea.Cmd {
 				default:
 				}
 			},
+			// Blocking send (no select+default): see reasoningChan's doc for
+			// why dropping a boundary event is a real correctness bug here,
+			// not a harmless "only the latest matters" case.
 			OnReasoning: func(reasoning string) {
-				select {
-				case m.reasoningChan <- reasoning:
-				default:
+				// gen is carried for consistency with the other reasoningChan
+				// sends below (same field, same call), but reasoningEventBoundary
+				// is not gen-checked in Update: unlike a delta, a stale boundary
+				// only ever overwrites m.reasoning with a complete (if outdated)
+				// block, and responseMsg already resets that unconditionally at
+				// every turn end — the same tolerance Task 23 established.
+				m.reasoningChan <- reasoningEvent{kind: reasoningEventBoundary, text: reasoning, gen: m.currentTurnGen()}
+			},
+			// OnStream opts the session into cogito's streaming path so the
+			// thinking box AND the assistant's reply both fill progressively
+			// instead of only at step boundaries / turn end (OnReasoning and
+			// the terminal responseMsg/parkMsg still fire too — see
+			// reasoningResetPending's doc for reasoning, streamingActive's for
+			// content).
+			//
+			// chat.StreamEvent.Kind is string(cogito.StreamEvent.Type); cogito
+			// defines exactly these values (cogito's stream.go):
+			// "reasoning", "content", "tool_call", "tool_result", "status",
+			// "done", "error", "sub_agent". "reasoning" and "content" are the
+			// two handled here — the live counterparts to OnReasoning and the
+			// final reply, respectively. The rest (tool_call/tool_result/
+			// status/done/error/sub_agent) have no handler yet.
+			//
+			// Both are sent onto the SAME reasoningChan (not separate
+			// channels per kind) — see reasoningChan's doc for why: cogito
+			// emits every delta for a step and only then fires the boundary,
+			// all from one goroutine, so one channel is what makes Update
+			// observe them in that same order.
+			OnStream: func(ev chat.StreamEvent) {
+				// Stamped with whatever generation is CURRENT right now, at
+				// enqueue time — not read later by Update, which would be
+				// racy against the exact problem this exists to prevent. This
+				// read happens-before SendMessage returns (same goroutine),
+				// which happens-before responseMsg reaches Update, which is
+				// the only place turnGen next moves — so a mismatch Update
+				// later sees is real staleness, not a race on the read
+				// itself. See turnGen's doc.
+				gen := m.currentTurnGen()
+				switch ev.Kind {
+				case "reasoning":
+					m.reasoningChan <- reasoningEvent{kind: reasoningEventDelta, text: ev.Content, gen: gen}
+				case "content":
+					m.reasoningChan <- reasoningEvent{kind: reasoningEventContentDelta, text: ev.Content, gen: gen}
 				}
 			},
 			OnToolCall: func(req chat.ToolCallRequest) chat.ToolCallResponse {
@@ -506,6 +860,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return m.resolveApproval(chat.ToolCallResponse{Approved: true, AlwaysAllow: true, AlwaysPrefix: prefix})
 					case '3', 'A':
 						return m.resolveApproval(chat.ToolCallResponse{Approved: true, AllowAllTurn: true})
+					case '4':
+						if m.session != nil {
+							m.session.SetAutoApprove(true)
+						}
+						return m.resolveApproval(chat.ToolCallResponse{Approved: true})
 					case 'n', 'N':
 						return m.resolveApproval(chat.ToolCallResponse{Approved: false})
 					case 'e', 'E':
@@ -528,6 +887,54 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
+		// ask_user is a keyboard-navigable dialog, the same idiom as tool
+		// approval above: up/down move the highlighted option, space toggles a
+		// multi-select check (enter answers — handled in the KeyEnter case
+		// below, since it must also accept the free-text escape hatch). Esc
+		// cancels unconditionally via resolveAsk(""). handleListDialogKey (see
+		// tui/resume.go) is the generalized form of this navigation, shared
+		// with the /resume picker below so the two dialogs don't carry two
+		// copies of the same Move/Toggle/Esc wiring.
+		if m.awaitingAsk && m.askList != nil {
+			if next, cmd, handled := m.handleListDialogKey(msg, m.askList, func(mm Model) (tea.Model, tea.Cmd) { return mm.resolveAsk("") }); handled {
+				return next, cmd
+			}
+		}
+		// /resume is the same keyboard-driven list idiom as ask_user above,
+		// minus the free-text escape hatch: a session picked from a list has
+		// no meaningful typed alternative, so unlike ask_user this fully
+		// resolves Enter right here rather than deferring to the KeyEnter
+		// case, and swallows every other key while open (the tool-approval
+		// choice mode above does the same for the same reason — there is
+		// nothing else a keypress could mean while this dialog owns the
+		// screen).
+		if m.awaitingResume && m.resumeList != nil {
+			// 'd' is the picker's delete key (Task 20) — scoped to exactly this
+			// branch so it never fires for ask_user's own list dialog below,
+			// which shares handleListDialogKey but has nothing to delete. Like
+			// every other picker shortcut it only claims the key while the
+			// composer is empty (mirroring handleListDialogKey's own guard),
+			// so a free-text 'd' elsewhere in the app is unaffected.
+			if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 && msg.Runes[0] == resumeDeleteKey && strings.TrimSpace(m.textarea.Value()) == "" {
+				return m.handleResumeDeleteKey()
+			}
+			// A pending delete confirm is cancelled by anything other than the
+			// second 'd' above — but the key still does whatever it would
+			// normally do (arrows still move the selection, Esc still cancels
+			// the whole picker via cancelResume below): cancelling the arm
+			// means "don't also treat this keypress as a delete", not "eat the
+			// keypress".
+			m.resumeDeleteArmed = false
+			if next, cmd, handled := m.handleListDialogKey(msg, m.resumeList, func(mm Model) (tea.Model, tea.Cmd) { return mm.cancelResume() }); handled {
+				return next, cmd
+			}
+			if msg.Type == tea.KeyEnter {
+				return m.resolveResumePick()
+			}
+			if msg.Type != tea.KeyCtrlC {
+				return m, nil
+			}
+		}
 		switch msg.Type {
 		case tea.KeyCtrlC:
 			// First Ctrl+C on an in-flight turn interrupts the request but keeps
@@ -544,6 +951,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case tea.KeyEsc:
 			return m.quit()
+
+		case tea.KeyEnd:
+			// Only jump when the composer is empty — bubbles' textarea binds End
+			// to line-end, and hijacking it unconditionally would break editing.
+			if strings.TrimSpace(m.textarea.Value()) == "" {
+				m.viewport.GotoBottom()
+				return m, nil
+			}
 
 		case tea.KeyCtrlY:
 			// Yank nib's last suggested command to the shell and exit, so the
@@ -614,6 +1029,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.logOpenKind = ""
 			return m, nil
 
+		case tea.KeyCtrlR:
+			// Toggle the live reasoning trace between its tailing collapsed
+			// box and its full expanded form. Per-session state, so it
+			// persists across turns until the user toggles it again.
+			m.reasoningCollapsed = !m.reasoningCollapsed
+			m.updateViewport()
+			return m, nil
+
 		case tea.KeyTab:
 			if m.completion.active {
 				if ins, ok := m.completion.accept(); ok {
@@ -644,13 +1067,41 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case tea.KeyEnter:
-			// Accept an open completion instead of submitting.
-			if m.completion.active {
+			// Accept an open completion instead of submitting — unless the
+			// typed text already equals the sole remaining match exactly
+			// ("/yolo" with only "yolo" left to match). At that point there
+			// is nothing left to complete, so accepting would just insert a
+			// trailing space and eat the keypress; fall through to submit
+			// instead. A genuine prefix ("/yo") or a multi-match popup still
+			// accepts as before.
+			if m.completion.active && !m.completion.exact(m.textarea.Value()) {
 				if ins, ok := m.completion.accept(); ok {
 					m.textarea.SetValue(ins)
 					m.completion.sync(ins)
 				}
 				return m, nil
+			}
+
+			// Answering a pending ask_user question does not require a live
+			// session — the session is what's blocked waiting for this very
+			// answer — so it is resolved before the sessionReady gate below,
+			// which only guards starting a NEW turn. An empty composer answers
+			// with the dialog's current pick (or checked set, for multi-select);
+			// anything typed is the free-text escape hatch, unchanged from
+			// before this dialog existed.
+			if m.awaitingAsk && m.pendingAsk != nil {
+				if strings.TrimSpace(m.textarea.Value()) == "" {
+					if m.askList != nil && len(m.askList.Items) > 0 {
+						if answer := m.askList.Answer(); answer != "" {
+							return m.resolveAsk(answer)
+						}
+					}
+					// No options to pick from, or (multi-select) nothing checked
+					// yet: fall through to the empty-input no-op below, same as
+					// the old behaviour.
+				} else {
+					return m.resolveAsk(parseAskAnswer(m.textarea.Value(), *m.pendingAsk))
+				}
 			}
 
 			if !m.sessionReady {
@@ -659,20 +1110,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			input := strings.TrimSpace(m.textarea.Value())
 			if input == "" {
-				return m, nil
-			}
-
-			// Check if we're answering an ask_user question
-			if m.awaitingAsk && m.pendingAsk != nil {
-				answer := parseAskAnswer(m.textarea.Value(), *m.pendingAsk)
-				m.messages = append(m.messages, ChatMessage{Role: "user", Content: answer})
-				m.textarea.Reset()
-				m.awaitingAsk = false
-				m.pendingAsk = nil
-				m.loading = true
-				m.status = "Thinking…"
-				m.updateViewport()
-				m.askResponseChan <- answer
 				return m, nil
 			}
 
@@ -701,28 +1138,67 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.textarea.Reset()
 			m.completion.sync("")
 			cmd := m.dispatchInput(input)
-			m.updateViewport()
+			m.updateViewportFollow()
 			return m, cmd
 		}
 
+	case tea.MouseMsg:
+		// Click-to-expand the reasoning box (Phase 3 Task 16). Gated on the
+		// presenter's own capability rather than assuming mouse events only
+		// arrive when reporting is on: cmd/tui.go only enables
+		// tea.WithMouseCellMotion() for a Caps().Mouse surface (full-screen),
+		// so a real terminal never sends this to the inline widget — but a
+		// test can construct the message directly, and the inline surface
+		// must ignore it all the same, by construction, not by accident.
+		//
+		// A non-hit click (or any other button/action) falls through
+		// unchanged to the m.viewport.Update(msg) fallback at the bottom of
+		// this function, which is what still gives wheel scrolling — do not
+		// return early except on an actual hit.
+		if m.presenter.Caps().Mouse && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+			if m.reasoningBoxHit(msg.Y) {
+				m.reasoningCollapsed = !m.reasoningCollapsed
+				m.updateViewport()
+				return m, nil
+			}
+		}
+
 	case tea.WindowSizeMsg:
+		// Captured BEFORE updateDimensions() touches m.viewport.Height: AtBottom()
+		// is relative to the current height, so resizing first (in particular
+		// shrinking) can make a user who WAS pinned to the bottom read as
+		// scrolled-up before their follow state is ever consulted.
+		wasAtBottom := m.viewport.AtBottom()
 		m.width = msg.Width
 		m.height = msg.Height
 		m.updateDimensions()
+		// Content is wrapped to a width that no longer exists, and the offset was
+		// clamped against the old height — both have to be recomputed.
+		if wasAtBottom {
+			m.updateViewportFollow()
+		} else {
+			m.updateViewport()
+		}
 
 	case sessionReadyMsg:
 		if msg.err != nil {
 			m.err = msg.err
+			// Every other footer-state mutator routes through updateViewport
+			// (see e.g. the responseMsg branch below) so the footer budget
+			// picks up the new error line immediately; this branch used to
+			// return early and leave it one row stale until the next
+			// unrelated re-render.
+			m.updateViewport()
 			return m, nil
 		}
 		m.session = msg.session
 		m.sessionReady = true
 		// Reload durable cron loops persisted from a previous session.
 		if n, err := m.loops.Load(m.loopsPath); err == nil && n > 0 {
-			m.messages = append(m.messages, ChatMessage{Role: "agent", Content: fmt.Sprintf("Reloaded %d durable loop(s).", n)})
+			m.appendMessage(ChatMessage{Role: "agent", Content: fmt.Sprintf("Reloaded %d durable loop(s).", n)})
 		}
 		// Start listening for callbacks
-		cmds = append(cmds, m.listenStatus(), m.listenReasoning(), m.listenToolRequest(), m.listenToolResult(), m.listenAskRequest(), m.listenAgentEvents(), m.shellTick(), m.loopTick(), m.listenWakeup(), m.listenPark(), m.listenCompact(), m.listenPrune())
+		cmds = append(cmds, m.listenStatus(), m.listenReasoningEvents(), m.listenToolRequest(), m.listenToolResult(), m.listenAskRequest(), m.listenAgentEvents(), m.shellTick(), m.loopTick(), m.listenWakeup(), m.listenPark(), m.listenCompact(), m.listenPrune())
 
 	case responseMsg:
 		// The run returned: it is no longer parked (all background work drained).
@@ -731,40 +1207,61 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.interruptArmed = false
 		m.status = ""
 		m.reasoning = ""
+		m.reasoningResetPending = false
+		// Snapshot the in-progress streamed message's index, if any, BEFORE
+		// appendMessage below (blocked-attachment notices) has a chance to
+		// clear streamingActive as its own side effect. append only grows
+		// m.messages, so this index stays valid however many entries land
+		// after it.
+		streamIdx := -1
+		if m.streamingActive && len(m.messages) > 0 {
+			streamIdx = len(m.messages) - 1
+		}
+		m.streamingActive = false
 		// Surface any attachments that couldn't be sent (blocked by model caps
 		// or resolution), mirroring the CLI's per-file error lines.
 		for _, b := range msg.blocked {
-			m.messages = append(m.messages, ChatMessage{Role: "error", Content: filepath.Base(b.Path) + " — " + b.Reason})
+			m.appendMessage(ChatMessage{Role: "error", Content: filepath.Base(b.Path) + " — " + b.Reason})
 		}
 		// Clear staged attachments only on a successful send (retain on error),
 		// matching the CLI REPL.
 		if msg.err == nil {
 			m.pending = nil
 		}
-		if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
-			// Record the failure in the transcript (not the persistent
-			// banner) and mark it transient: it stays visible until the
-			// next reply, so a recovered run doesn't carry the stale
-			// error for the rest of the session.
-			m.messages = append(m.messages, ChatMessage{Role: "error", Content: msg.err.Error(), Transient: true})
+		if msg.err != nil {
+			if errors.Is(msg.err, context.Canceled) {
+				// The run was interrupted: drop any stale turn-level error
+				// lines. An empty final message is not a reply, so without a
+				// cancel the stale error stays visible.
+				m.dropTransientErrors()
+				m.appendMessage(ChatMessage{Role: "agent", Content: "interrupted."})
+			} else {
+				// Record the failure in the transcript (not the persistent
+				// banner) and mark it transient: it stays visible until the
+				// next reply, so a recovered run doesn't carry the stale
+				// error for the rest of the session.
+				m.messages = append(m.messages, ChatMessage{Role: "error", Content: msg.err.Error(), Transient: true})
+			}
 		} else if content := strings.TrimSpace(msg.content); content != "" {
+			switch {
+			case streamIdx >= 0:
+				// The reply already streamed into the transcript as it arrived
+				// (see appendStreamedContent): reconcile that message with the
+				// authoritative final text — self-healing against any dropped
+				// delta — instead of appending it a second time.
+				m.messages[streamIdx].Content = msg.content
+			case content != m.lastParkedReply:
+				// Skip the final reply when it duplicates the text already surfaced
+				// at the park gate (a run that parked and returned with the same
+				// answer, with nothing streamed since).
+				m.appendMessage(ChatMessage{Role: "assistant", Content: msg.content})
+			}
 			// A reply arrived (even one that duplicates the text already
 			// surfaced at the park gate): the run recovered, so drop any
-			// stale turn-level error lines before the new reply lands.
+			// stale turn-level error lines after reconciling the final reply.
 			m.dropTransientErrors()
-			if content != m.lastParkedReply {
-				// Skip the final reply when it duplicates the text already
-				// surfaced at the park gate (a run that parked and returned
-				// with the same answer).
-				m.messages = append(m.messages, ChatMessage{Role: "assistant", Content: msg.content})
-			}
-		} else if errors.Is(msg.err, context.Canceled) {
-			// The run was interrupted: drop any stale turn-level error
-			// lines. An empty final message is not a reply, so without a
-			// cancel the stale error stays visible.
-			m.dropTransientErrors()
-			m.messages = append(m.messages, ChatMessage{Role: "agent", Content: "interrupted."})
 		}
+		m.lastParkedReply = ""
 		if m.session != nil {
 			m.contextTokens = m.session.ContextTokens()
 			m.sessionUsage = m.session.Usage()
@@ -772,6 +1269,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// the model never saw them, so re-dispatch them ahead of the queue.
 			m.redispatch = append(m.redispatch, m.session.TakeUndelivered()...)
 		}
+		// Autosave at this turn boundary so /resume never loses more than the
+		// turn in flight when the process exits uncleanly. Save failures are
+		// logged (see recordSession) and never surface here.
+		m.recordSession()
 		m.updateViewport()
 		// The run ended with messages still queued: dispatch them as fresh turns
 		// (resolving slash commands/skills) until one starts a turn or the queue
@@ -790,15 +1291,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// work pending, or ready for a follow-up). Surface the reply as a
 			// durable transcript line and unlock the composer so the user can keep
 			// chatting — their input injects into this same run.
+			//
+			// If the reply already streamed in (appendStreamedContent), reconcile
+			// that in-progress message with the authoritative parked text instead
+			// of appending it a second time — the same precedence responseMsg
+			// applies, for the same reason (see streamingActive's doc).
+			streamIdx := -1
+			if m.streamingActive && len(m.messages) > 0 {
+				streamIdx = len(m.messages) - 1
+			}
+			m.streamingActive = false
 			reply := strings.TrimSpace(msg.reply)
-			if reply != "" && reply != m.lastParkedReply {
-				m.messages = append(m.messages, ChatMessage{Role: "assistant", Content: reply})
+			switch {
+			case streamIdx >= 0 && reply != "":
+				m.messages[streamIdx].Content = reply
+				m.lastParkedReply = reply
+			case streamIdx < 0 && reply != "" && reply != m.lastParkedReply:
+				m.appendMessage(ChatMessage{Role: "assistant", Content: reply})
 				m.lastParkedReply = reply
 			}
 			m.parked = true
 			m.loading = false
 			m.interruptArmed = false
 			m.reasoning = ""
+			m.reasoningResetPending = false
 			if m.isWorking() {
 				m.status = "Working in the background — type to add a follow-up"
 			} else {
@@ -837,11 +1353,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		m.status = ""
 		if msg.err != nil {
-			m.messages = append(m.messages, ChatMessage{Role: "error", Content: "compaction failed: " + msg.err.Error()})
+			m.appendMessage(ChatMessage{Role: "error", Content: "compaction failed: " + msg.err.Error()})
 		} else if msg.before == msg.after {
-			m.messages = append(m.messages, ChatMessage{Role: "agent", Content: "Nothing to compact yet."})
+			m.appendMessage(ChatMessage{Role: "agent", Content: "Nothing to compact yet."})
 		} else {
-			m.messages = append(m.messages, ChatMessage{Role: "agent", Content: compactNotice(msg.before, msg.after)})
+			m.appendMessage(ChatMessage{Role: "agent", Content: compactNotice(msg.before, msg.after)})
 			m.contextTokens = msg.after
 			// The context shrank; the spend did not. Re-read the session's own
 			// counter rather than deriving anything from msg.
@@ -858,7 +1374,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case compactNoticeMsg:
-		m.messages = append(m.messages, ChatMessage{Role: "agent", Content: compactNotice(msg[0], msg[1])})
+		m.appendMessage(ChatMessage{Role: "agent", Content: compactNotice(msg[0], msg[1])})
 		m.contextTokens = msg[1]
 		// Auto-compaction only shrinks the context: the summarising call itself
 		// costs tokens, so take the session's total rather than msg's numbers.
@@ -869,7 +1385,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.listenCompact()
 
 	case pruneNoticeMsg:
-		m.messages = append(m.messages, ChatMessage{Role: "agent", Content: prunedNotice(msg[0], msg[1])})
+		m.appendMessage(ChatMessage{Role: "agent", Content: prunedNotice(msg[0], msg[1])})
 		m.updateViewport()
 		return m, m.listenPrune()
 
@@ -936,14 +1452,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			text = prompt // fall back to the raw text for non-send payloads
 		}
 		if m.session != nil && m.parked && m.session.Inject(text) {
-			m.messages = append(m.messages, ChatMessage{Role: "user", Content: prompt})
+			m.appendMessage(ChatMessage{Role: "user", Content: prompt})
 			m.parked = false
 			m.loading = true
 			m.interruptArmed = false
 			m.status = "Thinking…"
 			m.updateViewport()
-		} else if m.sessionReady && m.session != nil && !m.loading && !m.awaitingApproval && !m.awaitingAsk {
-			m.messages = append(m.messages, ChatMessage{Role: "user", Content: prompt})
+		} else if m.sessionReady && m.session != nil && !m.loading && !m.awaitingApproval && !m.awaitingAsk && !m.awaitingResume {
+			m.appendMessage(ChatMessage{Role: "user", Content: prompt})
 			m.loading = true
 			m.interruptArmed = false
 			m.status = "Thinking…"
@@ -958,11 +1474,50 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Continue listening for more status updates
 		cmds = append(cmds, m.listenStatus())
 
-	case reasoningMsg:
-		m.reasoning = string(msg)
+	case reasoningEventsMsg:
+		// Applied in order — the exact order they were read off reasoningChan,
+		// which is itself the exact order the producer emitted them in (see
+		// reasoningChan's doc). One updateViewport for the whole batch, not
+		// one per event: that's the render-cost coalescing: see
+		// listenReasoningEvents.
+		for _, ev := range msg {
+			switch ev.kind {
+			case reasoningEventBoundary:
+				m.reasoning = ev.text
+				// This step just ended: its complete text is authoritative,
+				// but the NEXT step's streamed deltas are a fresh trace, not
+				// a continuation of this one. Mark the next delta to start
+				// over rather than append (see reasoningResetPending's doc).
+				m.reasoningResetPending = true
+			case reasoningEventDelta:
+				// A delta stamped with an older generation than the one
+				// currently in flight belongs to a turn that has already
+				// ended — a new one is running now. Drop it rather than
+				// resuming/appending onto a trace that isn't this turn's.
+				// See turnGen's doc.
+				if ev.gen != m.currentTurnGen() {
+					continue
+				}
+				if m.reasoningResetPending {
+					m.reasoning = ""
+					m.reasoningResetPending = false
+				}
+				m.reasoning += ev.text
+			case reasoningEventContentDelta:
+				// Same staleness check as reasoningEventDelta above, and for
+				// the same reason — but here a stale delta wouldn't just show
+				// wrong text in a box that resets next turn, it would
+				// fabricate a whole new transcript entry (see
+				// appendStreamedContent's doc and the orphan-bubble test).
+				if ev.gen != m.currentTurnGen() {
+					continue
+				}
+				m.appendStreamedContent(ev.text)
+			}
+		}
 		m.updateViewport()
-		// Continue listening for more reasoning updates
-		cmds = append(cmds, m.listenReasoning())
+		// Continue listening for more reasoning events
+		cmds = append(cmds, m.listenReasoningEvents())
 
 	case toolCallMsg:
 		m.pendingTool = (*chat.ToolCallRequest)(&msg)
@@ -978,6 +1533,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		req := chat.AskRequest(msg)
 		m.pendingAsk = &req
 		m.awaitingAsk = true
+		m.askList = &render.SelectList{
+			Items:       req.Options,
+			MultiSelect: req.MultiSelect,
+			MaxVisible:  8,
+		}
+		if req.MultiSelect {
+			m.askList.Checked = make([]bool, len(req.Options))
+		}
 		m.loading = false
 		m.textarea.Focus()
 		m.updateViewport()
@@ -994,18 +1557,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// final result, also surface it inline as one labeled block. Per-tool
 		// activity stays in the Ctrl+O log viewer.
 		if line := agentTranscriptLine(ev); line != "" {
-			m.messages = append(m.messages, ChatMessage{Role: "agent", AgentID: ev.ID, Content: line})
+			m.appendMessage(ChatMessage{Role: "agent", AgentID: ev.ID, Content: line})
 		}
 		if ev.Status == chat.AgentStatusCompleted && strings.TrimSpace(ev.Result) != "" {
 			typ := ev.Type
 			if typ == "" {
 				typ = "agent"
 			}
-			m.messages = append(m.messages, ChatMessage{
+			m.appendMessage(ChatMessage{
 				Role:    "agent_result",
 				Name:    typ,
 				AgentID: ev.ID,
-				Content: chat.PreviewResult(ev.Result, toolResultPreviewLines),
+				// Not a tool result, so no formatter name applies — the agent's
+				// own free-text answer passes through as-is (or, on the rare
+				// chance it's a JSON object, degrades to rows).
+				Content: chat.PreviewResult("", ev.Result, toolResultPreviewLines),
 			})
 		}
 		m.updateViewport()
@@ -1019,8 +1585,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		res := chat.ToolResult(msg)
 		if res.AgentID == "" {
 			// Root agent: stream the result inline with its (previewed) body.
-			if preview := chat.PreviewResult(res.Result, toolResultPreviewLines); preview != "" {
-				m.messages = append(m.messages, ChatMessage{Role: "tool", Name: res.Name, Arguments: res.Arguments, Content: preview})
+			if preview := chat.PreviewResult(res.Name, res.Result, toolResultPreviewLines); preview != "" {
+				m.appendMessage(ChatMessage{Role: "tool", Name: res.Name, Arguments: res.Arguments, Content: preview})
 				m.updateViewport()
 			}
 		} else {
@@ -1033,7 +1599,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if label == "" {
 				label = res.Name
 			}
-			m.messages = append(m.messages, ChatMessage{Role: "agent_tool", Name: res.Name, Arguments: res.Arguments, AgentID: res.AgentID, Content: label})
+			m.appendMessage(ChatMessage{Role: "agent_tool", Name: res.Name, Arguments: res.Arguments, AgentID: res.AgentID, Content: label})
 			m.updateViewport()
 			if m.showLogs && m.logOpenID != "" {
 				m.syncLogViewport()
@@ -1047,11 +1613,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case spinner.TickMsg:
 		m.spinner, cmd = m.spinner.Update(msg)
 		cmds = append(cmds, cmd)
-		// Rotate status phase for animated messages
 		if m.loading {
-			m.statusPhase = (m.statusPhase + 1) % 12
 			m.updateViewport()
 		}
+	}
+
+	// `G` jumps to the newest output, but only when it is not being typed into a
+	// message AND there is somewhere to jump back from. vim-style, matching the
+	// ↑↓ scroll keys already advertised. Without the AtBottom check, `G` fires
+	// whenever the composer is empty — which is exactly the state the user's
+	// FIRST keystroke of a new message finds it in, silently eating it.
+	if k, ok := msg.(tea.KeyMsg); ok && k.Type == tea.KeyRunes && len(k.Runes) == 1 &&
+		k.Runes[0] == 'G' && !m.viewport.AtBottom() && strings.TrimSpace(m.textarea.Value()) == "" {
+		m.viewport.GotoBottom()
+		return m, tea.Batch(cmds...)
 	}
 
 	// Update textarea. The composer is always editable — even while a run is in
@@ -1082,7 +1657,7 @@ func fencedListing(listing string) string {
 // skill load or a resolve error). Shared by the Enter handler and the queue
 // flush so typed-while-idle and queued-while-busy input behave identically.
 func (m *Model) dispatchInput(input string) tea.Cmd {
-	m.messages = append(m.messages, ChatMessage{Role: "user", Content: input})
+	m.appendMessage(ChatMessage{Role: "user", Content: input})
 	return m.dispatchResolved(input)
 }
 
@@ -1093,14 +1668,14 @@ func (m *Model) dispatchResolved(input string) tea.Cmd {
 	action := slash.Resolve(input, m.cfg.Commands, m.cfg.Skills, m.cfg.Agents)
 	switch action.Kind {
 	case slash.KindError:
-		m.messages = append(m.messages, ChatMessage{Role: "error", Content: action.Err})
+		m.appendMessage(ChatMessage{Role: "error", Content: action.Err})
 		return nil
 	case slash.KindLoadSkill:
 		notice, err := m.session.LoadSkill(action.Skill)
 		if err != nil {
-			m.messages = append(m.messages, ChatMessage{Role: "error", Content: err.Error()})
+			m.appendMessage(ChatMessage{Role: "error", Content: err.Error()})
 		} else {
-			m.messages = append(m.messages, ChatMessage{Role: "agent", Content: notice})
+			m.appendMessage(ChatMessage{Role: "agent", Content: notice})
 		}
 		return nil
 	case slash.KindCompact:
@@ -1115,10 +1690,10 @@ func (m *Model) dispatchResolved(input string) tea.Cmd {
 		defer cancel()
 		models, err := m.session.ListModels(lookupCtx)
 		if err != nil {
-			m.messages = append(m.messages, ChatMessage{Role: "error", Content: err.Error()})
+			m.appendMessage(ChatMessage{Role: "error", Content: err.Error()})
 		} else {
 			listing := fencedListing(chat.FormatModelList(models, m.session.Model()))
-			m.messages = append(m.messages, ChatMessage{Role: "agent", Content: listing})
+			m.appendMessage(ChatMessage{Role: "agent", Content: listing})
 		}
 		return nil
 	case slash.KindModelSet:
@@ -1128,45 +1703,59 @@ func (m *Model) dispatchResolved(input string) tea.Cmd {
 		case errors.As(err, &unserved):
 			// Two transcript lines, not one. The refusal itself is prose and
 			// wraps happily, but the listing must not: an "error" line goes
-			// through wrapText, which re-flows on word boundaries, drops the
+			// through render.Wrap, which re-flows on word boundaries, drops the
 			// leading indent and clips a long model ID, so at a narrow width
 			// the marker column stops meaning anything.
-			m.messages = append(m.messages,
+			m.appendMessage(
 				ChatMessage{Role: "error", Content: unserved.Headline()},
 				ChatMessage{Role: "agent", Content: fencedListing(unserved.Listing())})
 		case err != nil:
-			m.messages = append(m.messages, ChatMessage{Role: "error", Content: err.Error()})
+			m.appendMessage(ChatMessage{Role: "error", Content: err.Error()})
 		default:
-			m.messages = append(m.messages, ChatMessage{Role: "agent", Content: notice})
+			m.appendMessage(ChatMessage{Role: "agent", Content: notice})
 		}
 		return nil
 	case slash.KindLoopStart:
 		return m.startLoop(action)
 	case slash.KindLoopStop:
-		m.messages = append(m.messages, ChatMessage{Role: "agent", Content: m.stopLoop(action.LoopID)})
+		m.appendMessage(ChatMessage{Role: "agent", Content: m.stopLoop(action.LoopID)})
 		return nil
 	case slash.KindLoopList:
-		m.messages = append(m.messages, ChatMessage{Role: "agent", Content: m.listLoops()})
+		m.appendMessage(ChatMessage{Role: "agent", Content: m.listLoops()})
 		return nil
 	case slash.KindGoalSet:
 		m.session.SetGoal(action.Text)
-		m.messages = append(m.messages, ChatMessage{Role: "agent", Content: theme.Goal + " Goal set: " + action.Text + "\nI'll pursue it on your next message, re-checking until it's met. Press Ctrl+C or /goal clear to stop."})
+		m.appendMessage(ChatMessage{Role: "agent", Content: theme.Goal + " Goal set: " + action.Text + "\nI'll pursue it on your next message, re-checking until it's met. Press Ctrl+C or /goal clear to stop."})
 		return nil
 	case slash.KindGoalShow:
 		if g := m.session.Goal(); g != "" {
-			m.messages = append(m.messages, ChatMessage{Role: "agent", Content: theme.Goal + " Current goal: " + g})
+			m.appendMessage(ChatMessage{Role: "agent", Content: theme.Goal + " Current goal: " + g})
 		} else {
-			m.messages = append(m.messages, ChatMessage{Role: "agent", Content: "No goal set. Use /goal <text> to set one."})
+			m.appendMessage(ChatMessage{Role: "agent", Content: "No goal set. Use /goal <text> to set one."})
 		}
 		return nil
 	case slash.KindGoalClear:
 		if m.session.Goal() != "" {
 			m.session.ClearGoal()
-			m.messages = append(m.messages, ChatMessage{Role: "agent", Content: "Goal cleared."})
+			m.appendMessage(ChatMessage{Role: "agent", Content: "Goal cleared."})
 		} else {
-			m.messages = append(m.messages, ChatMessage{Role: "agent", Content: "No goal to clear."})
+			m.appendMessage(ChatMessage{Role: "agent", Content: "No goal to clear."})
 		}
 		return nil
+	case slash.KindYolo:
+		on := !m.session.AutoApprove()
+		if action.YoloOn != nil {
+			on = *action.YoloOn
+		}
+		m.session.SetAutoApprove(on)
+		notice := theme.YoloOff
+		if on {
+			notice = theme.YoloOn
+		}
+		m.appendMessage(ChatMessage{Role: "agent", Content: notice})
+		return nil
+	case slash.KindResume:
+		return m.startResume(action.ResumeAll, action.ResumeID)
 	case slash.KindAttach:
 		switch action.AttachOp {
 		case slash.AttachStage:
@@ -1175,10 +1764,10 @@ func (m *Model) dispatchResolved(input string) tea.Cmd {
 			if action.Transcribe {
 				mode = "transcribe"
 			}
-			m.messages = append(m.messages, ChatMessage{Role: "agent", Content: "attached: " + filepath.Base(action.AttachPath) + " (" + mode + ") — sends with your next message"})
+			m.appendMessage(ChatMessage{Role: "agent", Content: "attached: " + filepath.Base(action.AttachPath) + " (" + mode + ") — sends with your next message"})
 		case slash.AttachList:
 			if len(m.pending) == 0 {
-				m.messages = append(m.messages, ChatMessage{Role: "agent", Content: "nothing staged"})
+				m.appendMessage(ChatMessage{Role: "agent", Content: "nothing staged"})
 			} else {
 				var b strings.Builder
 				for i, s := range m.pending {
@@ -1187,12 +1776,12 @@ func (m *Model) dispatchResolved(input string) tea.Cmd {
 					}
 					b.WriteString(filepath.Base(s.Path))
 				}
-				m.messages = append(m.messages, ChatMessage{Role: "agent", Content: b.String()})
+				m.appendMessage(ChatMessage{Role: "agent", Content: b.String()})
 			}
 		case slash.AttachClear:
 			n := len(m.pending)
 			m.pending = nil
-			m.messages = append(m.messages, ChatMessage{Role: "agent", Content: fmt.Sprintf("cleared %d staged attachment(s)", n)})
+			m.appendMessage(ChatMessage{Role: "agent", Content: fmt.Sprintf("cleared %d staged attachment(s)", n)})
 		}
 		return nil
 	default: // slash.KindSend
@@ -1207,8 +1796,12 @@ func (m *Model) dispatchResolved(input string) tea.Cmd {
 	}
 }
 
-// sendMessage sends a message to the AI
+// sendMessage sends a message to the AI. bumpTurnGen runs synchronously here
+// — before the Cmd below is ever executed by bubbletea — marking this as a
+// genuinely NEW turn (see turnGen's doc) so any reasoningChan event a LATER
+// turn's OnStream stamps is distinguishable from a straggler out of this one.
 func (m Model) sendMessage(text string) tea.Cmd {
+	m.bumpTurnGen()
 	return func() tea.Msg {
 		response, err := m.session.SendMessage(text)
 		return responseMsg{content: response, err: err}
@@ -1217,7 +1810,9 @@ func (m Model) sendMessage(text string) tea.Cmd {
 
 // sendWithAttachmentsCmd sends a message with staged + inline @path attachments.
 // Blocked entries and clear-on-success are handled in the responseMsg handler.
+// bumpTurnGen: see sendMessage's doc.
 func (m Model) sendWithAttachmentsCmd(text string, files []string, overrides map[string]attachments.Override) tea.Cmd {
+	m.bumpTurnGen()
 	return func() tea.Msg {
 		reply, blocked, err := m.session.SendWithAttachments(m.ctx, text, files, overrides)
 		return responseMsg{content: reply, err: err, blocked: blocked}
@@ -1320,12 +1915,47 @@ func (m Model) listenStatus() tea.Cmd {
 	}
 }
 
-// listenReasoning listens for reasoning updates from the session
-func (m Model) listenReasoning() tea.Cmd {
+// listenReasoningEvents listens for reasoning updates — both step-boundary
+// (Callbacks.OnReasoning) and live streamed deltas (Callbacks.OnStream) — on
+// the single reasoningChan, and re-arms itself after every delivery: a
+// listener that does not re-arm delivers exactly one event/batch and then
+// goes silent.
+//
+// Ordering note: reasoningChan carries both kinds precisely so there is only
+// ONE listener goroutine for reasoning updates. Two separate channels (one
+// per kind, each with its own listener) would let bubbletea's independent
+// per-Cmd goroutines relay them to Update out of the producer's own order —
+// see reasoningChan's doc for the failure mode that caused. One channel, one
+// listener, means Update sees exactly the order they were sent in.
+//
+// Render-cost note: a token stream can deliver far faster than a terminal
+// should repaint (an updateViewport per token would be one render per
+// keystroke-equivalent). Rather than invent a timer, this drains whatever is
+// already queued on the channel — accumulated in order, boundary and delta
+// events alike — into a single reasoningEventsMsg before returning. Because
+// bubbletea does not call this again until it has processed the previous
+// message (and re-armed via the cmds append below), the render rate is
+// naturally bounded by how fast Update can process a frame, not by the token
+// rate: a burst that arrives while one frame is still rendering collapses
+// into the next frame instead of queuing one render per token. The final
+// drain is unconditional (it runs once at least, then loops only while more
+// is already buffered), so the last event of a turn is always included in
+// the message it returns, never left for a call that never comes.
+func (m Model) listenReasoningEvents() tea.Cmd {
 	return func() tea.Msg {
 		select {
-		case reasoning := <-m.reasoningChan:
-			return reasoningMsg(reasoning)
+		case first := <-m.reasoningChan:
+			events := []reasoningEvent{first}
+		drain:
+			for {
+				select {
+				case more := <-m.reasoningChan:
+					events = append(events, more)
+				default:
+					break drain
+				}
+			}
+			return reasoningEventsMsg(events)
 		case <-m.ctx.Done():
 			return nil
 		}
@@ -1398,32 +2028,271 @@ func (m Model) resolveApproval(resp chat.ToolCallResponse) (tea.Model, tea.Cmd) 
 	m.approvalEditing = false
 	m.pendingTool = nil
 	m.textarea.Reset()
+	// The trace that led to this call is answered now; leaving it up reads as
+	// the model re-thinking a step the user already decided.
+	m.reasoning = ""
+	m.reasoningResetPending = false
 	m.loading = true
-	m.status = "Executing tool..."
-	m.updateViewport()
+	m.status = theme.StatusRunning
+	m.updateViewportFollow()
 	return m, func() tea.Msg {
 		m.toolResponseChan <- resp
 		return nil
 	}
 }
 
-// updateDimensions updates component dimensions based on window size
+// resolveAsk finalizes an ask_user answer — echoing it to the transcript,
+// tearing down the pending-ask state (including the dialog's selection list),
+// resuming the spinner, and handing the answer to the blocked
+// askResponseChan reader. Shared by the dialog-pick and free-text branches of
+// the KeyEnter case, which used to each duplicate this teardown inline.
+func (m Model) resolveAsk(answer string) (tea.Model, tea.Cmd) {
+	m.appendMessage(ChatMessage{Role: "user", Content: answer})
+	m.textarea.Reset()
+	m.awaitingAsk = false
+	m.pendingAsk = nil
+	m.askList = nil
+	m.loading = true
+	m.status = "Thinking…"
+	m.updateViewportFollow()
+	m.askResponseChan <- answer
+	return m, nil
+}
+
+// updateDimensions re-budgets every component against the current terminal
+// size. The footer's share of that budget is not a constant: Presenter.Footer
+// emits between one row (the help line alone) and seven (new-output marker,
+// error line, and four job-status rows), so it is measured against the very
+// ViewState View will render from rather than guessed.
 func (m *Model) updateDimensions() {
-	// Constrain height to maxHeight if set
-	effectiveHeight := m.height
-	if m.maxHeight > 0 && effectiveHeight > m.maxHeight {
-		effectiveHeight = m.maxHeight
+	vs := m.viewState()
+	m.applyDimensions(vs, m.footerHeight(vs))
+}
+
+// footerHeight asks how tall the footer is for this frame, via renderFooter
+// so this and the frame's eventual Footer text (rendered later, in View) come
+// from the same cached render rather than each paying for their own.
+func (m Model) footerHeight(vs render.ViewState) int {
+	_, h := m.renderFooter(vs, m.width)
+	return h
+}
+
+// footerCache is renderFooter's memo: the fields Footer actually reads from a
+// ViewState (see render.Presenter.Footer), plus the width, and the rendered
+// string and height that produced. A ViewState carries plenty Footer never
+// looks at — Messages, Reasoning, Dialogs — so keying on those exact fields
+// means an unrelated change (a streamed token, a reasoning trace update)
+// leaves the cache valid, while anything that would actually change Footer's
+// output invalidates it correctly. Footers is flattened to a string because
+// []render.FooterRow isn't comparable with ==; FooterRow's own fields are all
+// plain strings/ints, so joining them with NUL separators can't collide two
+// distinct row lists onto the same key.
+type footerCache struct {
+	valid             bool
+	width             int
+	help, badges, err string
+	newOutput         bool
+	footers           string
+	rendered          string
+	height            int
+}
+
+// footerCacheKey builds the comparable snapshot of v's Footer-relevant
+// fields at width w.
+func footerCacheKey(v render.ViewState, w int) footerCache {
+	var rows strings.Builder
+	for _, r := range v.Footers {
+		fmt.Fprintf(&rows, "%d\x00%s\x00%s\x00", r.Kind, r.Glyph, r.Text)
 	}
+	return footerCache{
+		width:     w,
+		help:      v.Help,
+		badges:    v.Badges,
+		err:       v.Err,
+		newOutput: v.NewOutput,
+		footers:   rows.String(),
+	}
+}
 
-	headerHeight := 2
-	footerHeight := 3 // single-line input + help line + spacing
-	statusHeight := 1
+// renderFooter returns Presenter.Footer(v, w) and Presenter.FooterHeight(v,
+// w), reusing the model's cached pair when v's footer-relevant fields and w
+// exactly match what produced it. Both are pure functions of exactly those
+// fields, so a key match proves the cached pair is still exactly what a
+// fresh call of each would return. Without this, syncLayout's height budget
+// (which must run before body can be laid out, since the viewport's height
+// depends on it) and View's own frame composition (which needs the footer's
+// actual text) each rendered Footer themselves — twice per frame, on every
+// spinner tick while loading (~80ms) — this is Task 10a's third carried
+// defect.
+//
+// The height still goes through Presenter.FooterHeight rather than
+// lipgloss.Height(rendered): the model asks the presenter, the same rule
+// ContentWidth documents, rather than measuring chrome it did not compose.
+// That does mean a genuine cache MISS (footer content actually changed —
+// a job row appearing, an error arriving) renders Footer twice, once
+// directly and once inside FooterHeight; a HIT — the common case, since most
+// re-renders (spinner ticks, streamed tokens) don't touch Footer's inputs —
+// renders it zero times, reusing both cached values.
+//
+// footerCache lives behind a pointer (see the Model field comment), so this
+// value-receiver method can still update it in place; on a bare Model{}
+// literal (footerCache nil, as in tests that skip newTestModel) it falls back
+// to an uncached render, matching msgViewCache's nil-safety precedent.
+func (m Model) renderFooter(v render.ViewState, w int) (string, int) {
+	key := footerCacheKey(v, w)
+	if m.footerCache != nil && m.footerCache.valid &&
+		key.width == m.footerCache.width &&
+		key.help == m.footerCache.help &&
+		key.badges == m.footerCache.badges &&
+		key.err == m.footerCache.err &&
+		key.newOutput == m.footerCache.newOutput &&
+		key.footers == m.footerCache.footers {
+		return m.footerCache.rendered, m.footerCache.height
+	}
+	rendered := m.presenter.Footer(v, w)
+	height := m.presenter.FooterHeight(v, w)
+	if m.footerCache != nil {
+		key.rendered = rendered
+		key.height = height
+		key.valid = true
+		*m.footerCache = key
+	}
+	return rendered, height
+}
 
-	vpHeight := effectiveHeight - headerHeight - footerHeight - statusHeight
+// syncLayout re-budgets the viewport when the chrome around it has changed
+// since the last budget — a sub-agent job row appearing mid-turn, a loop
+// starting, an error line arriving, an approval card or a /resume picker
+// docking above the composer on a surface that overlays dialogs. Without it
+// the budget only ever moved on a WindowSizeMsg, so chrome that grew by two
+// rows produced a frame taller than the screen: harmless spill into
+// scrollback on the inline widget, but on the alt screen bubbletea truncates
+// the composed frame from the TOP and the header walks off screen.
+//
+// It compares the whole layoutBudget, not just the footer's share: the footer
+// was the only piece that moved when this was written, and a dialog block
+// (which can be a dozen rows) moved without the budget noticing at all.
+func (m *Model) syncLayout(vs render.ViewState) {
+	// Before the first WindowSizeMsg there is no real terminal size to budget
+	// against; updateDimensions owns that first pass.
+	if m.height == 0 {
+		return
+	}
+	fh := m.footerHeight(vs)
+	if m.layoutBudget(vs, fh) != m.chromeBudget {
+		m.applyDimensions(vs, fh)
+	}
+}
+
+// effectiveHeight is m.height clamped to maxHeight (0 = no limit) — the
+// actual number of rows the frame is budgeted against. applyDimensions uses
+// it to size the viewport; View passes the same value to Presenter.Frame as
+// its height budget, so a presenter that centres an overlay against h (Task
+// 11) sizes against the terminal rows this session actually uses, not the
+// raw (possibly larger) terminal height a maxHeight flag deliberately caps.
+func (m Model) effectiveHeight() int {
+	if m.maxHeight > 0 && m.height > m.maxHeight {
+		return m.maxHeight
+	}
+	return m.height
+}
+
+// renderComposer builds the composer block: the `/` completion popup, the
+// pending-message queue, and the input line (or the not-ready notice, or
+// nothing at all in the modes where the viewport's own dialog block carries
+// the choice row). Shared by View (which places the string via Frame) and
+// applyDimensions (which must measure it before the viewport's own height can
+// be budgeted) — the single call site Task 10a's Frame composition point
+// made possible, so the two can no longer drift the way a guessed constant
+// invited.
+func (m Model) renderComposer(w int) string {
+	var composer strings.Builder
+	if comp := renderCompletion(m.completion, strings.TrimSpace(m.textarea.Value()), w); comp != "" {
+		composer.WriteString(comp)
+		composer.WriteString("\n")
+	}
+	// Selection only matters when the composer is empty (that's when up/down
+	// navigate the queue).
+	if q := renderQueue(m.queue, m.queueSel, w); q != "" {
+		composer.WriteString(q)
+		composer.WriteString("\n")
+	}
+	switch {
+	case !m.sessionReady:
+		composer.WriteString(theme.Help.Render(theme.Starting))
+	case m.showLogs:
+		// no input: the log viewer owns the body and the keystrokes
+	case m.awaitingApproval && !m.approvalEditing:
+		// no input: choice row lives in the viewport approval block
+	case m.awaitingResume:
+		// no input: unlike ask_user, /resume has no free-text fallback — the
+		// picker lives in the viewport dialog block and swallows every key.
+	default:
+		composer.WriteString(m.textarea.View())
+	}
+	return composer.String()
+}
+
+// dialogsHeight is how many rows the pending dialogs cost the frame: zero on a
+// surface that does not overlay them (inline bakes them into the viewport's
+// own scrollback, where they are body content and already inside its height),
+// and the measured height of the real rendered strings on a surface that does
+// (full.Frame writes every v.Dialogs entry between body and composer).
+//
+// This is the defect that blocked the branch: bubbles/viewport.View() pads the
+// body to exactly Height, so the arithmetic is exact — a frame of
+// header + vpHeight + dialogs + composer + footer with nothing reserved for
+// the dialogs runs over the terminal by precisely their height, and
+// bubbletea's renderer truncates the TOP. A five-option approval card is
+// 10-14 rows, so the header walked off screen on every approval on the
+// default surface.
+//
+// Measured, not guessed, for the same reason composerHeight is: an approval
+// card's height depends on its argument rows, its captured reasoning and the
+// terminal's width, and the /resume picker's on how many sessions fit its
+// window.
+func (m Model) dialogsHeight(vs render.ViewState) int {
+	if !m.presenter.Caps().OverlayDialogs {
+		return 0
+	}
+	rows := 0
+	for _, d := range vs.Dialogs {
+		rows += render.BlockRows(m.presenter.Dialog(d, m.width))
+	}
+	return rows
+}
+
+// layoutBudget is how many rows of this frame are NOT the body: the header,
+// the overlaid dialogs, the composer block and the footer. The viewport gets
+// whatever is left. syncLayout compares this against what the current sizes
+// were budgeted for, so any of the four changing mid-turn — a job row
+// appearing, an approval arriving, the `/` completion popup opening —
+// re-budgets rather than pushing the frame over the terminal's height.
+func (m Model) layoutBudget(vs render.ViewState, footerHeight int) int {
+	// The composer block between the body and the footer: a blank line after
+	// the body, the composer's own rendered height (renderComposer — usually
+	// one line, but a visible `/` completion popup or queued-message block can
+	// be taller), and a blank line before the footer. Measuring the real
+	// string instead of guessing "3" is what Task 10a's single composer
+	// call site made cheap: before it, the composer was built across four
+	// scattered call sites in View with nothing here to measure.
+	composerHeight := 2 + lipgloss.Height(m.renderComposer(m.width))
+	return m.presenter.HeaderHeight(vs) + m.dialogsHeight(vs) + composerHeight + footerHeight
+}
+
+// applyDimensions sizes the components against the chrome vs implies for this
+// frame, with a footer of footerHeight rows, and records what it budgeted for
+// so syncLayout can tell when that answer goes stale.
+func (m *Model) applyDimensions(vs render.ViewState, footerHeight int) {
+	budget := m.layoutBudget(vs, footerHeight)
+
+	vpHeight := m.effectiveHeight() - budget
 	if vpHeight < 5 {
 		vpHeight = 5
 	}
 
+	m.footerBudget = footerHeight
+	m.chromeBudget = budget
 	m.viewport.Width = m.width
 	m.viewport.Height = vpHeight
 	m.logVP.Width = m.width
@@ -1431,112 +2300,10 @@ func (m *Model) updateDimensions() {
 	m.textarea.SetWidth(m.width - 2)
 }
 
-// truncateLine caps a single line at w runes, ending with an ellipsis. A
-// non-positive budget returns the bare ellipsis rather than an unclamped line.
-func truncateLine(s string, w int) string {
-	r := []rune(s)
-	if len(r) <= w {
-		return s
-	}
-	if w <= 1 {
-		return "…"
-	}
-	return string(r[:w-1]) + "…"
-}
-
-// wrapText wraps text to fit within the specified width, preserving existing newlines
-func wrapText(text string, width int) string {
-	if width <= 0 {
-		return text
-	}
-
-	var result strings.Builder
-	lines := strings.Split(text, "\n")
-
-	for _, line := range lines {
-		if line == "" {
-			result.WriteString("\n")
-			continue
-		}
-
-		// Calculate the visual width (accounting for ANSI codes)
-		visualWidth := lipgloss.Width(line)
-		if visualWidth <= width {
-			result.WriteString(line)
-			result.WriteString("\n")
-			continue
-		}
-
-		// Need to wrap this line
-		words := strings.Fields(line)
-		if len(words) == 0 {
-			result.WriteString("\n")
-			continue
-		}
-
-		currentLine := strings.Builder{}
-		currentWidth := 0
-
-		for i, word := range words {
-			wordWidth := lipgloss.Width(word)
-
-			// If a single word is longer than width, truncate it on a rune
-			// boundary (byte slicing here would split a multibyte rune).
-			if wordWidth > width && currentWidth == 0 {
-				result.WriteString(truncateRunes(word, width))
-				result.WriteString("\n")
-				continue
-			}
-
-			if currentWidth > 0 {
-				// Check if adding this word would exceed width
-				if currentWidth+1+wordWidth > width {
-					// Write current line and start new one
-					result.WriteString(currentLine.String())
-					result.WriteString("\n")
-					currentLine.Reset()
-					currentWidth = 0
-				} else {
-					// Add space before word
-					currentLine.WriteString(" ")
-					currentWidth += 1
-				}
-			}
-
-			currentLine.WriteString(word)
-			currentWidth += wordWidth
-
-			// If this is the last word, write the line
-			if i == len(words)-1 {
-				result.WriteString(currentLine.String())
-				result.WriteString("\n")
-			}
-		}
-	}
-
-	return result.String()
-}
-
-// truncateRunes shortens word to at most width display columns, breaking on a
-// rune boundary and appending an ellipsis when there is room for it.
-func truncateRunes(word string, width int) string {
-	runes := []rune(word)
-	if width <= 0 {
-		return ""
-	}
-	if len(runes) <= width {
-		return word
-	}
-	if width <= 1 {
-		return string(runes[:width])
-	}
-	return string(runes[:width-1]) + "…"
-}
-
 // updateViewport updates the viewport content with chat messages
 // markdownFor returns a glamour renderer for the given wrap width, building and
 // caching one per distinct width. Returns nil on construction error (callers
-// fall back to plain wrapText).
+// fall back to plain render.Wrap).
 func (m *Model) markdownFor(width int) *glamour.TermRenderer {
 	if width < 1 {
 		width = 1
@@ -1589,7 +2356,7 @@ func (m *Model) renderAgentThreadRun(sb *strings.Builder, run []ChatMessage, con
 		sb.WriteString("\n")
 	}
 	for _, r := range results {
-		wrapped := wrapText(r.Content, contentWidth-5)
+		wrapped := render.Wrap(r.Content, contentWidth-5)
 		for i, line := range strings.Split(strings.TrimRight(wrapped, "\n"), "\n") {
 			if i == 0 {
 				sb.WriteString("   " + theme.Subtle.Render(theme.Arrow+" "+line))
@@ -1632,8 +2399,218 @@ func (m *Model) dropTransientErrors() {
 	m.messages = kept
 }
 
+// updateViewportFollow re-renders and pins the viewport to the bottom. Use it
+// for user-initiated updates, where the user is waiting on new output and being
+// left in scrollback reads as nothing having happened.
+func (m *Model) updateViewportFollow() {
+	m.forceFollow = true
+	m.updateViewport()
+}
+
+// toolLabel renders a tool call as the one-line heading a tool block carries:
+// the first line of the friendly summary, falling back to the bare tool name
+// when the call has no arguments or the summary comes back empty. It lives
+// model-side because turning a name plus raw JSON arguments into prose is
+// domain logic — the same rule that keeps markdown rendering and the ask block
+// out of the presenters. A Presenter places Message.Label; it never imports
+// chat to build it.
+func toolLabel(name, arguments string) string {
+	if arguments == "" {
+		return name
+	}
+	summary := chat.FormatToolCall(name, arguments)
+	if nl := strings.IndexByte(summary, '\n'); nl >= 0 {
+		summary = summary[:nl]
+	}
+	if summary == "" {
+		return name
+	}
+	return summary
+}
+
+// currentDialogs returns the render.Dialog for every prompt currently
+// pending, in the same order the original hand-rolled code rendered them
+// (approval block, then ask block). Both a background sub-agent's gated tool
+// approval and a foreground ask_user question can be pending at once — cogito
+// propagates the tool-call callback into spawned sub-agents (chat/session.go),
+// which run in the background while the root agent can independently be
+// blocked on ask_user — so this must not assume they're mutually exclusive:
+// an earlier version of this method returned only one and the other silently
+// vanished from the screen. Shared by updateViewport (which renders each) and
+// viewState (which projects them onto ViewState.Dialogs so the field is never
+// silently nil for a Presenter reading the whole frame).
+func (m Model) currentDialogs() []render.Dialog {
+	var dialogs []render.Dialog
+	if m.awaitingApproval && m.pendingTool != nil {
+		rows, unstructured := approvalRows(*m.pendingTool)
+		var options []render.DialogOption
+		if m.approvalEditing {
+			options = []render.DialogOption{{Text: theme.ApproveEditHint, Emphasis: true}}
+		} else {
+			scope, _ := chat.GrantScope(m.pendingTool.Name, m.pendingTool.Arguments)
+			options = []render.DialogOption{
+				{Text: theme.ApproveOnce, Emphasis: true},
+				{Text: theme.ApproveAlwaysPrefix + scope + theme.ApproveAlwaysSuffix, Emphasis: true},
+				{Text: theme.ApproveTurn, Emphasis: true},
+				{Text: theme.ApproveSession, Emphasis: true},
+				{Text: theme.ApproveDenyEdit, Emphasis: false},
+			}
+		}
+		dialogs = append(dialogs, render.Dialog{
+			Kind:             render.DialogApproval,
+			Title:            toolApprovalLabel(*m.pendingTool),
+			Rows:             rows,
+			RowsUnstructured: unstructured,
+			Hint:             m.pendingTool.Reasoning,
+			Options:          options,
+		})
+	}
+	// Guarded the same way as the approval branch above: buildAskDialog
+	// actually runs only when a question is pending, not on every frame.
+	if m.awaitingAsk && m.pendingAsk != nil {
+		dialogs = append(dialogs, buildAskDialog(*m.pendingAsk, m.askList, m.awaitingApproval))
+	}
+	if m.awaitingResume && m.resumeList != nil {
+		dialogs = append(dialogs, buildResumeDialog(m.resumeList, m.resumeDeleteArmed))
+	}
+	return dialogs
+}
+
+// showingViewport reports whether the body area is the conversation viewport,
+// rather than the log viewer or the first-run empty state. View reads it to
+// pick the body; viewState reads it to resolve NewOutput (which is only
+// meaningful when the viewport is on screen at all). One definition, so the
+// two can never disagree about what the body is.
+func (m Model) showingViewport() bool {
+	if m.showLogs {
+		return false
+	}
+	return len(m.messages) > 0 || m.loading || m.awaitingApproval || m.awaitingAsk || m.awaitingResume
+}
+
+// reasoningBoxHit reports whether a terminal-relative mouse Y lands inside
+// the reasoning box's last-recorded row span (reasoningSpanStart/End, see its
+// doc comment — recomputed every updateViewport pass, so this always tests
+// against the box's CURRENT height, collapsed or expanded).
+//
+// Y is translated to a content-relative viewport row by subtracting the
+// chrome the Presenter's own Header renders above the body, then adding the
+// viewport's scroll offset. The chrome height comes from
+// Presenter.HeaderHeight — the same query the layout budget subtracts (see
+// layoutBudget), so the hit-test and the budget can never disagree about how
+// tall the header is. It used to count the newlines in presenter.Header(vs)
+// here while applyDimensions hardcoded 2 a few hundred lines away: two
+// measurements of one thing, and the hardcoded one was already wrong in
+// principle.
+func (m Model) reasoningBoxHit(y int) bool {
+	if m.reasoningSpanStart >= m.reasoningSpanEnd {
+		return false // nothing rendered as a box this frame
+	}
+	if !m.showingViewport() {
+		return false // body isn't the transcript viewport this frame
+	}
+	chrome := m.presenter.HeaderHeight(m.viewState())
+	row := y - chrome + m.viewport.YOffset
+	return row >= m.reasoningSpanStart && row < m.reasoningSpanEnd
+}
+
+// footerRows builds the job-status footer rows — active sub-agent jobs, shell
+// jobs, cron loops, the active goal — in the order they are rendered. Empty
+// while the log viewer owns the body, which hides the footer entirely.
+func (m Model) footerRows() []render.FooterRow {
+	if m.showLogs {
+		return nil
+	}
+	var rows []render.FooterRow
+	if row, ok := jobsFooterRow(m.jobs); ok {
+		rows = append(rows, row)
+	}
+	if row, ok := shellJobsFooterRow(m.shellJobs.List()); ok {
+		rows = append(rows, row)
+	}
+	if row, ok := loopsFooterRow(m.loops, m.selfPaced); ok {
+		rows = append(rows, row)
+	}
+	if m.session != nil {
+		if row, ok := goalFooterRow(m.session.Goal()); ok {
+			rows = append(rows, row)
+		}
+	}
+	return rows
+}
+
+// viewState builds the complete ViewState for the current frame: every field
+// populated from Model state, so a Presenter driven from one ViewState — an
+// alt-screen full-frame compositor, for instance — never finds a field it
+// needs left at its zero value, and so Header and Footer are never handed two
+// different projections of the same frame. View builds one of these and
+// mutates nothing; updateDimensions budgets the layout against the same value
+// View will render from.
+func (m Model) viewState() render.ViewState {
+	status := m.status
+	if status == "" || status == "Thinking..." {
+		status = theme.VerbThinking
+	}
+
+	help := theme.Help.Render(m.helpLine())
+	errText := ""
+	if m.err != nil {
+		errText = m.err.Error()
+	}
+
+	return render.ViewState{
+		Width:       m.width,
+		Cwd:         shortenPath(currentDir()),
+		Brand:       theme.BrandName,
+		AutoApprove: m.session != nil && m.session.AutoApprove(),
+		Loading:     m.loading,
+		Status:      status,
+		Spinner:     m.spinner.View(),
+		Reasoning: render.Reasoning{
+			Text:      m.reasoning,
+			Collapsed: m.reasoningCollapsed,
+			MaxLines:  theme.ReasoningMaxLines,
+		},
+		Dialogs: m.currentDialogs(),
+		Help:    help,
+		Badges:  m.footerBadges(lipgloss.Width(help)),
+
+		// New content arrived below the fold while the user was scrolled up.
+		NewOutput: m.showingViewport() && !m.viewport.AtBottom(),
+		Err:       errText,
+		Footers:   m.footerRows(),
+	}
+}
+
 func (m *Model) updateViewport() {
 	var sb strings.Builder
+
+	presenter := m.presenter
+
+	// One ViewState for this pass, shared by the layout budget below and the
+	// Reasoning/Dialog blocks at the end — building it twice would re-run
+	// currentDialogs, the footer-row builders and the message projection for
+	// the same frame.
+	vs := m.viewState()
+
+	// Captured BEFORE syncLayout can shrink m.viewport.Height: AtBottom() is
+	// relative to the current height, so re-budgeting first would make a user
+	// who WAS pinned to the bottom read as scrolled-up (the same ordering
+	// hazard the WindowSizeMsg handler guards against).
+	wasAtBottom := m.viewport.AtBottom() || m.forceFollow
+	m.forceFollow = false
+	// vs.NewOutput, as viewState() computed it above, read the viewport's
+	// scroll position before this pass has moved it — and before forceFollow,
+	// which the viewport hasn't been told about yet, is folded in. wasAtBottom
+	// already answers "will this pass leave the viewport at the bottom",
+	// forceFollow included; recompute NewOutput from that same answer so
+	// syncLayout budgets against the marker row Footer will actually draw for
+	// the frame this pass produces, not the one a stale pre-move read implied.
+	// Without this, a forced follow while scrolled up reserved a row for the
+	// marker that the eventual View() (built from a fresh, post-move
+	// ViewState) never draws.
+	vs.NewOutput = m.showingViewport() && !wasAtBottom
+	m.syncLayout(vs)
 
 	// Calculate available width for content (use viewport width, not terminal width)
 	contentWidth := m.viewport.Width
@@ -1644,6 +2621,7 @@ func (m *Model) updateViewport() {
 		contentWidth = 80 // fallback
 	}
 
+	prevRole := render.RoleNone
 	lastAgent := "" // id of the agent whose line was rendered last, "" for non-agent
 	for i := 0; i < len(m.messages); i++ {
 		msg := m.messages[i]
@@ -1659,6 +2637,12 @@ func (m *Model) updateViewport() {
 			m.renderAgentThreadRun(&sb, m.messages[i:j], contentWidth, lastAgent != msg.AgentID, m.sameAgentMsg(j, msg.AgentID))
 			lastAgent = msg.AgentID
 			i = j - 1
+			// A thread run isn't rendered through Message, so nothing sets
+			// prevRole for it above — but a following Message call still needs
+			// an accurate "what rendered last" answer (Phase 3 Task 12 reads
+			// prev to drop labels on consecutive same-role messages). RoleAgent
+			// is the closest fit for these raw agent_tool/agent_result roles.
+			prevRole = render.RoleAgent
 			continue
 		}
 
@@ -1671,179 +2655,92 @@ func (m *Model) updateViewport() {
 
 		switch msg.Role {
 		case "user":
-			prefix := userStyle.Render("you") + " " + theme.SepStyle.Render(theme.Sep) + " "
-			prefixWidth := lipgloss.Width(prefix)
-			wrappedContent := wrapText(msg.Content, contentWidth-prefixWidth)
-			// Add prefix to first line, indent continuation lines
-			lines := strings.Split(strings.TrimRight(wrappedContent, "\n"), "\n")
-			for i, line := range lines {
-				if i == 0 {
-					// First line: prefix + content
-					sb.WriteString(prefix)
-					sb.WriteString(line)
-				} else {
-					// Continuation lines: indent with spaces only (no prefix)
-					sb.WriteString(strings.Repeat(" ", prefixWidth))
-					sb.WriteString(line)
-				}
-				sb.WriteString("\n")
-			}
-			sb.WriteString("\n")
+			sb.WriteString(presenter.Message(render.Message{Role: render.RoleUser, Content: msg.Content}, prevRole, contentWidth))
+			prevRole = render.RoleUser
 		case "assistant":
-			prefix := assistantStyle.Render(theme.BrandName) + " " + theme.SepStyle.Render(theme.Sep) + " "
-			prefixWidth := lipgloss.Width(prefix)
-			wrappedContent := renderMarkdownWith(m.markdownFor(contentWidth-prefixWidth), msg.Content, contentWidth-prefixWidth)
-			// Add prefix to first line, indent continuation lines
-			lines := strings.Split(strings.TrimRight(wrappedContent, "\n"), "\n")
-			for i, line := range lines {
-				if i == 0 {
-					// First line: prefix + content
-					sb.WriteString(prefix)
-					sb.WriteString(line)
-				} else {
-					// Continuation lines: indent with spaces only (no prefix)
-					sb.WriteString(strings.Repeat(" ", prefixWidth))
-					sb.WriteString(line)
-				}
-				sb.WriteString("\n")
+			// Markdown is width-cached model state (glamour), not something a
+			// Presenter owns — pre-render it here at the width the presenter's
+			// prefix will leave for content, matching its own prefix exactly.
+			mdWidth := presenter.ContentWidth(render.RoleAssistant, contentWidth)
+			var rendered string
+			if m.streamingActive && i == len(m.messages)-1 {
+				// This message is still receiving live content deltas.
+				// Re-running glamour on every delta would re-parse an
+				// incomplete document each frame (wasted work) and can render
+				// visibly wrong mid-token (an unclosed code fence, a
+				// half-written list) — so show the growing text plain until
+				// the turn ends and this message is reconciled/finalized
+				// (responseMsg/parkMsg), at which point it is no longer the
+				// streaming tail and gets the full glamour pass below.
+				rendered = render.Wrap(msg.Content, mdWidth)
+			} else {
+				rendered = renderMarkdownWith(m.markdownFor(mdWidth), msg.Content, mdWidth)
 			}
-			sb.WriteString("\n")
+			sb.WriteString(presenter.Message(render.Message{Role: render.RoleAssistant, Content: rendered}, prevRole, contentWidth))
+			prevRole = render.RoleAssistant
 		case "agent":
-			prefix := theme.Subtle.Render(theme.SubAgent) + " "
-			prefixWidth := lipgloss.Width(prefix)
-			wrappedContent := renderMarkdownWith(m.markdownFor(contentWidth-prefixWidth), msg.Content, contentWidth-prefixWidth)
-			lines := strings.Split(strings.TrimRight(wrappedContent, "\n"), "\n")
-			for li, line := range lines {
-				if li == 0 {
-					sb.WriteString(prefix)
-					sb.WriteString(agentStyle.Render(line))
-				} else {
-					sb.WriteString(strings.Repeat(" ", prefixWidth))
-					sb.WriteString(agentStyle.Render(line))
-				}
-				sb.WriteString("\n")
-			}
-			// Tighten: a sub-agent lifecycle header hugs its own thread run that
-			// follows (tool lines / result) — omit the blank separator.
-			if !m.sameAgentMsg(i+1, msg.AgentID) {
-				sb.WriteString("\n")
-			}
+			mdWidth := presenter.ContentWidth(render.RoleAgent, contentWidth)
+			rendered := renderMarkdownWith(m.markdownFor(mdWidth), msg.Content, mdWidth)
+			sb.WriteString(presenter.Message(render.Message{
+				Role:    render.RoleAgent,
+				Content: rendered,
+				AgentID: msg.AgentID,
+				// Tighten: a sub-agent lifecycle header hugs its own thread run
+				// that follows (tool lines / result) — the Presenter must omit
+				// the blank separator in that case. This depends on the NEXT raw
+				// message, which a Presenter never sees, so the model resolves
+				// it here and carries the answer on the Message value.
+				HugNext: m.sameAgentMsg(i+1, msg.AgentID),
+			}, prevRole, contentWidth))
+			prevRole = render.RoleAgent
 		case "tool":
-			// Calm, dim block: a header naming the tool, then the pretty/truncated
-			// output indented and dimmed beneath it.
-			label := msg.Name
-			if msg.Arguments != "" {
-				// First line of the friendly summary makes the clearest header.
-				summary := chat.FormatToolCall(msg.Name, msg.Arguments)
-				if nl := strings.IndexByte(summary, '\n'); nl >= 0 {
-					summary = summary[:nl]
-				}
-				if summary != "" {
-					label = summary
-				}
-			}
-			if msg.AgentID != "" {
-				label = theme.SubAgent + " " + shortID(msg.AgentID) + " · " + label
-			}
-			sb.WriteString(theme.Subtle.Render(theme.Sep + " " + label))
-			sb.WriteString("\n")
-			// Content is already previewed (truncated + pretty) at append time.
-			wrapped := wrapText(msg.Content, contentWidth-2)
-			for _, line := range strings.Split(strings.TrimRight(wrapped, "\n"), "\n") {
-				sb.WriteString("  " + theme.Help.Render(line))
-				sb.WriteString("\n")
-			}
-			sb.WriteString("\n")
+			sb.WriteString(presenter.Message(render.Message{
+				Role:    render.RoleTool,
+				Content: msg.Content,
+				Label:   toolLabel(msg.Name, msg.Arguments),
+				AgentID: msg.AgentID,
+			}, prevRole, contentWidth))
+			prevRole = render.RoleTool
 		case "error":
-			prefix := errorStyle.Render(theme.Cross) + " "
-			prefixWidth := lipgloss.Width(prefix)
-			wrappedContent := wrapText(msg.Content, contentWidth-prefixWidth)
-			// Add prefix to first line, indent continuation lines
-			lines := strings.Split(strings.TrimRight(wrappedContent, "\n"), "\n")
-			for i, line := range lines {
-				if i == 0 {
-					// First line: prefix + content
-					sb.WriteString(prefix)
-					sb.WriteString(line)
-				} else {
-					// Continuation lines: indent with spaces only (no prefix)
-					sb.WriteString(strings.Repeat(" ", prefixWidth))
-					sb.WriteString(line)
-				}
-				sb.WriteString("\n")
-			}
-			sb.WriteString("\n")
+			sb.WriteString(presenter.Message(render.Message{Role: render.RoleError, Content: msg.Content}, prevRole, contentWidth))
+			prevRole = render.RoleError
 		}
 	}
 
-	if m.loading {
-		displayStatus := m.status
-		if displayStatus == "" || displayStatus == "Thinking..." {
-			displayStatus = theme.Status(theme.VerbThinking, m.statusPhase)
+	// Reasoning renders nothing when !vs.Loading, so the call is
+	// unconditional; Dialogs renders each pending dialog in turn (ordinarily
+	// zero or one, but a background sub-agent's tool approval and a
+	// foreground ask_user question can both be pending at once — see
+	// currentDialogs — and the original hand-rolled code rendered both).
+	//
+	// A surface that declares Caps.OverlayDialogs (full) places v.Dialogs
+	// itself, fresh every frame, from Frame — see full.Frame's doc comment.
+	// Appending it here too would render every pending dialog twice: once
+	// baked into this scrollback (which View's Frame call passes through as
+	// body, indistinguishable from any other transcript text by the time
+	// Frame runs) and once more as that surface's own overlay. A surface that
+	// does not declare it (inline) has no other place a dialog reaches the
+	// screen, so this append is still its only path.
+	// Record the box's content-relative row span for this render: the
+	// newline count immediately before and after the write. Recomputed every
+	// pass (never cached across frames) — see reasoningSpanStart/End's doc
+	// comment on Model. An empty Reasoning() write (not loading, or no trace
+	// yet) leaves start == end, an empty span nothing can click.
+	reasoningStart := strings.Count(sb.String(), "\n")
+	reasoningOut := presenter.Reasoning(vs, contentWidth)
+	sb.WriteString(reasoningOut)
+	m.reasoningSpanStart = reasoningStart
+	m.reasoningSpanEnd = reasoningStart + strings.Count(reasoningOut, "\n")
+	if !presenter.Caps().OverlayDialogs {
+		for _, d := range vs.Dialogs {
+			sb.WriteString(presenter.Dialog(d, contentWidth))
 		}
-		sb.WriteString(theme.SepStyle.Render(theme.Sep) + " " + theme.Reasoning.Render(displayStatus))
-		sb.WriteString("\n")
-		if m.reasoning != "" {
-			sb.WriteString(theme.ReasoningHeader() + "\n")
-			wrapped := wrapText(m.reasoning, contentWidth-4)
-			for _, line := range strings.Split(strings.TrimRight(wrapped, "\n"), "\n") {
-				sb.WriteString("  " + theme.Reasoning.Render(line) + "\n")
-			}
-		}
-	}
-
-	if m.awaitingApproval && m.pendingTool != nil {
-		gutter := theme.Gutter.Render(theme.ApprovalGutter) + " "
-		sb.WriteString(gutter + theme.ApproveKey.Render(toolApprovalLabel(*m.pendingTool)))
-		sb.WriteString("\n")
-		if rows, ok := chat.ToolArgRows(m.pendingTool.Name, m.pendingTool.Arguments); ok {
-			// Structured args render as an aligned card: dim keys padded to a
-			// column; values truncated to the row (multi-line hints included).
-			maxKey := 0
-			for _, r := range rows {
-				if len(r.Key) > maxKey {
-					maxKey = len(r.Key)
-				}
-			}
-			for _, r := range rows {
-				key := r.Key + strings.Repeat(" ", maxKey-len(r.Key))
-				val := truncateLine(r.ValueDisplay(), contentWidth-8-maxKey)
-				sb.WriteString(gutter + "  " + theme.Meta.Render(key) + "  " + theme.Help.Render(val) + "\n")
-			}
-		} else {
-			args := wrapText(chat.FormatToolCall(m.pendingTool.Name, m.pendingTool.Arguments), contentWidth-4)
-			for _, line := range strings.Split(strings.TrimRight(args, "\n"), "\n") {
-				sb.WriteString(gutter + theme.Help.Render(line) + "\n")
-			}
-		}
-		if m.pendingTool.Reasoning != "" {
-			rz := wrapText(m.pendingTool.Reasoning, contentWidth-4)
-			for _, line := range strings.Split(strings.TrimRight(rz, "\n"), "\n") {
-				sb.WriteString(gutter + theme.Reasoning.Render(line) + "\n")
-			}
-		}
-		if m.approvalEditing {
-			sb.WriteString(gutter + theme.ApproveKey.Render(theme.ApproveEditHint))
-			sb.WriteString("\n")
-		} else {
-			scope, _ := chat.GrantScope(m.pendingTool.Name, m.pendingTool.Arguments)
-			sb.WriteString(gutter + "\n")
-			sb.WriteString(gutter + theme.ApproveKey.Render(theme.ApproveOnce) + "\n")
-			sb.WriteString(gutter + theme.ApproveKey.Render(theme.ApproveAlwaysPrefix+scope+theme.ApproveAlwaysSuffix) + "\n")
-			sb.WriteString(gutter + theme.ApproveKey.Render(theme.ApproveTurn) + "\n")
-			sb.WriteString(gutter + theme.Help.Render(theme.ApproveDenyEdit) + "\n")
-		}
-	}
-
-	if m.awaitingAsk && m.pendingAsk != nil {
-		sb.WriteString(renderAsk(*m.pendingAsk, m.width))
-		sb.WriteString("\n")
 	}
 
 	// Preserve the user's scroll position: only follow to the bottom when they
-	// were already there. Otherwise a re-render (spinner tick, status update,
-	// streamed token) would yank them back down while they're reading history.
-	wasAtBottom := m.viewport.AtBottom()
+	// were already there (captured at the top of this function). Otherwise a
+	// re-render (spinner tick, status update, streamed token) would yank them
+	// back down while they're reading history.
 	offset := m.viewport.YOffset
 	m.viewport.SetContent(sb.String())
 	if wasAtBottom {
@@ -1859,100 +2756,56 @@ func (m Model) View() string {
 		return ""
 	}
 
-	var sb strings.Builder
+	presenter := m.presenter
+	// One complete ViewState for the whole frame. Nothing below mutates it:
+	// Header and Footer must see the same projection, or a full-frame
+	// Presenter that composes from a single ViewState gets zero-valued
+	// footers.
+	//
+	// updateViewport builds its own during Update rather than sharing this
+	// one, and deliberately so: NewOutput is resolved from the viewport's
+	// scroll position, which updateViewport itself moves (SetContent, then
+	// GotoBottom or SetYOffset) AFTER it has built its ViewState, and which
+	// the tail of Update can move again. A value cached across the two would
+	// be stale by construction. Each phase builds one and shares it within
+	// itself.
+	vs := m.viewState()
 
 	// Header: brand (plus a yolo badge when the approval gate is off) left,
 	// cwd right, one dim hairline beneath.
-	left := theme.Brand.Render(theme.BrandName)
-	if m.cfg.ApprovalMode == "auto" {
-		left += "  " + theme.Yolo.Render(theme.YoloBadge)
-	}
-	cwd := theme.Meta.Render(shortenPath(currentDir()))
-	gap := m.width - lipgloss.Width(left) - lipgloss.Width(cwd)
-	if gap < 1 {
-		gap = 1
-	}
-	sb.WriteString(left + strings.Repeat(" ", gap) + cwd)
-	sb.WriteString("\n")
-	sb.WriteString(theme.Rule.Render(strings.Repeat("─", max(1, m.width))))
-	sb.WriteString("\n")
+	header := presenter.Header(vs)
 
 	// Body: log viewer, first-run empty state, otherwise the conversation viewport.
-	if m.showLogs {
-		sb.WriteString(m.renderLogsViewer())
-	} else if len(m.messages) == 0 && !m.loading && !m.awaitingApproval && !m.awaitingAsk {
-		sb.WriteString(renderEmptyState(m.width))
-	} else {
-		sb.WriteString(m.viewport.View())
-	}
-	sb.WriteString("\n")
-
-	// `/` completion popup, above the input.
-	if comp := renderCompletion(m.completion, strings.TrimSpace(m.textarea.Value()), m.width); comp != "" {
-		sb.WriteString(comp)
-		sb.WriteString("\n")
-	}
-
-	// Pending message queue, above the input. Selection only matters when the
-	// composer is empty (that's when up/down navigate it).
-	if q := renderQueue(m.queue, m.queueSel, m.width); q != "" {
-		sb.WriteString(q)
-		sb.WriteString("\n")
-	}
-
-	// Input. In key-driven approval choice mode the textarea is hidden (the
-	// approval block in the viewport carries the choice row); edit mode and
-	// normal chat show the textarea.
+	var body string
 	switch {
-	case !m.sessionReady:
-		sb.WriteString(theme.Help.Render(theme.Starting))
 	case m.showLogs:
-		// no input: the log viewer owns the body and the keystrokes
-	case m.awaitingApproval && !m.approvalEditing:
-		// no input: choice row lives in the viewport approval block
+		body = m.renderLogsViewer()
+	case !m.showingViewport():
+		body = renderEmptyState(m.width)
 	default:
-		sb.WriteString(m.textarea.View())
-	}
-	sb.WriteString("\n")
-	help := theme.Help.Render(m.helpLine())
-	if badge := m.footerBadges(lipgloss.Width(help)); badge != "" {
-		gap := m.width - lipgloss.Width(help) - lipgloss.Width(badge)
-		if gap < 1 {
-			gap = 1
-		}
-		sb.WriteString(help + strings.Repeat(" ", gap) + badge)
-	} else {
-		sb.WriteString(help)
+		body = m.viewport.View()
 	}
 
-	if m.err != nil {
-		// Fatal, session-level error (e.g. session init failed): pin a banner
-		// above the composer. Turn-level errors never land here — they stay in
-		// the transcript where they belong, so a recovered run doesn't keep
-		// showing the old failure.
-		sb.WriteString("\n" + theme.Error.Render(theme.Cross+" "+m.err.Error()))
-	}
+	// Composer: everything that sits between the body and the footer this
+	// frame — the `/` completion popup, the pending-message queue, and the
+	// input line (or the not-ready notice, or nothing at all in the modes
+	// where the viewport's own approval block carries the choice row).
+	composer := m.renderComposer(m.width)
 
-	// Jobs footers (renderers restyle internally; nil-safe when empty). Hidden
-	// while the log viewer owns the body.
-	if !m.showLogs {
-		if f := renderJobsFooter(m.jobs, m.width); f != "" {
-			sb.WriteString("\n" + f)
-		}
-		if f := renderShellJobsFooter(m.shellJobs.List(), m.width); f != "" {
-			sb.WriteString("\n" + f)
-		}
-		if f := renderLoopsFooter(m.loops, m.selfPaced, m.width); f != "" {
-			sb.WriteString("\n" + f)
-		}
-		if m.session != nil {
-			if f := renderGoalFooter(m.session.Goal(), m.width); f != "" {
-				sb.WriteString("\n" + f)
-			}
-		}
-	}
+	// Footer: new-output marker (scroll-position signal — content arrived below
+	// the fold while the user was reading history), help/badges line, error
+	// line, and the job-status footer rows. All of it already on vs — the same
+	// value Header rendered from, and the same one updateDimensions budgeted
+	// the viewport's height against. renderFooter reuses syncLayout's render
+	// of this same vs when nothing footer-relevant changed since, rather than
+	// paying for a second Footer call every frame.
+	footer, _ := m.renderFooter(vs, m.width)
 
-	return sb.String()
+	// Frame is the whole-screen composition point: it places header, body,
+	// composer and footer relative to one another. Inline (and full, for now)
+	// simply stack them in this same order; a surface that owns the whole
+	// screen can do more once there's a dialog worth overlaying (Task 11).
+	return presenter.Frame(vs, header, body, composer, footer, m.width, m.effectiveHeight())
 }
 
 // helpLine returns the context-appropriate help string.
@@ -1966,6 +2819,14 @@ func (m Model) helpLine() string {
 		return theme.HelpApprovalEdit
 	case m.awaitingApproval:
 		return theme.HelpApproval
+	case m.awaitingAsk:
+		return theme.HelpAsk
+	case m.awaitingResume:
+		// theme.ResumeDeleteConfirm (while armed) lives in the dialog's own
+		// Hint, adjacent to the row being deleted (see buildResumeDialog) —
+		// the footer keeps showing the key list unconditionally so the user
+		// never loses sight of which key cancels the arm.
+		return theme.HelpResume
 	case m.parked:
 		return "enter add a follow-up · ctrl+c interrupt · ctrl+o logs"
 	case strings.TrimSpace(m.textarea.Value()) == "" && len(m.queue) > 0:
@@ -2093,13 +2954,36 @@ func (m Model) contextBadge() string {
 // so a zero one has to render "0" rather than the empty string HumanTokens
 // returns, or the badge shows "session 1.2k in /  out". The exit summary prints
 // the same fixed shape and shares the same formatter.
+//
+// When both counts are <= 0 AND a session is attached, this falls back to
+// chat.Session.EstimatedUsage — the byte/4 conversation estimate — rather than
+// hiding the badge outright. That fallback exists for a streamed session:
+// cogito's bundled clients never populate StreamEvent.Usage, so Usage() stays
+// zero for every streamed turn (chat/usage.go's doc comment), and without this
+// the badge would simply vanish the moment streaming turns on. The estimate is
+// marked with theme.UsageEstimatedPrefix so it never reads as measured spend —
+// real usage.json and the exit summary still carry the true (possibly zero)
+// figure; only this footer badge borrows the estimate for display.
 func (m Model) usageBadge() string {
 	in, out := m.sessionUsage.PromptTokens, m.sessionUsage.CompletionTokens
+	estimated := false
 	if in <= 0 && out <= 0 {
-		return ""
+		if m.session == nil {
+			return ""
+		}
+		est := m.session.EstimatedUsage()
+		in, out = est.PromptTokens, est.CompletionTokens
+		if in <= 0 && out <= 0 {
+			return ""
+		}
+		estimated = true
 	}
-	return theme.Meta.Render(fmt.Sprintf("session %s in / %s out",
-		chat.HumanTokensOrZero(in), chat.HumanTokensOrZero(out)))
+	label := fmt.Sprintf("session %s in / %s out",
+		chat.HumanTokensOrZero(in), chat.HumanTokensOrZero(out))
+	if estimated {
+		label = theme.UsageEstimatedPrefix + label
+	}
+	return theme.Meta.Render(label)
 }
 
 // footerBadges renders the right-aligned bottom-bar badges for a help line of
@@ -2142,6 +3026,11 @@ func (m Model) quit() (tea.Model, tea.Cmd) {
 	m.quitting = true
 	if m.session != nil {
 		m.sessionUsage = m.session.Usage()
+		// Before Close, for the same reason the usage refresh is: recordSession
+		// reads through m.session (ExportHistory), so it must run while the
+		// session is still live. A save failure here is logged and never blocks
+		// exit — see recordSession's doc comment.
+		m.recordSession()
 		m.session.Close()
 	}
 	m.cancel()

@@ -4,14 +4,17 @@ import (
 	"fmt"
 
 	"github.com/mudler/nib/theme"
+	"github.com/mudler/nib/tui/render"
 )
 
-// renderGoalFooter renders a one-line indicator while a goal is active. Returns
-// "" when no goal is set. Mirrors renderLoopsFooter's style.
-func renderGoalFooter(goal string, width int) string {
+// goalFooterRow returns the plain {Glyph, Text, Kind} data for the goal
+// footer, and whether there is one to show. The presenter styles it
+// (render.FooterGoal gets the original theme.Subtle, unfilled treatment —
+// see inline.Footer).
+func goalFooterRow(goal string) (render.FooterRow, bool) {
 	if goal == "" {
-		return ""
+		return render.FooterRow{}, false
 	}
-	line := fmt.Sprintf("%s goal: %s  (/goal clear)", theme.Goal, truncateRunes(goal, 48))
-	return theme.Subtle.Render(line)
+	text := fmt.Sprintf("goal: %s  (/goal clear)", render.TruncateRunes(goal, 48))
+	return render.FooterRow{Glyph: theme.Goal, Text: text, Kind: render.FooterGoal}, true
 }

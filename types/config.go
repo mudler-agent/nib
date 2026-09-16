@@ -212,6 +212,13 @@ type Config struct {
 	// and re-applied on every turn (see Session.SendMessage), so a seeded system
 	// message would duplicate it. Set at runtime, never from the YAML config.
 	InitialHistory []openai.ChatCompletionMessage `yaml:"-"`
+	// ResumeSessionID and ResumeSessionTitle, when non-empty, seed the TUI's
+	// own session bookkeeping (Model.sessionID/sessionTitle) alongside
+	// InitialHistory above, so continuing a --resume'd conversation autosaves
+	// back over the SAME stored session file instead of forking a new one.
+	// Set at runtime by the --resume flag, never from the YAML config.
+	ResumeSessionID    string `yaml:"-"`
+	ResumeSessionTitle string `yaml:"-"`
 	// WorkingDir, when non-empty, is the directory host tools (bash, filesystem)
 	// operate in. Runtime-only; empty means the process cwd (legacy behavior).
 	WorkingDir string `yaml:"-"`
@@ -240,6 +247,13 @@ type Config struct {
 	Computer ComputerConfig `yaml:"-"`
 	// Browser is the opt-in browser-automation capability (chromedp-driven).
 	Browser BrowserConfig `yaml:"browser,omitempty"`
+	// SessionRetention caps how many recorded /resume sessions
+	// (chat.SessionStore, ~/.config/nib/sessions/*.json — each a full
+	// conversation transcript) are kept; the oldest beyond this count are
+	// pruned on every save, except the session currently being written
+	// (chat.SessionStore.prune's keepID). 0 (unset) means the store's own
+	// default, chat.DefaultMaxSessions (200).
+	SessionRetention int `yaml:"session_retention"`
 }
 
 type PromptInjectionProtectionConfig struct {

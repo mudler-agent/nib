@@ -108,6 +108,31 @@ func TestTransientErrorDroppedOnParkedReply(t *testing.T) {
 	}
 }
 
+func TestParkedReplyDedupClearsAfterTerminalReply(t *testing.T) {
+	m := newQueueTestModel()
+	m.lastParkedReply = "same answer"
+	m.messages = []ChatMessage{{Role: "assistant", Content: "same answer"}}
+
+	next, _ := m.Update(responseMsg{content: "same answer"})
+	nm := next.(Model)
+	if len(nm.messages) != 1 {
+		t.Fatalf("terminal parked reply should be deduped once, got %+v", nm.messages)
+	}
+	if nm.lastParkedReply != "" {
+		t.Fatalf("parked reply marker should clear after response, got %q", nm.lastParkedReply)
+	}
+
+	next, _ = nm.Update(responseMsg{content: "same answer"})
+	nm = next.(Model)
+	if len(nm.messages) != 2 {
+		t.Fatalf("later identical reply should not be skipped, got %+v", nm.messages)
+	}
+	last := nm.messages[len(nm.messages)-1]
+	if last.Role != "assistant" || last.Content != "same answer" {
+		t.Fatalf("last message = %+v, want assistant/same answer", last)
+	}
+}
+
 func TestDropTransientErrorsIsNoopWithoutErrors(t *testing.T) {
 	m := newQueueTestModel()
 	m.messages = []ChatMessage{

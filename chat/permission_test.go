@@ -3,6 +3,8 @@ package chat
 import (
 	"context"
 	"testing"
+
+	"github.com/mudler/nib/provenance"
 )
 
 func TestDecideToolCallAllowlist(t *testing.T) {
@@ -31,7 +33,6 @@ func TestDecideToolCallAuto(t *testing.T) {
 	calls := 0
 	s := &Session{
 		ctx:          context.Background(),
-		autoApprove:  true,
 		allowedTools: map[string]bool{},
 		callbacks: Callbacks{
 			OnToolCall: func(ToolCallRequest) ToolCallResponse {
@@ -40,6 +41,7 @@ func TestDecideToolCallAuto(t *testing.T) {
 			},
 		},
 	}
+	s.autoApprove.Store(true)
 
 	dec := s.decideToolCall(ToolCallRequest{Name: "anything", Arguments: "{}"})
 	if !dec.Approved {
@@ -302,4 +304,61 @@ func TestDecideToolCallAlwaysPrefixValidation(t *testing.T) {
 			t.Fatalf("expected spy consulted again for git command, got %d calls", calls)
 		}
 	})
+}
+
+// newTestSession builds a minimal Session for decideToolCall tests, mirroring
+// newDecideSession in readonly_decide_test.go.
+func newTestSession(t *testing.T) *Session {
+	t.Helper()
+	return &Session{
+		ctx:              context.Background(),
+		allowedTools:     map[string]bool{},
+		readOnlyCommands: newReadOnlyCommands(nil),
+	}
+}
+
+// newTestSessionWithExternalSource builds a Session that already has one
+// externally-influenced source recorded directly (bypassing the provenance
+// classifier, which is irrelevant to the approval-gate ordering under test),
+// so decideToolCall's externally-influenced gate is live.
+func newTestSessionWithExternalSource(t *testing.T) *Session {
+	t.Helper()
+	s := newTestSession(t)
+	s.recordExternalEnvelope(provenance.NewExternal(s.ctx, "", "tool-result", "web_fetch", "external page content", nil))
+	return s
+}
+
+// TestSetAutoApproveBypassesExternalInfluencePrompt pins yolo's user-facing
+// contract: every tool call is approved without opening the approval UI, even
+// after external content enters the conversation.
+func TestSetAutoApproveBypassesExternalInfluencePrompt(t *testing.T) {
+	s := newTestSessionWithExternalSource(t)
+	s.SetAutoApprove(true)
+
+	asked := false
+	s.callbacks.OnToolCall = func(ToolCallRequest) ToolCallResponse {
+		asked = true
+		return ToolCallResponse{Approved: false}
+	}
+
+	decision := s.decideToolCall(ToolCallRequest{Name: "bash", Arguments: `{"script":"rm -rf /tmp/x"}`})
+	if !decision.Approved {
+		t.Fatal("yolo did not approve an externally influenced tool call")
+	}
+	if asked {
+		t.Fatal("yolo opened the approval UI for an externally influenced tool call")
+	}
+}
+
+// TestYoloOffKeepsNarrowerGrants: turning the broad switch off must not silently
+// revoke the specific grants the user minted with "always allow".
+func TestYoloOffKeepsNarrowerGrants(t *testing.T) {
+	s := newTestSession(t)
+	s.allowedTools = map[string]bool{"read": true}
+	s.SetAutoApprove(true)
+	s.SetAutoApprove(false)
+
+	if !s.allowedTools["read"] {
+		t.Error("turning yolo off revoked an unrelated always-allow grant")
+	}
 }

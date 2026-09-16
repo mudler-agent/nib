@@ -15,6 +15,7 @@ import (
 	"github.com/mudler/nib/chat"
 	wizmcp "github.com/mudler/nib/mcp"
 	"github.com/mudler/nib/tui"
+	"github.com/mudler/nib/tui/render"
 	"github.com/mudler/nib/types"
 )
 
@@ -32,9 +33,9 @@ import (
 // caller's: app.run installs the handler for standalone nib, and an embedder
 // installs its own, because the program itself no longer listens for any. See
 // tuiProgramOptions for why that has to be exactly one owner.
-func RunTUI(ctx context.Context, cfg types.Config, height int, streams Streams, shellJobs *wizmcp.ShellJobs, transports ...mcp.Transport) error {
+func RunTUI(ctx context.Context, cfg types.Config, height int, streams Streams, shellJobs *wizmcp.ShellJobs, pres render.Presenter, transports ...mcp.Transport) error {
 
-	model := tui.NewModel(ctx, cfg, height, shellJobs, transports...)
+	model := tui.NewModel(ctx, cfg, height, shellJobs, pres, transports...)
 
 	// Open /dev/tty directly for TUI - this is crucial when stdout is being captured
 	// (e.g., when run from a shell widget like `output=$(wiz --height 40%)`)
@@ -75,18 +76,26 @@ func RunTUI(ctx context.Context, cfg types.Config, height int, streams Streams, 
 	// Move to beginning of line
 	fmt.Fprint(ttyOut, "\x1b[G")
 
-	p := tea.NewProgram(model, tuiProgramOptions(ctx, ttyIn, ttyOut)...)
+	caps := pres.Caps()
+	prog := tea.NewProgram(model, tuiProgramOptions(ctx, ttyIn, ttyOut, caps)...)
 
-	finalModel, runErr := p.Run()
+	finalModel, runErr := prog.Run()
 
-	// Clear the space we used (move to start and clear to end of screen)
-	fmt.Fprint(ttyOut, "\x1b[G") // Move to beginning of line
-	fmt.Fprint(ttyOut, "\x1b[J") // Clear from cursor to end of screen
+	// Clear the space we used (move to start and clear to end of screen). Only
+	// for the inline widget: with the alt screen, bubbletea already restored
+	// the terminal's original screen and scrollback on exit, so these escapes
+	// would run against that restored content instead of the space this
+	// function made room for, corrupting it.
+	if !caps.AltScreen {
+		fmt.Fprint(ttyOut, "\x1b[G") // Move to beginning of line
+		fmt.Fprint(ttyOut, "\x1b[J") // Clear from cursor to end of screen
+	}
 
 	// ttyOut, never stdout: stdout is the shell-capture stream (see below), so a
-	// summary there would be inserted into the user's command line. The TUI runs
-	// without an alt screen, so this lands in scrollback normally. Printed before
-	// the exit check because the tokens were spent either way.
+	// summary there would be inserted into the user's command line. Once the
+	// program has exited (alt screen already restored, if it had one), this
+	// lands in scrollback normally. Printed before the exit check because the
+	// tokens were spent either way.
 	if m, ok := finalModel.(tui.Model); ok {
 		if s := chat.FormatSessionSummary(m.SessionUsage()); s != "" {
 			fmt.Fprintln(ttyOut, s)
@@ -134,14 +143,25 @@ func RunTUI(ctx context.Context, cfg types.Config, height int, streams Streams, 
 // It is a function so a test can build the same program over a pipe and prove
 // cancellation unwinds it, which is not something RunTUI can be asked to
 // demonstrate: RunTUI needs a controlling terminal.
-func tuiProgramOptions(ctx context.Context, in io.Reader, out io.Writer) []tea.ProgramOption {
-	// No alt screen: render inline like fzf, on /dev/tty rather than on stdout.
-	return []tea.ProgramOption{
+//
+// caps comes from the active Presenter (Presenter.Caps()): the inline widget
+// renders like fzf, in the normal scrollback with no alt screen and no mouse
+// reporting, while the full-screen presenter takes the alt screen and enables
+// mouse reporting. Either way rendering happens on /dev/tty, never on stdout.
+func tuiProgramOptions(ctx context.Context, in io.Reader, out io.Writer, caps render.Caps) []tea.ProgramOption {
+	opts := []tea.ProgramOption{
 		tea.WithContext(ctx),
 		tea.WithoutSignalHandler(),
 		tea.WithInput(in),
 		tea.WithOutput(out),
 	}
+	if caps.AltScreen {
+		opts = append(opts, tea.WithAltScreen())
+	}
+	if caps.Mouse {
+		opts = append(opts, tea.WithMouseCellMotion())
+	}
+	return opts
 }
 
 // decideTUIExit maps what tea.Program.Run returned onto what RunTUI returns.

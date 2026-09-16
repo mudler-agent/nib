@@ -71,6 +71,28 @@ func estimateTokens(msgs []openai.ChatCompletionMessage) int {
 	return n / 4
 }
 
+// estimateUsageSplit is estimateTokens sliced by role: the assistant's own
+// messages count toward completion, everything else (user, system, tool
+// results) toward prompt. Used by Session.EstimatedUsage as the fallback for
+// a streamed session whose real counter reports zero. Character totals are
+// summed per side before the /4 division, matching estimateTokens's own
+// method rather than rounding each message independently.
+func estimateUsageSplit(msgs []openai.ChatCompletionMessage) (prompt, completion int) {
+	var promptChars, completionChars int
+	for _, m := range msgs {
+		chars := len(m.Content)
+		for _, tc := range m.ToolCalls {
+			chars += len(tc.Function.Name) + len(tc.Function.Arguments)
+		}
+		if m.Role == "assistant" {
+			completionChars += chars
+		} else {
+			promptChars += chars
+		}
+	}
+	return promptChars / 4, completionChars / 4
+}
+
 // ContextTokens reports the current conversation size in tokens for display:
 // the last request's reported prompt tokens, or a byte/4 estimate when the
 // backend hasn't reported usage yet (e.g. before the first turn). This is the

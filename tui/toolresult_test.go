@@ -16,8 +16,8 @@ import (
 // is shown inline too, labeled with its agent id.
 func TestToolResultMessageRenders(t *testing.T) {
 	t.Run("renders tool role inline", func(t *testing.T) {
-		m := Model{viewport: viewport.New(80, 10)}
-		m.messages = append(m.messages, ChatMessage{Role: "tool", Name: "bash", Content: "hello\nworld"})
+		m := newTestModel(Model{viewport: viewport.New(80, 10)})
+		m = withMessages(m, ChatMessage{Role: "tool", Name: "bash", Content: "hello\nworld"})
 		m.updateViewport()
 
 		out := m.viewport.View()
@@ -30,11 +30,11 @@ func TestToolResultMessageRenders(t *testing.T) {
 	})
 
 	t.Run("sub-agent tool result appends a compact agent_tool line", func(t *testing.T) {
-		m := Model{
+		m := newTestModel(Model{
 			ctx:            context.Background(),
 			viewport:       viewport.New(80, 10),
 			toolResultChan: make(chan chat.ToolResult, 1),
-		}
+		})
 		before := len(m.messages)
 		next, _ := m.Update(toolResultMsg{Name: "bash", Arguments: `{"command":"go build ./..."}`, Result: "y", AgentID: "agent1234"})
 		nm := next.(Model)
@@ -51,8 +51,8 @@ func TestToolResultMessageRenders(t *testing.T) {
 	})
 
 	t.Run("sub-agent final result renders indented under its thread", func(t *testing.T) {
-		m := Model{viewport: viewport.New(80, 10)}
-		m.messages = append(m.messages, ChatMessage{Role: "agent_result", Name: "explore", AgentID: "agent1234", Content: "done"})
+		m := newTestModel(Model{viewport: viewport.New(80, 10)})
+		m = withMessages(m, ChatMessage{Role: "agent_result", Name: "explore", AgentID: "agent1234", Content: "done"})
 		m.updateViewport()
 		out := m.viewport.View()
 		if !strings.Contains(out, theme.Arrow) {
@@ -64,11 +64,11 @@ func TestToolResultMessageRenders(t *testing.T) {
 	})
 
 	t.Run("root result is appended via Update", func(t *testing.T) {
-		m := Model{
+		m := newTestModel(Model{
 			ctx:            context.Background(),
 			viewport:       viewport.New(80, 10),
 			toolResultChan: make(chan chat.ToolResult, 1),
-		}
+		})
 		next, _ := m.Update(toolResultMsg{Name: "bash", Result: "hi"})
 		nm := next.(Model)
 		if len(nm.messages) != 1 {

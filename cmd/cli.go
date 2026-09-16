@@ -37,9 +37,6 @@ func resolveCLIInput(input string, cfg types.Config) slash.Action {
 	return slash.Resolve(input, cfg.Commands, cfg.Skills, cfg.Agents)
 }
 
-// Spinner frames for animated display
-var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-
 // spinner manages an animated spinner for CLI output.
 //
 // The animation uses a carriage return to redraw a single line in place, which
@@ -101,6 +98,7 @@ func (s *spinner) start(message string) {
 	s.mu.Unlock()
 
 	go func() {
+		frames := theme.SpinnerFrames()
 		frame := 0
 		ticker := time.NewTicker(80 * time.Millisecond)
 		defer ticker.Stop()
@@ -116,8 +114,8 @@ func (s *spinner) start(message string) {
 				s.mu.Lock()
 				msg := s.message
 				s.mu.Unlock()
-				fmt.Fprintf(s.out, "\r%s %s", theme.Help.Render(spinnerFrames[frame]), theme.Help.Render(msg))
-				frame = (frame + 1) % len(spinnerFrames)
+				fmt.Fprintf(s.out, "\r%s %s", theme.Help.Render(frames[frame]), theme.Help.Render(msg))
+				frame = (frame + 1) % len(frames)
 			}
 		}
 	}()
@@ -261,7 +259,7 @@ func RunCLI(ctx context.Context, cfg types.Config, streams Streams, shellJobs *w
 			for _, line := range strings.Split(strings.TrimRight(reasoning, "\n"), "\n") {
 				fmt.Fprintln(out, "  "+theme.Reasoning.Render(line))
 			}
-			spin.start(theme.Status(theme.VerbThinking, 0))
+			spin.start(theme.VerbThinking)
 		},
 		OnToolCall: func(req chat.ToolCallRequest) chat.ToolCallResponse {
 			spin.stop()
@@ -329,7 +327,7 @@ func RunCLI(ctx context.Context, cfg types.Config, streams Streams, shellJobs *w
 			switch strings.ToLower(text) {
 			case "y", "yes", "1":
 				response = chat.ToolCallResponse{Approved: true}
-				spin.start(theme.Status(theme.VerbWorking, 0))
+				spin.start(theme.VerbWorking)
 			case "a", "always", "2":
 				response = chat.ToolCallResponse{Approved: true, AlwaysAllow: true, AlwaysPrefix: prefix}
 				if prefix != "" {
@@ -337,17 +335,17 @@ func RunCLI(ctx context.Context, cfg types.Config, streams Streams, shellJobs *w
 				} else {
 					fmt.Fprintln(out, theme.Subtle.Render("added '"+req.Name+"' to the session allow list"))
 				}
-				spin.start(theme.Status(theme.VerbWorking, 0))
+				spin.start(theme.VerbWorking)
 			case "all", "3":
 				response = chat.ToolCallResponse{Approved: true, AllowAllTurn: true}
 				fmt.Fprintln(out, theme.Subtle.Render("approving all tool calls for this turn"))
-				spin.start(theme.Status(theme.VerbWorking, 0))
+				spin.start(theme.VerbWorking)
 			case "n", "no":
 				response = chat.ToolCallResponse{Approved: false}
 				fmt.Fprintln(out, theme.Error.Render(theme.Cross+" denied"))
 			default:
 				response = chat.ToolCallResponse{Approved: true, Adjustment: text}
-				spin.start(theme.Status(theme.VerbWorking, 0))
+				spin.start(theme.VerbWorking)
 			}
 			return response
 		},
@@ -365,7 +363,7 @@ func RunCLI(ctx context.Context, cfg types.Config, streams Streams, shellJobs *w
 			for _, line := range strings.Split(strings.TrimRight(content, "\n"), "\n") {
 				fmt.Fprintln(out, "  "+theme.Subtle.Render(line))
 			}
-			spin.start(theme.Status(theme.VerbWorking, 0))
+			spin.start(theme.VerbWorking)
 		},
 		// Both notices fire from the agent's goroutine while the spinner may be
 		// mid-frame, so they go through writeNotice rather than Fprintln: an
@@ -382,7 +380,7 @@ func RunCLI(ctx context.Context, cfg types.Config, streams Streams, shellJobs *w
 			fmt.Fprintln(errOut, theme.Error.Render(theme.Cross+" "+err.Error()))
 		},
 		OnToolResult: func(res chat.ToolResult) {
-			preview := chat.PreviewResult(res.Result, 12)
+			preview := chat.PreviewResult(res.Name, res.Result, 12)
 			if preview == "" {
 				return
 			}
@@ -399,12 +397,12 @@ func RunCLI(ctx context.Context, cfg types.Config, streams Streams, shellJobs *w
 			for _, line := range strings.Split(preview, "\n") {
 				fmt.Fprintln(out, theme.Help.Render("  "+line))
 			}
-			spin.start(theme.Status(theme.VerbThinking, 0))
+			spin.start(theme.VerbThinking)
 		},
 		OnAgentEvent: func(ev chat.AgentEvent) {
 			spin.stop()
 			fmt.Fprintln(out, formatAgentEventLine(ev))
-			spin.start(theme.Status(theme.VerbThinking, 0))
+			spin.start(theme.VerbThinking)
 		},
 	}
 
@@ -517,7 +515,7 @@ func RunCLI(ctx context.Context, cfg types.Config, streams Streams, shellJobs *w
 				}
 				continue
 			case slash.KindCompact:
-				spin.start(theme.Status(theme.VerbThinking, 0))
+				spin.start(theme.VerbThinking)
 				before, after, err := session.CompactHistory()
 				spin.stop()
 				if err != nil {
@@ -575,9 +573,24 @@ func RunCLI(ctx context.Context, cfg types.Config, streams Streams, shellJobs *w
 					fmt.Fprintln(out, theme.Subtle.Render(fmt.Sprintf("cleared %d staged attachment(s)", n)))
 				}
 				continue
-			default: // slash.KindSend
+			case slash.KindYolo:
+				// A session-wide flag, same as the TUI's: works perfectly well
+				// outside a picker or popup, so it gets a real case rather than
+				// falling into the "not available" default below.
+				on := !session.AutoApprove()
+				if action.YoloOn != nil {
+					on = *action.YoloOn
+				}
+				session.SetAutoApprove(on)
+				notice := theme.YoloOff
+				if on {
+					notice = theme.YoloOn
+				}
+				fmt.Fprintln(out, theme.Subtle.Render(notice))
+				continue
+			case slash.KindSend:
 				fmt.Fprintln(out)
-				spin.start(theme.Status(theme.VerbThinking, 0))
+				spin.start(theme.VerbThinking)
 				files, overrides := attachstage.BuildSend(pending, action)
 				if len(files) == 0 {
 					_, err = session.SendMessage(action.Text)
@@ -597,6 +610,21 @@ func RunCLI(ctx context.Context, cfg types.Config, streams Streams, shellJobs *w
 					fmt.Fprintln(errOut, theme.Error.Render(theme.Cross+" "+err.Error()))
 				}
 				fmt.Fprintln(out)
+			default:
+				// Any Kind without an explicit case above has no CLI meaning:
+				// /resume has no picker surface here, and /loop and /goal (the
+				// pre-existing hole this task also closes) have nothing in this
+				// REPL to drive them either. Refusing here — rather than
+				// falling through to KindSend, the previous behavior — is the
+				// actual fix: the next Kind slash.Resolve grows lands here
+				// automatically instead of being silently sent to the model as
+				// chat text.
+				msg := fmt.Sprintf(theme.CLINotAvailable, cliKindName(action.Kind))
+				if action.Kind == slash.KindResume {
+					msg += " " + theme.CLIResumeHint
+				}
+				fmt.Fprintln(out, theme.Subtle.Render(msg))
+				continue
 			}
 		}
 	}
@@ -647,6 +675,23 @@ func compactNotice(before, after int) string {
 		chat.HumanTokensOrZero(before), chat.HumanTokensOrZero(after))
 }
 
+// cliKindName names a resolved slash.Kind for the CLI's "not available"
+// notice (theme.CLINotAvailable). Only kinds that can actually reach that
+// default arm need an entry here; anything left out still gets refused, just
+// with a generic name instead of a specific one.
+func cliKindName(k slash.Kind) string {
+	switch k {
+	case slash.KindLoopStart, slash.KindLoopStop, slash.KindLoopList:
+		return "/loop"
+	case slash.KindGoalSet, slash.KindGoalShow, slash.KindGoalClear:
+		return "/goal"
+	case slash.KindResume:
+		return "/resume"
+	default:
+		return "that command"
+	}
+}
+
 func help(out io.Writer) {
-	fmt.Fprintln(out, theme.Help.Render("commands:  exit  ·  clear  ·  help"))
+	fmt.Fprintln(out, theme.Help.Render(theme.CLIHelp))
 }

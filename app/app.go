@@ -10,16 +10,21 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 
+	"github.com/mudler/nib/chat"
 	"github.com/mudler/nib/cmd"
 	"github.com/mudler/nib/config"
 	"github.com/mudler/nib/internal"
 	"github.com/mudler/nib/mcp"
+	"github.com/mudler/nib/plugin"
 	"github.com/mudler/nib/setup"
 	"github.com/mudler/nib/trace"
+	"github.com/mudler/nib/tui/render/full"
+	"github.com/mudler/nib/tui/render/inline"
 	"github.com/mudler/nib/types"
 	"github.com/mudler/xlog"
 	"golang.org/x/term"
@@ -338,6 +343,8 @@ func runCtx(ctx context.Context, o Options) int {
 	setupFlag := fs.Bool("setup", false, "Run the interactive model setup wizard")
 	traceDirFlag := fs.String("trace-dir", "", "Write a session LLM trace (NDJSON) and token totals (usage.json) to this directory; also via NIB_TRACE_DIR")
 	yoloFlag := fs.Bool("yolo", false, "Auto-approve every tool call without prompting; also via NIB_YOLO")
+	resumeFlag := fs.Bool("resume", false, "Resume a recorded session: an id given as a bare argument after this flag loads it directly, otherwise the newest session (this directory unless --all) is used")
+	allFlag := fs.Bool("all", false, "With --resume, widen the match to sessions recorded in any working directory, not just this one")
 	if err := fs.Parse(args); err != nil {
 		// ContinueOnError hands back ErrHelp for -h/--help, which the global
 		// flag.CommandLine used to turn into a clean exit. Keep that.
@@ -400,6 +407,22 @@ func runCtx(ctx context.Context, o Options) int {
 	// "auto" approval, overriding whatever the config file set.
 	if *yoloFlag || envTrue(os.Getenv("NIB_YOLO")) {
 		cfg.ApprovalMode = "auto"
+	}
+
+	// --resume mirrors /resume's own semantics but resolved up front, before
+	// the TUI/CLI ever starts, so the very first turn already carries the
+	// prior history: an id given as fs.Args()[0] loads it directly, otherwise
+	// the newest session in scope (cwd-filtered unless --all) is used. A
+	// resume failure (bad id, nothing recorded) is reported but not fatal —
+	// the run continues as a fresh session rather than refusing to start.
+	if *resumeFlag {
+		id := ""
+		if a := fs.Args(); len(a) > 0 {
+			id = a[0]
+		}
+		if err := applyResumeFlag(&cfg, id, *allFlag); err != nil {
+			fmt.Fprintf(o.stderr(), "%s: --resume: %v\n", o.name(), err)
+		}
 	}
 
 	if cfg.LogLevel == "" {
@@ -500,13 +523,13 @@ func runCtx(ctx context.Context, o Options) int {
 				return 1
 			}
 		} else {
-			if err := cmd.RunTUI(ctx, cfg, height, streams, shellJobs, transports...); err != nil {
+			if err := cmd.RunTUI(ctx, cfg, height, streams, shellJobs, inline.New(), transports...); err != nil {
 				fmt.Fprintf(o.stderr(), "Error: %v\n", err)
 				return 1
 			}
 		}
 	default: // modeTUI, fullscreen, direct (no tmux split)
-		if err := cmd.RunTUI(ctx, cfg, parseHeight("100%"), streams, shellJobs, transports...); err != nil {
+		if err := cmd.RunTUI(ctx, cfg, parseHeight("100%"), streams, shellJobs, full.New(), transports...); err != nil {
 			fmt.Fprintf(o.stderr(), "Error: %v\n", err)
 			return 1
 		}
@@ -543,4 +566,43 @@ func envTrue(v string) bool {
 	default:
 		return true
 	}
+}
+
+// applyResumeFlag resolves a --resume invocation against the same session
+// store the TUI's /resume reads and writes (see chat.NewSessionStore,
+// tui/resume.go — rooted at BaseDir, not the process cwd, precisely so /resume
+// --all has other projects' sessions to widen to), and seeds cfg accordingly:
+// id, when non-empty, loads that session directly; otherwise the newest
+// session in scope (cwd-filtered unless all) is used, matching the natural
+// reading of a bare `nib --resume`. cfg.ResumeSessionID/Title travel alongside
+// InitialHistory so the TUI's own autosave continues writing this same
+// session file instead of forking a new one on the first turn.
+func applyResumeFlag(cfg *types.Config, id string, all bool) error {
+	store := chat.NewSessionStore(filepath.Join(plugin.BaseDirIn(cfg.BaseDir), "sessions"))
+
+	var rec chat.SessionRecord
+	var err error
+	if id != "" {
+		rec, err = store.Load(id)
+	} else {
+		cwd := ""
+		if !all {
+			cwd, _ = os.Getwd()
+		}
+		var sessions []chat.SessionRecord
+		if sessions, err = store.List(cwd); err == nil {
+			if len(sessions) == 0 {
+				return fmt.Errorf("no recorded sessions here (try --resume --all)")
+			}
+			rec = sessions[0] // List returns newest-first
+		}
+	}
+	if err != nil {
+		return err
+	}
+
+	cfg.InitialHistory = rec.Messages
+	cfg.ResumeSessionID = rec.ID
+	cfg.ResumeSessionTitle = rec.Title
+	return nil
 }

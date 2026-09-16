@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/mudler/nib/chat"
 	"github.com/mudler/nib/loop"
+	"github.com/mudler/nib/tui/render"
 )
 
 // newLoopTestModel builds an idle, session-ready model with a fresh registry,
@@ -17,14 +18,14 @@ import (
 func newLoopTestModel() Model {
 	ta := textarea.New()
 	ta.Focus()
-	return Model{
+	return newTestModel(Model{
 		textarea:     ta,
 		viewport:     viewport.New(80, 10),
 		spinner:      spinner.New(),
 		session:      &chat.Session{}, // RunLive()==false → idle branch
 		sessionReady: true,
 		loops:        loop.NewRegistry(),
-	}
+	})
 }
 
 func TestStopLoopAll(t *testing.T) {
@@ -134,13 +135,21 @@ func TestDurationToCronParses(t *testing.T) {
 	}
 }
 
-func TestRenderLoopsFooter(t *testing.T) {
+// TestLoopsFooterRow exercises loopsFooterRow, the live path View() actually
+// calls (renderLoopsFooter, the fully-styled string-returning function this
+// test used to pin, was deleted once it had zero production call sites left
+// — see the Task 6 fix-round-2 report).
+func TestLoopsFooterRow(t *testing.T) {
 	r := loop.NewRegistry()
-	if f := renderLoopsFooter(r, 0, 80); f != "" {
-		t.Fatalf("empty registry should render nothing, got %q", f)
+	if _, ok := loopsFooterRow(r, 0); ok {
+		t.Fatal("empty registry should report nothing to show")
 	}
 	r.Add("*/5 * * * *", "/foo", true, false)
-	if f := renderLoopsFooter(r, 0, 80); f == "" {
-		t.Fatal("expected non-empty footer with one job")
+	row, ok := loopsFooterRow(r, 0)
+	if !ok {
+		t.Fatal("expected a row with one job")
+	}
+	if row.Kind != render.FooterLoops {
+		t.Fatalf("expected FooterLoops kind, got %v", row.Kind)
 	}
 }

@@ -56,7 +56,7 @@ type Session struct {
 	allowedTools         map[string]bool  // Tools that don't need approval this session
 	toolAllow            map[string]bool  // if non-empty, the only built-in tools exposed to the model
 	allowedBashPrefixes  map[string]bool  // bash first-word grants ("git" → simple `git …` auto-approved)
-	autoApprove          bool             // approval_mode: auto — approve every tool call
+	autoApprove          atomic.Bool      // approval_mode: auto, or the /yolo toggle — approve every tool call
 	allowAllTurn         bool             // user chose "allow all this turn"; reset each top-level turn
 	approvalMode         string           // raw approval_mode: "" / "prompt" / "strict" / "allowlist" / "auto"
 	readOnlyCommands     readOnlyCommands // bash commands auto-approved in prompt mode
@@ -424,7 +424,7 @@ func NewSession(ctx context.Context, cfg types.Config, callbacks Callbacks, tran
 	for _, name := range cfg.BuiltinTools {
 		s.toolAllow[name] = true
 	}
-	s.autoApprove = cfg.ApprovalMode == "auto"
+	s.autoApprove.Store(cfg.ApprovalMode == "auto")
 	s.approvalMode = cfg.ApprovalMode
 	s.readOnlyCommands = newReadOnlyCommands(cfg.ReadOnlyCommands)
 	// Wire reloadable state (skills server, config MCP clients, agents, hooks,
@@ -451,6 +451,20 @@ func (s *Session) LoadSkill(name string) (string, error) {
 	return "", fmt.Errorf("unknown skill %q", name)
 }
 
+// SetAutoApprove turns the session-wide approve-everything switch on or off at
+// runtime (the /yolo toggle). It is deliberately atomic rather than guarded by
+// historyMu, which is held across whole tool calls.
+//
+// It does not touch allowedTools or allowedBashPrefixes: those are narrower
+// grants the user minted explicitly, and revoking them as a side effect of
+// flipping this switch would be a surprise. While active, it bypasses the
+// external-influence approval prompt but still permits PreToolUse hooks to
+// enforce their policies.
+func (s *Session) SetAutoApprove(on bool) { s.autoApprove.Store(on) }
+
+// AutoApprove reports whether every tool call is currently auto-approved.
+func (s *Session) AutoApprove() bool { return s.autoApprove.Load() }
+
 // decideToolCall resolves a tool-call request: PreToolUse hooks first (a hook
 // may block/approve/adjust), then the session allow-list, then the user gate.
 // emitSubAgentToolLine surfaces a sub-agent's tool call as a compact inline
@@ -471,12 +485,13 @@ func (s *Session) emitSubAgentToolLine(approved bool, agentID, name, args string
 func (s *Session) decideToolCall(req ToolCallRequest) cogito.ToolCallDecision {
 	req.ExternalSources = s.activeExternalSourceIDs()
 	// Once external data has entered the conversation, consequential actions
-	// need a fresh human decision. This check intentionally precedes hooks and
-	// broad grants: neither can silently widen trust granted by external text.
+	// need a fresh human decision unless session-wide auto-approval is active.
+	// Turn-wide and narrower grants cannot silently widen trust granted by
+	// external text. PreToolUse hooks still run in yolo mode below.
 	externallyInfluenced := len(req.ExternalSources) > 0 &&
 		!IsReadOnly(req.Name, req.Arguments, s.readOnlyCommands)
-	if externallyInfluenced {
-		note := fmt.Sprintf("Security: this action follows %d untrusted external source(s); review it independently. Broad grants do not bypass this boundary.", len(req.ExternalSources))
+	if externallyInfluenced && !s.autoApprove.Load() {
+		note := fmt.Sprintf("Security: this action follows %d untrusted external source(s); review it independently. Turn-wide and narrower grants do not bypass this boundary.", len(req.ExternalSources))
 		if req.Reasoning != "" {
 			req.Reasoning = note + "\nModel rationale: " + req.Reasoning
 		} else {
@@ -506,7 +521,7 @@ func (s *Session) decideToolCall(req ToolCallRequest) cogito.ToolCallDecision {
 		}
 	}
 
-	if s.autoApprove || s.allowAllTurn {
+	if s.autoApprove.Load() || s.allowAllTurn {
 		return cogito.ToolCallDecision{Approved: true}
 	}
 	if s.allowedTools[req.Name] {

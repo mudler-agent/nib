@@ -8,6 +8,7 @@ package theme
 
 import (
 	"os"
+	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -29,6 +30,7 @@ var (
 	Sep            = "·"  // separator between label and message / list items
 	PromptGlyph    = "›"  // input prompt
 	ApprovalGutter = "▏"  // left rule on a tool-approval block
+	MsgGutter      = "▏"  // left rule marking a user/assistant message block (full surface)
 	SubAgent       = "↳"  // sub-agent line marker
 	Cross          = "×"  // error marker
 	Arrow          = "→"  // tool-call / edit / mapping arrow
@@ -37,7 +39,35 @@ var (
 	ShellJob       = "▷"  // shell-jobs footer marker
 	ScrollKeys     = "↑↓" // up/down navigation hint
 	ReasoningGlyph = "✻"  // marks a block of model thinking/reasoning
+	NewOutputGlyph = "↓"  // footer marker: new content arrived while scrolled up
+	HairlineGlyph  = "─"  // the one-cell rule repeated under the header
+	BoxRule        = "│"  // vertical rule down the side of a collapsed trace box
+
+	// RadioOn/RadioOff mark a single-select ask_user option; CheckOn/CheckOff
+	// mark a multi-select one. Cursor marks whichever row is highlighted,
+	// regardless of selection mode. All four are geometric shapes, which paint
+	// as blank cells on the Linux VT console — see applyGlyphProfile.
+	RadioOn  = "◉"
+	RadioOff = "○"
+	CheckOn  = "◼"
+	CheckOff = "◻"
+	Cursor   = "▸"
 )
+
+// spinnerFrames animates the working indicator. Braille cells read as a smooth
+// rotation at the 80ms tick; the VT console cannot render them, so
+// SpinnerFrames swaps in the classic ASCII barber pole there, at call time
+// rather than in applyGlyphProfile like the other swappable glyphs. Every
+// frame in a set is the same width so the status line never jitters.
+var spinnerFrames = []string{"⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"}
+
+// SpinnerFrames returns the animation frames for the current terminal profile.
+func SpinnerFrames() []string {
+	if RestrictedGlyphs() {
+		return []string{"-", "\\", "|", "/"}
+	}
+	return spinnerFrames
+}
 
 // RestrictedGlyphs reports whether glyphs must fall back to ASCII because the
 // terminal can only render a fixed bitmap font with no arrows, geometric
@@ -61,22 +91,36 @@ func init() { applyGlyphProfile() }
 // On restricted terminals the non-Latin-1 marks become ASCII stand-ins so they
 // never paint as blank cells; otherwise the full typographic set is used. It
 // sets both branches explicitly so it is idempotent and reversible (tests flip
-// the env and call it again). Latin-1 marks (Sep ·, Cross ×) and box-drawing
-// (─, used inline for rules) render on the VT console font and are left as-is.
+// the env and call it again). Latin-1 marks (Sep ·, Cross ×) render on the VT
+// console font and are left as-is.
 func applyGlyphProfile() {
 	if RestrictedGlyphs() {
 		PromptGlyph, ApprovalGutter, SubAgent = ">", "|", ">"
+		MsgGutter = "|"
 		Arrow, ShellJob, ScrollKeys = "->", ">", "up/dn"
 		Loop = "~"
 		Goal = "*"
 		ReasoningGlyph = "*"
+		NewOutputGlyph = "v"
+		HairlineGlyph = "-"
+		BoxRule = "|"
+		RadioOn, RadioOff = "(*)", "( )"
+		CheckOn, CheckOff = "[x]", "[ ]"
+		Cursor = ">"
 		return
 	}
 	PromptGlyph, ApprovalGutter, SubAgent = "›", "▏", "↳"
+	MsgGutter = "▏"
 	Arrow, ShellJob, ScrollKeys = "→", "▷", "↑↓"
 	Loop = "↻"
 	Goal = "◎"
 	ReasoningGlyph = "✻"
+	NewOutputGlyph = "↓"
+	HairlineGlyph = "─"
+	BoxRule = "│"
+	RadioOn, RadioOff = "◉", "○"
+	CheckOn, CheckOff = "◼", "◻"
+	Cursor = "▸"
 }
 
 // Styles. Bold is reserved for the brand mark and the active approval keys.
@@ -108,4 +152,25 @@ var (
 // The body beneath is rendered with the Reasoning style by the caller.
 func ReasoningHeader() string {
 	return Gutter.Render(ReasoningGlyph) + " " + Help.Render("reasoning")
+}
+
+// Hairline renders the dim horizontal rule that closes the header: the
+// swappable HairlineGlyph (─ / - in restricted mode) repeated to width, in the
+// Rule style. It lives here rather than in a presenter because both surfaces
+// draw the same rule, and repeating the rune inline in each of them put a
+// non-Latin-1 glyph outside RestrictedGlyphs()'s reach. A width below 1 still
+// yields one cell, so the rule never renders as the empty string.
+func Hairline(width int) string {
+	if width < 1 {
+		width = 1
+	}
+	return Rule.Render(strings.Repeat(HairlineGlyph, width))
+}
+
+// NewOutputMarker renders the dim footer marker shown when the user is
+// scrolled up in the transcript and content has arrived below the fold — the
+// swappable NewOutputGlyph (↓ / v in restricted mode) plus NewOutputText, both
+// in the same dim Help style as the rest of the footer.
+func NewOutputMarker() string {
+	return Help.Render(NewOutputGlyph + " " + NewOutputText)
 }

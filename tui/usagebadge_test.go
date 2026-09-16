@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/mudler/nib/chat"
+	"github.com/mudler/nib/theme"
 	"github.com/mudler/nib/types"
 	"github.com/mudler/xlog"
 )
@@ -16,7 +17,7 @@ import (
 // Nothing spent yet means nothing to show, matching how contextBadge hides
 // itself before the first turn.
 func TestUsageBadgeHiddenWhenZero(t *testing.T) {
-	m := Model{}
+	m := newTestModel(Model{})
 	if got := m.usageBadge(); got != "" {
 		t.Fatalf("usageBadge on a fresh session = %q, want empty", got)
 	}
@@ -25,7 +26,7 @@ func TestUsageBadgeHiddenWhenZero(t *testing.T) {
 // Plain words, matching contextBadge's "ctx 8k (6%)" phrasing and the calm
 // no-emoji voice TestNoEmojiInRenderHelpers guards.
 func TestUsageBadgeFormatsBothDirections(t *testing.T) {
-	m := Model{sessionUsage: chat.SessionUsage{PromptTokens: 312000, CompletionTokens: 18400}}
+	m := newTestModel(Model{sessionUsage: chat.SessionUsage{PromptTokens: 312000, CompletionTokens: 18400}})
 	got := m.usageBadge()
 	if !strings.Contains(got, "312k") || !strings.Contains(got, "18.4k") {
 		t.Fatalf("usageBadge = %q, want both directions via HumanTokens", got)
@@ -48,7 +49,7 @@ func TestUsageBadgeFillsAZeroDirection(t *testing.T) {
 		{"no prompt tokens", chat.SessionUsage{CompletionTokens: 8}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := Model{sessionUsage: tc.usage}.usageBadge()
+			got := newTestModel(Model{sessionUsage: tc.usage}).usageBadge()
 			if got == "" {
 				t.Fatal("a session with spend on one side renders no badge at all")
 			}
@@ -67,11 +68,11 @@ func TestUsageBadgeFillsAZeroDirection(t *testing.T) {
 // a browser is the reporter's normal case, so this is the common path, not an
 // edge case.
 func TestNarrowFooterDropsUsageAndKeepsContext(t *testing.T) {
-	m := Model{
+	m := newTestModel(Model{
 		width:         30,
 		contextTokens: 47200,
 		sessionUsage:  chat.SessionUsage{PromptTokens: 312000, CompletionTokens: 18400},
-	}
+	})
 	m.cfg.Compaction.MaxContextTokens = 128000
 
 	got := m.footerBadges(20)
@@ -85,11 +86,11 @@ func TestNarrowFooterDropsUsageAndKeepsContext(t *testing.T) {
 
 // With room for both, both render.
 func TestWideFooterShowsBothBadges(t *testing.T) {
-	m := Model{
+	m := newTestModel(Model{
 		width:         120,
 		contextTokens: 47200,
 		sessionUsage:  chat.SessionUsage{PromptTokens: 312000, CompletionTokens: 18400},
-	}
+	})
 	m.cfg.Compaction.MaxContextTokens = 128000
 
 	got := m.footerBadges(20)
@@ -154,7 +155,7 @@ func newSpentSession(t *testing.T) *chat.Session {
 }
 
 // The wiring, not the arithmetic: the badge renderers above all build
-// Model{sessionUsage: ...} literals, so they would keep passing if every
+// newTestModel(Model{sessionUsage: ...}) literals, so they would keep passing if every
 // m.sessionUsage = m.session.Usage() refresh were deleted and the badge went
 // permanently blank in the real TUI. This drives a refresh site through Update
 // and asserts on the RETURNED model, which is what actually reaches View.
@@ -220,5 +221,105 @@ func TestSessionUsageAccessorReportsWhatTheModelHolds(t *testing.T) {
 	}
 	if nm.SessionUsage().TotalTokens == 0 {
 		t.Fatal("SessionUsage() reports nothing spent, so the exit summary would never print")
+	}
+}
+
+// noUsageOpenAI is billingOpenAI's fixture with the "usage" block removed
+// entirely — the shape a streamed backend leaves behind, since cogito's
+// bundled clients never populate StreamEvent.Usage on the done event (see
+// chat/usage.go's doc comment). The reply is deliberately long: the estimate
+// fallback must have real content to derive a figure from.
+func noUsageOpenAI() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "fake", "object": "chat.completion", "model": "fake",
+			"choices": []any{map[string]any{
+				"index": 0, "message": map[string]any{
+					"role":    "assistant",
+					"content": "a reasonably long reply, long enough that a byte-based estimate of it is not zero",
+				},
+				"finish_reason": "stop",
+			}},
+		})
+	}
+}
+
+// newZeroUsageSession returns a real session that completed a turn against a
+// backend that never reports usage — modeling a streamed session, whose real
+// counter stays at zero for every turn.
+func newZeroUsageSession(t *testing.T) *chat.Session {
+	t.Helper()
+	xlog.SetLogger(xlog.NewLogger(xlog.LogLevel("error"), ""))
+
+	srv := httptest.NewServer(noUsageOpenAI())
+	t.Cleanup(srv.Close)
+
+	s, err := chat.NewSession(context.Background(), types.Config{
+		Model:        "fake-model",
+		APIKey:       "fake-key",
+		BaseURL:      srv.URL + "/v1",
+		LogLevel:     "error",
+		ApprovalMode: "auto",
+		AgentOptions: types.AgentOptions{Iterations: 10, MaxAttempts: 3, MaxRetries: 3},
+	}, chat.Callbacks{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	if _, err := s.SendMessage("please give me a nice long reply so the fallback has content to estimate"); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	if got := s.Usage(); got.TotalTokens != 0 {
+		t.Fatalf("fixture reported usage %+v; it must be zero to model a streamed turn", got)
+	}
+	return s
+}
+
+// The requirement's first direction: a session whose streamed turns reported
+// zero usage must still show a non-zero, visibly-estimated figure rather than
+// disappearing the way usageBadge used to when both counts were <= 0.
+func TestUsageBadgeFallsBackToEstimateWhenMeasuredUsageIsZero(t *testing.T) {
+	m := newTestModel(Model{})
+	m.session = newZeroUsageSession(t)
+	m.sessionUsage = m.session.Usage() // mirrors the real refresh sites: zero
+
+	got := m.usageBadge()
+	if got == "" {
+		t.Fatal("a session with real conversation content produced no badge at all")
+	}
+	if !strings.Contains(got, theme.UsageEstimatedPrefix) {
+		t.Fatalf("estimated badge missing its %q marker: %q", theme.UsageEstimatedPrefix, got)
+	}
+}
+
+// The requirement's second direction: a session with real measured usage must
+// be unchanged and must NOT be marked as estimated. A fallback that always
+// fires would hide real numbers behind an estimate marker, which is worse
+// than the bug being fixed.
+func TestUsageBadgeDoesNotMarkMeasuredUsageAsEstimated(t *testing.T) {
+	m := newTestModel(Model{sessionUsage: chat.SessionUsage{PromptTokens: 312000, CompletionTokens: 18400}})
+
+	got := m.usageBadge()
+	if strings.Contains(got, theme.UsageEstimatedPrefix) {
+		t.Fatalf("measured usage rendered with the estimate marker: %q", got)
+	}
+	if !strings.Contains(got, "312k") || !strings.Contains(got, "18.4k") {
+		t.Fatalf("measured usage badge changed shape: %q", got)
+	}
+}
+
+// Even when a session is attached and has plenty of conversation to estimate
+// from, real measured usage must win — the fallback only fires when Usage()
+// itself is empty on both sides.
+func TestUsageBadgePrefersRealUsageOverEstimateWhenSessionIsPresent(t *testing.T) {
+	m := newTestModel(Model{})
+	m.session = newSpentSession(t)
+	m.sessionUsage = m.session.Usage()
+
+	got := m.usageBadge()
+	if strings.Contains(got, theme.UsageEstimatedPrefix) {
+		t.Fatalf("a session with real measured usage was marked as estimated: %q", got)
 	}
 }
