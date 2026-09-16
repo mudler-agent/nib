@@ -165,7 +165,7 @@ func assertPreserves(t *testing.T, name, out string, tokens []string) {
 func assertFitsWidth(t *testing.T, name, out string, w int) {
 	t.Helper()
 	for i, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
-		if got := len([]rune(stripANSI(line))); got > w {
+		if got := lipgloss.Width(stripANSI(line)); got > w {
 			t.Errorf("%s line %d is %d cells wide, budget %d: %q", name, i, got, w, line)
 		}
 	}
@@ -212,7 +212,7 @@ func TestAllPresentersRespectWidth(t *testing.T) {
 				Content: strings.Repeat("overflowing ", 30),
 			}, render.RoleNone, w)
 			for i, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
-				if got := len([]rune(stripANSI(line))); got > w {
+				if got := lipgloss.Width(stripANSI(line)); got > w {
 					t.Errorf("%s line %d is %d cells wide, budget %d: %q", name, i, got, w, line)
 				}
 			}
