@@ -38,6 +38,9 @@ func TestTruncateLine(t *testing.T) {
 	if got := TruncateLine("héllo wörld", 6); got != "héllo…" {
 		t.Fatalf("rune-aware: got %q", got)
 	}
+	if got := TruncateLine("界界界", 5); got != "界界…" {
+		t.Fatalf("cell-aware: got %q", got)
+	}
 }
 
 // TestWrapPreservesExistingBehaviour pins Wrap's contract post-move. Note:

@@ -6,17 +6,29 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// TruncateLine caps a single line at w runes, ending with an ellipsis. A
-// non-positive budget returns the bare ellipsis rather than an unclamped line.
+// TruncateLine caps a single line at w display cells, ending with an ellipsis.
+// A non-positive budget returns the bare ellipsis rather than an unclamped line.
 func TruncateLine(s string, w int) string {
-	r := []rune(s)
-	if len(r) <= w {
+	if lipgloss.Width(s) <= w {
 		return s
 	}
-	if w <= 1 {
+	if w <= 0 {
 		return "…"
 	}
-	return string(r[:w-1]) + "…"
+	if w == 1 {
+		return "…"
+	}
+	var b strings.Builder
+	used := 0
+	for _, r := range s {
+		rw := lipgloss.Width(string(r))
+		if used+rw > w-1 {
+			break
+		}
+		b.WriteRune(r)
+		used += rw
+	}
+	return b.String() + "…"
 }
 
 // Wrap wraps text to fit within the specified width, preserving existing newlines
@@ -95,17 +107,26 @@ func Wrap(text string, width int) string {
 // TruncateRunes shortens word to at most width display columns, breaking on a
 // rune boundary and appending an ellipsis when there is room for it.
 func TruncateRunes(word string, width int) string {
-	runes := []rune(word)
 	if width <= 0 {
 		return ""
 	}
-	if len(runes) <= width {
+	if lipgloss.Width(word) <= width {
 		return word
 	}
 	if width <= 1 {
-		return string(runes[:width])
+		return "…"
 	}
-	return string(runes[:width-1]) + "…"
+	var b strings.Builder
+	used := 0
+	for _, r := range word {
+		rw := lipgloss.Width(string(r))
+		if used+rw > width-1 {
+			break
+		}
+		b.WriteRune(r)
+		used += rw
+	}
+	return b.String() + "…"
 }
 
 // ShortID truncates an id to a compact display form (an 8-character prefix).

@@ -219,12 +219,12 @@ func (Base) Dialog(d Dialog, w int) string {
 		} else if len(d.Rows) > 0 {
 			maxKey := 0
 			for _, row := range d.Rows {
-				if len(row[0]) > maxKey {
-					maxKey = len(row[0])
+				if kw := lipgloss.Width(row[0]); kw > maxKey {
+					maxKey = kw
 				}
 			}
 			for _, row := range d.Rows {
-				key := row[0] + strings.Repeat(" ", maxKey-len(row[0]))
+				key := row[0] + strings.Repeat(" ", max(0, maxKey-lipgloss.Width(row[0])))
 				val := TruncateLine(row[1], w-8-maxKey)
 				b.WriteString(gutter + "  " + theme.Meta.Render(key) + "  " + theme.Help.Render(val) + "\n")
 			}
