@@ -493,6 +493,52 @@ func TestResumeDeleteSecondPressDeletesTheFile(t *testing.T) {
 	}
 }
 
+// TestResumeDeleteFailureLeavesPickerUnchanged proves the picker only updates
+// after the backing file delete succeeds; a filesystem failure must not make
+// the session disappear from the in-memory list while it still exists on disk.
+func TestResumeDeleteFailureLeavesPickerUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	store := chat.NewSessionStore(dir)
+	mustSaveTUI(t, store, chat.SessionRecord{ID: "alpha", Cwd: "/p"})
+	mustSaveTUI(t, store, chat.SessionRecord{ID: "beta", Cwd: "/p"})
+	defer func() { _ = os.Chmod(dir, 0o700) }()
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatalf("chmod temp dir read-only: %v", err)
+	}
+	sessions := []chat.SessionRecord{{ID: "alpha"}, {ID: "beta"}}
+
+	m := newTestModel(Model{
+		store: store, textarea: textarea.New(), viewport: viewport.New(80, 20), width: 80,
+		awaitingResume: true, resumeSessions: sessions,
+		resumeList: &render.SelectList{Items: resumeItems(sessions)},
+		presenter:  testPresenter(),
+	})
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	nm := next.(Model)
+	next, cmd := nm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	nm = next.(Model)
+
+	if cmd != nil {
+		t.Error("deleting should not itself return a cmd")
+	}
+	if nm.resumeDeleteArmed {
+		t.Error("resumeDeleteArmed should be cleared once the delete attempt runs")
+	}
+	if len(nm.resumeSessions) != 2 || nm.resumeSessions[0].ID != "alpha" || nm.resumeSessions[1].ID != "beta" {
+		t.Fatalf("resumeSessions after failed delete = %+v, want alpha/beta unchanged", nm.resumeSessions)
+	}
+	if len(nm.resumeList.Items) != 2 {
+		t.Fatalf("resumeList.Items after failed delete = %+v, want 2 entries", nm.resumeList.Items)
+	}
+	if !nm.awaitingResume {
+		t.Error("the picker should stay open after a failed delete")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "alpha.json")); err != nil {
+		t.Errorf("alpha.json should still exist after failed delete, stat err = %v", err)
+	}
+}
+
 // TestResumeDeleteAnyOtherKeyCancelsTheArm proves the confirm arms for
 // exactly one keypress: pressing something other than 'd' after arming
 // cancels the pending delete (and still does its own normal thing — here,

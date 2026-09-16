@@ -309,12 +309,10 @@ func (m Model) handleResumeDeleteKey() (tea.Model, tea.Cmd) {
 }
 
 // deleteResumeSelection removes the highlighted session's stored file (via
-// m.store.Delete) and drops it from both resumeSessions and resumeList so
-// the picker reflects the change immediately. Deletion is best-effort,
-// exactly like recordSession's autosave: a failure is logged and swallowed
-// rather than surfaced as an error banner over a modal list dialog, since
-// there both is no good place to put that banner and nothing the user could
-// do about it from here anyway.
+// m.store.Delete) and, once that succeeds, drops it from both resumeSessions
+// and resumeList so the picker stays aligned with what actually exists on
+// disk. A delete failure is logged and leaves the picker unchanged rather than
+// claiming success in-memory.
 //
 // Handles both edge cases CORRECTNESS REQUIREMENTS calls out: an empty list
 // after the delete closes the picker instead of leaving a dialog with
@@ -333,6 +331,7 @@ func (m *Model) deleteResumeSelection() {
 	if m.store != nil {
 		if err := m.store.Delete(id); err != nil {
 			xlog.Warn("session delete failed", "id", id, "error", err)
+			return
 		}
 	}
 	m.resumeSessions = append(m.resumeSessions[:idx], m.resumeSessions[idx+1:]...)
