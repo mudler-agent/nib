@@ -162,6 +162,7 @@ func (m *Model) startResume(all bool, id string) tea.Cmd {
 
 	m.resumeSessions = sessions
 	m.resumeList = &render.SelectList{Items: resumeItems(sessions), MaxVisible: 8}
+	m.resumeDeleteArmed = false
 	m.awaitingResume = true
 	m.textarea.Focus()
 	m.updateViewport()

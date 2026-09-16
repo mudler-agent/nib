@@ -88,6 +88,30 @@ func TestStartResumeOpensPickerCwdScoped(t *testing.T) {
 	}
 }
 
+func TestStartResumeClearsDeleteArm(t *testing.T) {
+	dir := t.TempDir()
+	store := chat.NewSessionStore(dir)
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustSaveTUI(t, store, chat.SessionRecord{ID: "here", Cwd: cwd, Title: "in this dir"})
+
+	m := newTestModel(Model{
+		store:             store,
+		textarea:          textarea.New(),
+		viewport:          viewport.New(80, 20),
+		resumeDeleteArmed: true,
+	})
+	m.startResume(false, "")
+	if !m.awaitingResume {
+		t.Fatal("expected awaitingResume after opening the picker")
+	}
+	if m.resumeDeleteArmed {
+		t.Fatal("startResume should clear a stale delete arm")
+	}
+}
+
 func TestStartResumeAllWidensAcrossCwd(t *testing.T) {
 	dir := t.TempDir()
 	store := chat.NewSessionStore(dir)
