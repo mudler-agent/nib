@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,6 +19,14 @@ import (
 	"github.com/mudler/nib/theme"
 	"github.com/mudler/nib/tui/render"
 )
+
+type failingDeleteStore struct {
+	*chat.SessionStore
+}
+
+func (s *failingDeleteStore) Delete(string) error {
+	return errors.New("boom")
+}
 
 func TestBuildResumeDialog(t *testing.T) {
 	list := &render.SelectList{Items: []string{"a · 1m ago · 2 messages", "b · 2h ago · 5 messages"}, Selected: 1}
@@ -498,17 +507,13 @@ func TestResumeDeleteSecondPressDeletesTheFile(t *testing.T) {
 // the session disappear from the in-memory list while it still exists on disk.
 func TestResumeDeleteFailureLeavesPickerUnchanged(t *testing.T) {
 	dir := t.TempDir()
-	store := chat.NewSessionStore(dir)
-	mustSaveTUI(t, store, chat.SessionRecord{ID: "alpha", Cwd: "/p"})
-	mustSaveTUI(t, store, chat.SessionRecord{ID: "beta", Cwd: "/p"})
-	defer func() { _ = os.Chmod(dir, 0o700) }()
-	if err := os.Chmod(dir, 0o500); err != nil {
-		t.Fatalf("chmod temp dir read-only: %v", err)
-	}
+	backing := chat.NewSessionStore(dir)
+	mustSaveTUI(t, backing, chat.SessionRecord{ID: "alpha", Cwd: "/p"})
+	mustSaveTUI(t, backing, chat.SessionRecord{ID: "beta", Cwd: "/p"})
 	sessions := []chat.SessionRecord{{ID: "alpha"}, {ID: "beta"}}
 
 	m := newTestModel(Model{
-		store: store, textarea: textarea.New(), viewport: viewport.New(80, 20), width: 80,
+		store: &failingDeleteStore{SessionStore: backing}, textarea: textarea.New(), viewport: viewport.New(80, 20), width: 80,
 		awaitingResume: true, resumeSessions: sessions,
 		resumeList: &render.SelectList{Items: resumeItems(sessions)},
 		presenter:  testPresenter(),

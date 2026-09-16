@@ -44,6 +44,13 @@ type ChatMessage struct {
 	Transient bool
 }
 
+type sessionStore interface {
+	Save(chat.SessionRecord) error
+	Load(string) (chat.SessionRecord, error)
+	List(string) ([]chat.SessionRecord, error)
+	Delete(string) error
+}
+
 // appendMessage appends one or more entries to the transcript. Beyond that it
 // claims no invariant over the transcript itself. (It used to be the
 // choke-point a now-deleted []render.Message cache keyed its invalidation on;
@@ -333,7 +340,7 @@ type Model struct {
 	// resumed record) rather than recomputed, so a session's Created date
 	// survives across many autosaves. All three are seeded by NewModel and
 	// overwritten by a successful /resume (see applyResume).
-	store          *chat.SessionStore
+	store          sessionStore
 	sessionID      string
 	sessionTitle   string
 	sessionCreated time.Time
