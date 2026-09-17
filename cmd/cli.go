@@ -588,6 +588,27 @@ func RunCLI(ctx context.Context, cfg types.Config, streams Streams, shellJobs *w
 				}
 				fmt.Fprintln(out, theme.Subtle.Render(notice))
 				continue
+			case slash.KindLogin:
+				if action.Provider == "" {
+					fmt.Fprint(out, session.LoginList())
+					continue
+				}
+				// The REPL can run the full login flow (OAuth callback + browser)
+				// synchronously — the user is at a terminal.
+				RunLoginCommand(types.DefaultProgramName, cfg.BaseDir, []string{action.Provider})
+				continue
+			case slash.KindLogout:
+				if action.Provider == "" {
+					fmt.Fprint(out, session.LoginList())
+					continue
+				}
+				notice, err := session.Logout(action.Provider)
+				if err != nil {
+					fmt.Fprintln(errOut, theme.Error.Render(theme.Cross+" "+err.Error()))
+				} else {
+					fmt.Fprintln(out, theme.Subtle.Render(notice))
+				}
+				continue
 			case slash.KindSend:
 				fmt.Fprintln(out)
 				spin.start(theme.VerbThinking)

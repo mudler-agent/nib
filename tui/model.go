@@ -1843,6 +1843,27 @@ func (m *Model) dispatchResolved(input string) tea.Cmd {
 		}
 		m.appendMessage(ChatMessage{Role: "agent", Content: notice})
 		return nil
+	case slash.KindLogin:
+		if action.Provider == "" {
+			m.appendMessage(ChatMessage{Role: "agent", Content: m.session.LoginList()})
+			return nil
+		}
+		// The TUI can't run an OAuth callback server without blocking the event
+		// loop, so direct the user to the CLI command.
+		m.appendMessage(ChatMessage{Role: "agent", Content: "Run `nib login " + action.Provider + "` from a terminal to complete login."})
+		return nil
+	case slash.KindLogout:
+		if action.Provider == "" {
+			m.appendMessage(ChatMessage{Role: "agent", Content: m.session.LoginList()})
+			return nil
+		}
+		notice, err := m.session.Logout(action.Provider)
+		if err != nil {
+			m.appendMessage(ChatMessage{Role: "error", Content: err.Error()})
+		} else {
+			m.appendMessage(ChatMessage{Role: "agent", Content: notice})
+		}
+		return nil
 	case slash.KindResume:
 		return m.startResume(action.ResumeAll, action.ResumeID)
 	case slash.KindAttach:

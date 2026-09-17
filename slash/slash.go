@@ -35,6 +35,8 @@ const (
 	KindModelSet              // switch the session model to Model
 	KindYolo                  // toggle (or explicitly set) session-wide auto-approval
 	KindResume                // resume a recorded session (ResumeID) or open the picker
+	KindLogin                 // log in to a provider (Provider empty = list)
+	KindLogout                // log out of a provider (Provider empty = list)
 )
 
 // AttachOp enumerates the /attach sub-operations.
@@ -69,6 +71,9 @@ type Action struct {
 	AttachOp   AttachOp // KindAttach: which op
 	AttachPath string   // KindAttach+AttachStage: file to stage
 	Transcribe bool     // KindAttach+AttachStage: --transcribe/-t override
+
+	// Login/logout actions:
+	Provider string // KindLogin/KindLogout: provider ID; empty = list
 }
 
 // Expand renders a command's prompt template with the given args.
@@ -146,6 +151,10 @@ func Resolve(input string, cmds []types.CommandConfig, skills []types.Skill, age
 		return resolveGoal(rest)
 	case "resume":
 		return resolveResume(rest)
+	case "login":
+		return Action{Kind: KindLogin, Provider: strings.TrimSpace(rest)}
+	case "logout":
+		return Action{Kind: KindLogout, Provider: strings.TrimSpace(rest)}
 	case "attach":
 		rest = strings.TrimSpace(rest)
 		switch {

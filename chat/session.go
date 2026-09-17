@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -13,10 +14,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/mudler/nib/auth"
 	"github.com/mudler/nib/hooks"
 	"github.com/mudler/nib/llmprovider"
 	"github.com/mudler/nib/manage"
 	wizmcp "github.com/mudler/nib/mcp"
+	"github.com/mudler/nib/plugin"
+	"github.com/mudler/nib/provider"
 	"github.com/mudler/nib/provenance"
 	"github.com/mudler/nib/specialist"
 	"github.com/mudler/nib/trace"
@@ -114,6 +118,7 @@ type Session struct {
  	modelMu         sync.RWMutex
 	llmModel        string // guarded by modelMu
 	mainProvider    types.ModelProviderConfig
+	credStore       *auth.Store // credential store for /login-managed providers
 
 	// learnedWindow is the context window a backend stated in an overflow
 	// error, and learnedWindowModel is the model it was learned for. They are
@@ -254,7 +259,7 @@ func (s *Session) newAgentLLM(mainModel, requested string, temperature float32, 
 	provider.Model = chosen
 	provider.Metadata = mergeMetadata(s.metadata, metadata)
 	provider.ReasoningEffort = s.reasoningEffort
-	agentLLM, err := llmprovider.NewWithTemperature(provider, temperature)
+	agentLLM, err := llmprovider.NewWithTemperatureAndStore(provider, temperature, s.credStore)
 	if err != nil {
 		xlog.Warn("could not create sub-agent LLM; using the current main LLM", "error", err)
 		llm, _ := s.currentLLM()
@@ -338,8 +343,9 @@ func NewSession(ctx context.Context, cfg types.Config, callbacks Callbacks, tran
 	// text in a "reasoning" response field, which go-openai's SDK — and so
 	// OpenAIClient — doesn't know about (it only binds the older, now-deprecated
 	// "reasoning_content" key). LocalAIClient parses both.
+	credStore := auth.NewStore(filepath.Join(plugin.BaseDirIn(cfg.BaseDir), "credentials.json"))
 	mainProvider := cfg.ResolvedMainModel()
-	llm, err := llmprovider.New(mainProvider)
+	llm, err := llmprovider.NewWithStore(mainProvider, credStore)
 	if err != nil {
 		return nil, fmt.Errorf("create main LLM: %w", err)
 	}
@@ -402,6 +408,7 @@ func NewSession(ctx context.Context, cfg types.Config, callbacks Callbacks, tran
 		agentLogs:            newAgentLogStore(),
 		llmModel:             mainProvider.Model,
 		mainProvider:         mainProvider,
+		credStore:            credStore,
 		apiKey:               mainProvider.APIKey,
 		baseURL:              mainProvider.BaseURL,
 		transcribeModel:      cfg.TranscribeModel,
@@ -1921,7 +1928,7 @@ func (s *Session) SetModel(name string) {
 	// nothing here needs to be ordered against a reader.
 	provider := s.resolvedSessionProvider()
 	provider.Model = name
-	llm, err := llmprovider.New(provider)
+	llm, err := llmprovider.NewWithStore(provider, s.credStore)
 	if err != nil {
 		xlog.Error("could not switch model", "model", name, "error", err)
 		return
@@ -2079,4 +2086,50 @@ func (s *Session) SwitchModel(ctx context.Context, name string) (string, error) 
 
 	s.SetModel(name)
 	return "model: " + name, nil
+}
+
+// LoginList returns a human-readable list of loginable providers and whether
+// each is currently logged in. Used by the /login slash command (no args) in
+// both the CLI REPL and TUI.
+func (s *Session) LoginList() string {
+	defs := provider.Loginable()
+	creds, err := s.credStore.All()
+	if err != nil {
+		return "error reading credentials: " + err.Error()
+	}
+	credMap := make(map[string]auth.Credential, len(creds))
+	for _, c := range creds {
+		credMap[c.ProviderID] = c
+	}
+	var b strings.Builder
+	b.WriteString("Providers with login:\n")
+	for _, d := range defs {
+		status := "not logged in"
+		if c, ok := credMap[d.ID]; ok {
+			status = "logged in: " + c.DisplayLabel()
+		}
+		fmt.Fprintf(&b, "  %-12s  %s  (%s)  [%s]\n", d.ID, d.Name, d.LoginKind, status)
+	}
+	b.WriteString("\nRun: nib login <provider>")
+	return b.String()
+}
+
+// Logout deletes the stored credential for the given provider and returns a
+// status message. Used by the /logout <provider> slash command.
+func (s *Session) Logout(providerID string) (string, error) {
+	def, ok := provider.Get(providerID)
+	if !ok {
+		return "", fmt.Errorf("unknown provider %q", providerID)
+	}
+	_, exists, err := s.credStore.Get(def.ID)
+	if err != nil {
+		return "", err
+	}
+	if !exists {
+		return "", fmt.Errorf("not logged in to %s", def.ID)
+	}
+	if err := s.credStore.Delete(def.ID); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Logged out of %s (%s)", def.Name, def.ID), nil
 }

@@ -4,8 +4,8 @@ import "testing"
 
 func TestPresets(t *testing.T) {
 	ps := Presets()
-	if len(ps) != 4 {
-		t.Fatalf("want 4 presets, got %d", len(ps))
+	if len(ps) != 12 {
+		t.Fatalf("want 12 presets, got %d", len(ps))
 	}
 
 	seen := map[string]bool{}
@@ -19,7 +19,7 @@ func TestPresets(t *testing.T) {
 		seen[p.Name] = true
 	}
 
-	if !seen["OpenAI"] || !seen["Ollama"] || !seen["Custom"] {
+	if !seen["Anthropic"] || !seen["OpenAI"] || !seen["Ollama"] || !seen["Custom"] {
 		t.Fatalf("missing an expected preset: %v", seen)
 	}
 

@@ -13,6 +13,8 @@ require (
 	github.com/chromedp/cdproto v0.0.0-20260321001828-e3e3800016bc
 	github.com/chromedp/chromedp v0.15.1
 	github.com/google/jsonschema-go v0.3.0
+	github.com/google/uuid v1.6.0
+	github.com/klauspost/compress v1.18.0
 	github.com/klippa-app/go-pdfium v1.12.2
 	github.com/modelcontextprotocol/go-sdk v1.0.0
 	github.com/mudler/cogito v0.11.1-0.20260721122412-6eece18a6bb6
@@ -42,7 +44,6 @@ require (
 	github.com/gobwas/httphead v0.1.0 // indirect
 	github.com/gobwas/pool v0.2.1 // indirect
 	github.com/gobwas/ws v1.4.0 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/css v1.0.1 // indirect
 	github.com/huandu/xstrings v1.5.0 // indirect
 	github.com/jolestar/go-commons-pool/v2 v2.1.2 // indirect

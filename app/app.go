@@ -310,6 +310,10 @@ func dispatchManage(o Options) (code int, handled bool) {
 	// verbs match here.
 	case len(args) >= 2 && args[0] == "mcp" && cmd.IsMCPManageSubcommand(args[1]):
 		return cmd.RunMCPCommand(o.name(), o.BaseDir, args[1:]), true
+	case len(args) >= 1 && args[0] == "login":
+		return cmd.RunLoginCommand(o.name(), o.BaseDir, args[1:]), true
+	case len(args) >= 1 && args[0] == "logout":
+		return cmd.RunLogoutCommand(o.name(), o.BaseDir, args[1:]), true
 	}
 	return 0, false
 }
