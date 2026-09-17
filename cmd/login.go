@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/mudler/nib/auth"
+	"github.com/mudler/nib/llmprovider/copilot"
 	"github.com/mudler/nib/plugin"
 	"github.com/mudler/nib/provider"
 )
@@ -52,6 +53,8 @@ func RunLoginCommand(programName, baseDir string, args []string) int {
 		return loginDeviceCode(ctx, prog, store, def)
 	case provider.LoginAPIKey:
 		return loginAPIKey(prog, store, def)
+	case provider.LoginCopilot:
+		return loginCopilotToken(prog, store, def)
 	default:
 		fmt.Fprintf(os.Stderr, "%s login: %s has an unsupported login kind\n", prog, def.ID)
 		return 1
@@ -130,6 +133,23 @@ func loginDeviceCode(ctx context.Context, prog string, store *auth.Store, def pr
 		return 1
 	}
 	fmt.Printf("Logged in to %s as %s\n", def.Name, cred.DisplayLabel())
+	return 0
+}
+
+func loginCopilotToken(prog string, store *auth.Store, def provider.Definition) int {
+	fmt.Printf("Importing GitHub Copilot token for %s...\n", def.Name)
+	token, err := copilot.ResolveToken()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s login: %v\n", prog, err)
+		fmt.Fprintf(os.Stderr, "Install gh CLI and run 'gh auth login', or set %s\n", def.EnvVar)
+		return 1
+	}
+	cred, err := auth.LoginAPIKey(store, def, token)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s login: %v\n", prog, err)
+		return 1
+	}
+	fmt.Printf("Logged in to %s (%s)\n", def.Name, cred.StatusLine())
 	return 0
 }
 

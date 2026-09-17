@@ -26,6 +26,7 @@ import (
 	_ "github.com/mudler/nib/llmprovider/azureresponses"
 	_ "github.com/mudler/nib/llmprovider/bedrock"
 	_ "github.com/mudler/nib/llmprovider/codex"
+	_ "github.com/mudler/nib/llmprovider/copilot"
 	_ "github.com/mudler/nib/llmprovider/google"
 	_ "github.com/mudler/nib/llmprovider/geminicli"
 	_ "github.com/mudler/nib/llmprovider/googlevertex"

@@ -56,6 +56,11 @@ const (
 	// sampling params, and carries Codex identity headers (originator,
 	// version, chatgpt-account-id from JWT).
 	ProtocolCodexResponses Protocol = "openai-codex-responses"
+	// ProtocolCopilot is the GitHub Copilot multi-protocol adapter. It
+	// routes each request to OpenAI Chat Completions, OpenAI Responses, or
+	// Anthropic Messages based on the model, and requires a Copilot
+	// token imported from the gh CLI / Copilot client.
+	ProtocolCopilot Protocol = "github-copilot"
 )
 
 // LoginKind classifies how a provider authenticates.
@@ -75,6 +80,11 @@ const (
 	// the user visits a URL and enters a code in a browser. Not yet
 	// implemented — reserved for Phase 3.
 	LoginDeviceCode LoginKind = "device-code"
+	// LoginCopilot means /login imports an existing Copilot token from
+	// the gh CLI or Copilot client config (env vars, ~/.config/github-copilot/,
+	// ~/.config/gh/) and stores it. There is no OAuth or device-code flow —
+	// the user authenticates via gh CLI first.
+	LoginCopilot LoginKind = "copilot-token"
 )
 
 // Definition describes one remote provider: how to reach it and how to log in.
@@ -155,6 +165,7 @@ var providerOrder = []string{
 	"xai-oauth",
 	"kimi-code",
 	"muse-code",
+	"github-copilot",
 	// API-key cloud providers (most popular first, then alphabetical)
 	"openai",
 	"groq",
@@ -406,6 +417,18 @@ var registry = map[string]Definition{
 		ExtraTokenHeaders: map[string]string{
 			"x-api-version": "1.0.0",
 		},
+	},
+
+	// -----------------------------------------------------------------------
+	// GitHub Copilot (token-import provider)
+	// -----------------------------------------------------------------------
+	"github-copilot": {
+		ID:        "github-copilot",
+		Name:      "GitHub Copilot",
+		Protocol:  ProtocolCopilot,
+		BaseURL:   "https://api.githubcopilot.com",
+		EnvVar:    "GH_COPILOT_TOKEN",
+		LoginKind: LoginCopilot,
 	},
 
 	// -----------------------------------------------------------------------
