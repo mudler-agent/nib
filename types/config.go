@@ -284,13 +284,15 @@ type ModelProviderConfig struct {
 	BaseURL         string            `yaml:"base_url,omitempty"`
 	Metadata        map[string]string `yaml:"metadata,omitempty"`
 	ReasoningEffort string            `yaml:"reasoning_effort,omitempty"`
+	MaxTokens       int               `yaml:"max_tokens,omitempty"`
 	Command         string            `yaml:"command,omitempty"`
 	Args            []string          `yaml:"args,omitempty"`
 }
 
 func (c ModelProviderConfig) Configured() bool {
 	return c.Provider != "" || c.Model != "" || c.APIKey != "" || c.BaseURL != "" ||
-		len(c.Metadata) != 0 || c.ReasoningEffort != "" || c.Command != "" || len(c.Args) != 0
+		len(c.Metadata) != 0 || c.ReasoningEffort != "" || c.MaxTokens != 0 ||
+		c.Command != "" || len(c.Args) != 0
 }
 
 // ResolvedMainModel turns the top-level config into a provider config. An empty

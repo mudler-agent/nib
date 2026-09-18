@@ -20,6 +20,7 @@ import (
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/mudler/nib/auth"
 	"github.com/mudler/nib/codexapp"
+	"github.com/mudler/nib/llmprovider/catalog"
 	"github.com/mudler/nib/llmprovider/registry"
 	"github.com/mudler/nib/provider"
 	"github.com/mudler/nib/types"
@@ -55,6 +56,16 @@ func openAIFactory(def provider.Definition, config types.ModelProviderConfig, st
 	llm.SetTemperature(temperature)
 	llm.SetMetadata(config.Metadata)
 	llm.SetReasoningEffort(config.ReasoningEffort)
+
+	// Resolve max output tokens: user config → API discovery → catalog → default.
+	if baseURL == "" {
+		baseURL = openAIDefaultBaseURL
+	}
+	res := catalog.ResolveMaxTokens(context.Background(), config, baseURL, apiKey)
+	if !res.Omit && res.MaxTokens > 0 {
+		llm.SetMaxTokens(res.MaxTokens)
+	}
+
 	return llm, nil
 }
 
