@@ -11,6 +11,14 @@ import (
 	"github.com/klauspost/compress/zstd"
 )
 
+// To refresh the embedded catalog, run:
+//
+//	go generate ./llmprovider/catalog/...
+//
+// This fetches the upstream oh-my-pi models.json, compresses it with
+// zstd, and writes catalog.json.zst. Commit the result.
+//
+//go:generate go run gen_catalog.go
 //go:embed catalog.json.zst
 var compressedCatalog []byte
 

@@ -1,0 +1,51 @@
+name: Update catalog
+
+on:
+  schedule:
+    # Every Monday at 06:00 UTC
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Generate catalog
+        run: go generate ./llmprovider/catalog/...
+
+      - name: Check for changes
+        id: diff
+        run: |
+          if git diff --exit-code llmprovider/catalog/catalog.json.zst; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create pull request
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b chore/update-catalog
+          git add llmprovider/catalog/catalog.json.zst
+          git commit -m "chore: update oh-my-pi model catalog"
+          git push origin chore/update-catalog
+          gh pr create \
+            --title "chore: update oh-my-pi model catalog" \
+            --body "Automated catalog refresh from \`go generate\`. Run weekly by the update-catalog workflow." \
+            --base master
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
