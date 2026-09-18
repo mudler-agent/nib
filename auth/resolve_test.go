@@ -122,13 +122,14 @@ func TestResolveStoredOAuthRefreshFailure(t *testing.T) {
 	def.TokenURL = server.URL + "/token"
 	def.ClientID = "test-client"
 
-	r, err := Resolve(s, def, "")
+	r, err := Resolve(s, def, "fallback-key")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	// On refresh failure, resolveOAuth returns empty (access token cleared).
-	if r.APIKey != "" {
-		t.Errorf("APIKey = %q, want empty on refresh failure", r.APIKey)
+	// On refresh failure, resolveOAuth returns empty and Resolve falls
+	// through to configAPIKey.
+	if r.APIKey != "fallback-key" {
+		t.Errorf("APIKey = %q, want 'fallback-key' (should fall through on refresh failure)", r.APIKey)
 	}
 }
 
@@ -155,6 +156,35 @@ func TestResolveEnvVar(t *testing.T) {
 	}
 	if r.APIKey != "env-key" {
 		t.Errorf("APIKey = %q, want 'env-key'", r.APIKey)
+	}
+}
+
+func TestResolveStoredOAuthRefreshFailureEnvVar(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "invalid_grant", http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	s := NewStore(testStorePath(t))
+	_ = s.Save(Credential{
+		ProviderID:   "TESTPROVIDER_ENV_FALL",
+		Kind:         CredentialOAuth,
+		AccessToken:  "old-tok",
+		RefreshToken: "old-ref",
+		ExpiresAt:    time.Now().Add(-1 * time.Minute),
+	})
+
+	def := testDef("TESTPROVIDER_ENV_FALL")
+	def.TokenURL = server.URL + "/token"
+	def.ClientID = "test-client"
+	t.Setenv("TEST_KEY_TESTPROVIDER_ENV_FALL", "env-fallback-key")
+
+	r, err := Resolve(s, def, "")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if r.APIKey != "env-fallback-key" {
+		t.Errorf("APIKey = %q, want 'env-fallback-key' (should fall through to env on refresh failure)", r.APIKey)
 	}
 }
 

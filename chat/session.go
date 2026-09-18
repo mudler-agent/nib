@@ -17,6 +17,7 @@ import (
 	"github.com/mudler/nib/auth"
 	"github.com/mudler/nib/hooks"
 	"github.com/mudler/nib/llmprovider"
+	"github.com/mudler/nib/llmprovider/copilot"
 	"github.com/mudler/nib/manage"
 	wizmcp "github.com/mudler/nib/mcp"
 	"github.com/mudler/nib/plugin"
@@ -2132,4 +2133,42 @@ func (s *Session) Logout(providerID string) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("Logged out of %s (%s)", def.Name, def.ID), nil
+}
+
+// StartLogin begins a login flow for the given provider. For OAuth-code and
+// device-code providers, it returns a LoginFlow whose Complete method must be
+// called asynchronously to finish the flow. For Copilot, it imports the token
+// synchronously and returns a completed flow. For API-key providers, it
+// returns an error directing the user to the CLI.
+func (s *Session) StartLogin(ctx context.Context, providerID string) (*auth.LoginFlow, error) {
+	def, ok := provider.Get(providerID)
+	if !ok {
+		return nil, fmt.Errorf("unknown provider %q", providerID)
+	}
+	switch def.LoginKind {
+	case provider.LoginOAuthCode, provider.LoginDeviceCode:
+		return auth.StartLogin(ctx, s.credStore, def)
+
+	case provider.LoginCopilot:
+		token, err := copilot.ResolveToken()
+		if err != nil {
+			return nil, fmt.Errorf("import copilot token: %w\nInstall gh CLI and run 'gh auth login', or set %s", err, def.EnvVar)
+		}
+		cred, err := auth.LoginAPIKey(s.credStore, def, token)
+		if err != nil {
+			return nil, err
+		}
+		return auth.NewLoginFlow(
+			def.ID,
+			"Imported Copilot token for "+def.Name,
+			"",
+			func(context.Context) (auth.Credential, error) { return cred, nil },
+		), nil
+
+	case provider.LoginAPIKey:
+		return nil, fmt.Errorf("API key login is not supported in the TUI; run `nib login %s` from a terminal or set %s", def.ID, def.EnvVar)
+
+	default:
+		return nil, fmt.Errorf("provider %s has no login flow", def.ID)
+	}
 }

@@ -182,6 +182,115 @@ func LoginDeviceCode(ctx context.Context, store *Store, def provider.Definition,
 	return cred, nil
 }
 
+// LoginFlow represents an in-progress login flow. The caller displays Prompt
+// to the user (and optionally opens URL in a browser), then calls Complete to
+// finish the flow asynchronously.
+type LoginFlow struct {
+	ProviderID string
+	Prompt     string // authorize URL or device-code instructions
+	URL        string // URL to open in a browser (may differ from Prompt)
+	complete   func(context.Context) (Credential, error)
+}
+
+// Complete finishes the login flow, returning the saved credential. It blocks
+// until the OAuth callback arrives, the device-code poll succeeds, or the
+// context is cancelled.
+func (f *LoginFlow) Complete(ctx context.Context) (Credential, error) {
+	return f.complete(ctx)
+}
+
+// NewLoginFlow constructs a LoginFlow with the given display fields and
+// completion function. It is intended for providers that finish the flow
+// synchronously (e.g. Copilot token import) and need a no-op Complete.
+func NewLoginFlow(providerID, prompt, url string, complete func(context.Context) (Credential, error)) *LoginFlow {
+	return &LoginFlow{
+		ProviderID: providerID,
+		Prompt:     prompt,
+		URL:        url,
+		complete:   complete,
+	}
+}
+
+// StartLogin begins an OAuth-code or device-code login flow for def. The
+// returned LoginFlow's Prompt should be displayed to the user and URL opened
+// in a browser; then Complete should be called to finish the flow.
+// For LoginOAuthCode and LoginDeviceCode only. For other login kinds, use
+// LoginAPIKey or the provider-specific importer.
+func StartLogin(ctx context.Context, store *Store, def provider.Definition) (*LoginFlow, error) {
+	switch def.LoginKind {
+	case provider.LoginOAuthCode:
+		flow, err := StartOAuthFlow(def)
+		if err != nil {
+			return nil, err
+		}
+		url := flow.AuthorizeURL()
+		return &LoginFlow{
+			ProviderID: def.ID,
+			Prompt:     "Open this URL to log in:\n" + url,
+			URL:        url,
+			complete: func(ctx context.Context) (Credential, error) {
+				cred, err := flow.Complete(ctx)
+				if err != nil {
+					return Credential{}, err
+				}
+				if err := store.Save(cred); err != nil {
+					return Credential{}, fmt.Errorf("auth: save %s credential: %w", def.ID, err)
+				}
+				return cred, nil
+			},
+		}, nil
+
+	case provider.LoginDeviceCode:
+		dr, err := oauth.RequestDeviceCode(ctx, def)
+		if err != nil {
+			return nil, fmt.Errorf("auth: device code: %w", err)
+		}
+		verificationURL := dr.VerificationURIComplete
+		if verificationURL == "" {
+			verificationURL = dr.VerificationURI
+		}
+		instructions := fmt.Sprintf("Go to %s and enter code: %s", dr.VerificationURI, dr.UserCode)
+		return &LoginFlow{
+			ProviderID: def.ID,
+			Prompt:     instructions,
+			URL:        verificationURL,
+			complete: func(ctx context.Context) (Credential, error) {
+				tr, err := oauth.PollDeviceToken(ctx, def, dr)
+				if err != nil {
+					return Credential{}, fmt.Errorf("auth: device flow: %w", err)
+				}
+				cred := Credential{
+					ProviderID:   def.ID,
+					Kind:         CredentialOAuth,
+					AccessToken:  tr.AccessToken,
+					RefreshToken: tr.RefreshToken,
+					ExpiresAt:    oauth.ExpiresAt(tr.ExpiresIn),
+				}
+				if id, err := oauth.FetchIdentity(ctx, def, tr.AccessToken); err == nil {
+					cred.AccountID = id.AccountID
+					cred.Email = id.Email
+					cred.OrgID = id.OrgID
+					cred.OrgName = id.OrgName
+				}
+				if hook := GetPostExchange(def.ID); hook != nil {
+					var err error
+					cred, err = hook(ctx, cred, def)
+					if err != nil {
+						return Credential{}, fmt.Errorf("auth: post-exchange hook for %s: %w", def.ID, err)
+					}
+				}
+				if err := store.Save(cred); err != nil {
+					return Credential{}, fmt.Errorf("auth: save %s credential: %w", def.ID, err)
+				}
+				return cred, nil
+			},
+		}, nil
+
+	default:
+		return nil, fmt.Errorf("auth: StartLogin does not support login kind %q for %s", def.LoginKind, def.ID)
+	}
+}
+
 // StatusLine returns a one-line summary of a stored credential for display
 // in `nib login --list`. Example: "user@example.com (OAuth, expires in 3d)".
 func (c Credential) StatusLine() string {

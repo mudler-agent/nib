@@ -39,7 +39,12 @@ func Resolve(store *Store, def provider.Definition, configAPIKey string) (Resolv
 		cred, ok, err := store.Get(def.ID)
 		if err == nil && ok {
 			if cred.Kind == CredentialOAuth {
-				return resolveOAuth(store, def, cred)
+				r, _ := resolveOAuth(store, def, cred)
+				if r.APIKey != "" {
+					return r, nil
+				}
+				// Refresh failed or token is empty — fall through to
+				// config/env rather than returning empty.
 			}
 			if cred.Kind == CredentialAPIKey && cred.APIKey != "" {
 				return Resolved{APIKey: cred.APIKey, IsOAuth: false}, nil

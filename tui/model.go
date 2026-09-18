@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -23,6 +25,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/mudler/nib/attachments"
 	"github.com/mudler/nib/attachstage"
+	"github.com/mudler/nib/auth"
 	"github.com/mudler/nib/chat"
 	"github.com/mudler/nib/loop"
 	wizmcp "github.com/mudler/nib/mcp"
@@ -546,6 +549,12 @@ type toolResultMsg chat.ToolResult
 type sessionReadyMsg struct {
 	session *chat.Session
 	err     error
+}
+
+// loginResultMsg is sent when an in-TUI login flow completes.
+type loginResultMsg struct {
+	cred auth.Credential
+	err  error
 }
 
 // NewModel creates a new TUI model
@@ -1460,6 +1469,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateViewport()
 		return m, nil
 
+	case loginResultMsg:
+		m.loading = false
+		m.status = ""
+		if msg.err != nil {
+			m.appendMessage(ChatMessage{Role: "error", Content: "Login failed: " + msg.err.Error()})
+		} else {
+			m.appendMessage(ChatMessage{Role: "agent", Content: "Logged in as " + msg.cred.DisplayLabel()})
+		}
+		m.updateViewport()
+		return m, nil
+
 	case compactNoticeMsg:
 		m.appendMessage(ChatMessage{Role: "agent", Content: compactNotice(msg[0], msg[1])})
 		m.contextTokens = msg[1]
@@ -1848,10 +1868,19 @@ func (m *Model) dispatchResolved(input string) tea.Cmd {
 			m.appendMessage(ChatMessage{Role: "agent", Content: m.session.LoginList()})
 			return nil
 		}
-		// The TUI can't run an OAuth callback server without blocking the event
-		// loop, so direct the user to the CLI command.
-		m.appendMessage(ChatMessage{Role: "agent", Content: "Run `nib login " + action.Provider + "` from a terminal to complete login."})
-		return nil
+		flow, err := m.session.StartLogin(m.ctx, action.Provider)
+		if err != nil {
+			m.appendMessage(ChatMessage{Role: "error", Content: err.Error()})
+			return nil
+		}
+		m.appendMessage(ChatMessage{Role: "agent", Content: flow.Prompt})
+		if flow.URL != "" {
+			openBrowser(flow.URL)
+		}
+		m.loading = true
+		m.interruptArmed = false
+		m.status = "Waiting for login…"
+		return m.loginCompleteCmd(flow)
 	case slash.KindLogout:
 		if action.Provider == "" {
 			m.appendMessage(ChatMessage{Role: "agent", Content: m.session.LoginList()})
@@ -2079,6 +2108,14 @@ func (m Model) compactCmd() tea.Cmd {
 	return func() tea.Msg {
 		before, after, err := m.session.CompactHistory()
 		return compactResultMsg{before: before, after: after, err: err}
+	}
+}
+
+// loginCompleteCmd finishes an in-TUI login flow off the event loop.
+func (m Model) loginCompleteCmd(flow *auth.LoginFlow) tea.Cmd {
+	return func() tea.Msg {
+		cred, err := flow.Complete(m.ctx)
+		return loginResultMsg{cred: cred, err: err}
 	}
 }
 
@@ -3265,4 +3302,20 @@ func (m Model) quit() (tea.Model, tea.Cmd) {
 	}
 	m.cancel()
 	return m, tea.Quit
+}
+
+// openBrowser attempts to open url in the user's default browser. Failure is
+// non-fatal — the URL is already displayed for manual entry.
+func openBrowser(url string) {
+	var c string
+	var args []string
+	switch runtime.GOOS {
+	case "darwin":
+		c, args = "open", []string{url}
+	case "windows":
+		c, args = "rundll32", []string{"url.dll,FileProtocolHandler", url}
+	default:
+		c, args = "xdg-open", []string{url}
+	}
+	_ = exec.Command(c, args...).Start()
 }
