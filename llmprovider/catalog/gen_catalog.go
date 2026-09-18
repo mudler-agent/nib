@@ -20,9 +20,10 @@ import (
 	"github.com/klauspost/compress/zstd"
 )
 
-// sourceURL is the raw GitHub URL of oh-my-pi's models.json at a pinned
-// commit. Update the commit hash to refresh the catalog.
-const sourceURL = "https://raw.githubusercontent.com/can1357/oh-my-pi/78b753124d11f8dd3ae73e2524125890ff7c977e/packages/catalog/src/models.json"
+// sourceURL is the raw GitHub URL of oh-my-pi's models.json on the main
+// branch. The CI workflow fetches this weekly and opens a PR when the
+// catalog changes.
+const sourceURL = "https://raw.githubusercontent.com/can1357/oh-my-pi/refs/heads/main/packages/catalog/src/models.json"
 
 func main() {
 	resp, err := http.Get(sourceURL)

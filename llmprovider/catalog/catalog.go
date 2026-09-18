@@ -74,8 +74,8 @@ func buildIndices() {
 
 // Lookup finds a model in the catalog using progressively looser matching:
 //  1. Exact provider + model ID
-//  2. Model ID across all providers
-//  3. Base URL host + model ID
+//  2. Base URL host + exact model ID (provider-specific via endpoint)
+//  3. Model ID across all providers (prefers non-openrouter entries)
 //  4. Model ID suffix match (strip "org/" prefix from catalog IDs)
 //
 // Returns nil, false when nothing matches.
@@ -93,20 +93,32 @@ func Lookup(providerName, modelID, baseURL string) (*Model, bool) {
 		}
 	}
 
-	// 2. Model ID across all providers (first match wins).
-	if matches, ok := byModelID[modelID]; ok && len(matches) > 0 {
-		return &matches[0], true
-	}
-
-	// 3. Base URL host + model ID.
-	if h := hostOf(baseURL); h != "" {
-		if matches, ok := byBaseURLHost[h]; ok {
+	// 2. Base URL host + exact model ID — more precise than a bare
+	//    model-ID search because it ties the match to the actual endpoint.
+	host := hostOf(baseURL)
+	if host != "" {
+		if matches, ok := byBaseURLHost[host]; ok {
 			for i := range matches {
 				if strings.EqualFold(matches[i].ID, modelID) {
 					return &matches[i], true
 				}
 			}
 		}
+	}
+
+	// 3. Model ID across all providers. When the same model ID is served
+	//    by multiple providers, prefer a non-openrouter entry (openrouter
+	//    has the omit flag, which would suppress max_tokens even for a
+	//    direct provider that needs it).
+	if matches, ok := byModelID[modelID]; ok && len(matches) > 0 {
+		best := 0
+		for i := range matches {
+			if !matches[i].Compat.IsOpenRouterHost {
+				best = i
+				break
+			}
+		}
+		return &matches[best], true
 	}
 
 	// 4. Suffix match: strip "org/" prefix from catalog IDs.
