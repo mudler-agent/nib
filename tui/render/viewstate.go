@@ -192,6 +192,15 @@ type FooterRow struct {
 //   - Footers: plain {Glyph, Text, Kind} data for the active-jobs/shell-jobs/
 //     loops/goal footer rows (see FooterRow) — the presenter styles (per
 //     Kind) and joins whichever are present, in order.
+// HeaderStats carries the header's stat segments for responsive rendering.
+// Lower-priority fields drop first on narrow terminals.
+type HeaderStats struct {
+	Model  string // priority 90
+	Tools  int    // priority 60
+	MCP    int    // priority 50
+	Skills int    // priority 40
+}
+
 type ViewState struct {
 	Width       int
 	Cwd         string
@@ -204,6 +213,13 @@ type ViewState struct {
 	Dialogs     []Dialog
 	Help        string
 	Badges      string
+
+	// HUD live telemetry for the footer.
+	Clock string
+	CPU   int
+	RAM   int
+
+	HeaderStats HeaderStats
 
 	NewOutput bool
 	Err       string

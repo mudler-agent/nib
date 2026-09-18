@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -445,6 +446,13 @@ type Model struct {
 	// The buffer just gives a fast token burst some slack before backpressure
 	// kicks in.
 	reasoningChan chan reasoningEvent
+
+	// boot tracks the startup animation state. See boot.go.
+	boot *bootState
+	// HUD live telemetry for the footer.
+	hudClock string
+	hudCPU   int
+	hudRAM   int
 }
 
 // responseMsg is sent when the AI responds
@@ -637,7 +645,9 @@ func NewModel(ctx context.Context, cfg types.Config, height int, shellJobs *wizm
 		sessionID:      cfg.ResumeSessionID,
 		sessionTitle:   cfg.ResumeSessionTitle,
 		sessionCreated: time.Now(),
+		boot:           newBootState(),
 	}
+	m.initHudClock()
 	// A fresh (non-resumed) session mints its own id; a --resume'd one
 	// (cfg.ResumeSessionID set by app.go before the TUI started) keeps the
 	// stored session's own id, so autosaving continues to update that same
@@ -651,11 +661,16 @@ func NewModel(ctx context.Context, cfg types.Config, height int, shellJobs *wizm
 
 // Init initializes the model
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(
+	cmds := []tea.Cmd{
 		textarea.Blink,
 		m.spinner.Tick,
 		m.initSession(),
-	)
+	}
+	if m.boot != nil {
+		cmds = append(cmds, m.boot.nextBootCmd())
+	}
+	cmds = append(cmds, m.hudTick())
+	return tea.Batch(cmds...)
 }
 
 // initSession creates the chat session
@@ -1296,12 +1311,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.session = msg.session
 		m.sessionReady = true
+		if m.boot != nil {
+			m.boot.markReady()
+		}
 		// Reload durable cron loops persisted from a previous session.
 		if n, err := m.loops.Load(m.loopsPath); err == nil && n > 0 {
 			m.appendMessage(ChatMessage{Role: "agent", Content: fmt.Sprintf("Reloaded %d durable loop(s).", n)})
 		}
 		// Start listening for callbacks
 		cmds = append(cmds, m.listenStatus(), m.listenReasoningEvents(), m.listenToolRequest(), m.listenToolResult(), m.listenAskRequest(), m.listenAgentEvents(), m.shellTick(), m.loopTick(), m.listenWakeup(), m.listenPark(), m.listenCompact(), m.listenPrune())
+
+	case bootTickMsg:
+		if m.boot != nil {
+			m.boot.tick(&m)
+			if cmd := m.boot.nextBootCmd(); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			m.updateViewport()
+		}
+
+	case hudTickMsg:
+		m.handleHudTick()
+		cmds = append(cmds, m.hudTick())
 
 	case modelListMsg:
 		if !m.modelPicker.active || !m.modelPicker.loading || msg.requestID != m.modelPicker.requestID {
@@ -1790,6 +1821,9 @@ func fencedListing(listing string) string {
 // skill load or a resolve error). Shared by the Enter handler and the queue
 // flush so typed-while-idle and queued-while-busy input behave identically.
 func (m *Model) dispatchInput(input string) tea.Cmd {
+	if m.boot != nil && !m.boot.collapsed {
+		m.boot.collapsed = true
+	}
 	m.appendMessage(ChatMessage{Role: "user", Content: input})
 	return m.dispatchResolved(input)
 }
@@ -2826,9 +2860,18 @@ func (m Model) viewState() render.ViewState {
 			Collapsed: m.reasoningCollapsed,
 			MaxLines:  theme.ReasoningMaxLines,
 		},
-		Dialogs: m.currentDialogs(),
-		Help:    help,
-		Badges:  m.footerBadges(lipgloss.Width(help)),
+		Dialogs:     m.currentDialogs(),
+		Help:        help,
+		Badges:      m.footerBadges(lipgloss.Width(help)),
+		Clock:       m.hudClock,
+		CPU:         m.hudCPU,
+		RAM:         m.hudRAM,
+		HeaderStats: render.HeaderStats{
+			Model:  m.headerModel(),
+			Tools:  m.headerToolCount(),
+			MCP:    len(m.transports),
+			Skills: len(m.cfg.Skills),
+		},
 
 		// New content arrived below the fold while the user was scrolled up.
 		NewOutput: m.showingViewport() && !m.viewport.AtBottom(),
@@ -3035,6 +3078,8 @@ func (m Model) View() string {
 	switch {
 	case m.showLogs:
 		body = m.renderLogsViewer()
+	case m.boot != nil && !m.boot.collapsed:
+		body = m.boot.render(m.width)
 	case !m.showingViewport():
 		body = renderEmptyState(m.width)
 	default:
@@ -3316,30 +3361,58 @@ func (m Model) usageBadge() string {
 }
 
 // footerBadges renders the right-aligned bottom-bar badges for a help line of
-// helpWidth columns.
+// helpWidth columns. Badges are priority-based: the lowest-priority badge drops
+// first when space is tight.
 //
-// When both do not fit, the usage badge is dropped WHOLE — never truncated,
-// never abbreviated. The context badge earns the space because it predicts
-// auto-compaction and is therefore actionable, while the session total is
-// informational and still reaches the user through the exit summary and
-// usage.json. Narrow terminals are the common case here, not an edge case:
-// nib is routinely run through ttyd in a browser.
+// Priority (lowest drops first): ram(20), cpu(40), clock(60), usage(80),
+// context(100). The context badge earns the highest priority because it
+// predicts auto-compaction and is therefore actionable.
 func (m Model) footerBadges(helpWidth int) string {
+	type badge struct {
+		text     string
+		priority int
+	}
+	var badges []badge
+
 	ctx, usage := m.contextBadge(), m.usageBadge()
-	if usage == "" {
-		return ctx
+	if ctx != "" {
+		badges = append(badges, badge{ctx, 100})
 	}
-	if ctx == "" {
-		if helpWidth+lipgloss.Width(usage)+1 > m.width {
-			return ""
+	if usage != "" {
+		badges = append(badges, badge{usage, 80})
+	}
+	if m.hudClock != "" {
+		badges = append(badges, badge{theme.Meta.Render(m.hudClock), 60})
+	}
+	if m.hudCPU > 0 {
+		badges = append(badges, badge{fmt.Sprintf("%s %s", theme.Meta.Render(strconv.Itoa(m.hudCPU)), theme.Help.Render("gor")), 40})
+	}
+	if m.hudRAM > 0 {
+		badges = append(badges, badge{fmt.Sprintf("%s %s", theme.Meta.Render(strconv.Itoa(m.hudRAM)), theme.Help.Render("mb")), 20})
+	}
+
+	if len(badges) == 0 {
+		return ""
+	}
+
+	// Greedily include from highest to lowest priority. The first (highest-
+	// priority) badge is always included even if it overflows — it carries the
+	// most actionable information (context predicts compaction).
+	sep := "  "
+	var included []string
+	used := helpWidth + 1
+	for i, b := range badges {
+		w := lipgloss.Width(b.text)
+		if len(included) > 0 {
+			w += len(sep)
 		}
-		return usage
+		if i == 0 || used+w <= m.width {
+			included = append(included, b.text)
+			used += w
+		}
 	}
-	both := usage + "  " + ctx
-	if helpWidth+lipgloss.Width(both)+1 > m.width {
-		return ctx
-	}
-	return both
+
+	return strings.Join(included, sep)
 }
 
 // quit tears down the session and exits.

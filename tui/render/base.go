@@ -1,6 +1,7 @@
 package render
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -281,19 +282,87 @@ func (Base) Dialog(d Dialog, w int) string {
 	return ""
 }
 
-// Header renders the brand/badge line and the rule beneath it.
+// Header renders the brand/badge line with responsive stat segments and the
+// rule beneath it. Stats drop by ascending priority on narrow terminals:
+// cwd(30) < skills(40) < mcp(50) < tools(60) < model(90).
 func (Base) Header(v ViewState) string {
 	var b strings.Builder
+
+	// Left side: brand + yolo badge.
 	left := theme.Brand.Render(v.Brand)
 	if v.AutoApprove {
 		left += "  " + theme.Yolo.Render(theme.YoloBadge)
 	}
-	cwd := theme.Meta.Render(v.Cwd)
-	gap := v.Width - lipgloss.Width(left) - lipgloss.Width(cwd)
-	if gap < 1 {
-		gap = 1
+
+	// Middle: stat segments, each with a separator dot. Built left-to-right
+	// but dropped right-to-left (lowest priority first) when space is tight.
+	type seg struct {
+		text     string
+		priority int
 	}
-	b.WriteString(left + strings.Repeat(" ", gap) + cwd)
+	var segs []seg
+	if v.HeaderStats.Model != "" {
+		segs = append(segs, seg{theme.Meta.Render(v.HeaderStats.Model), 90})
+	}
+	if v.HeaderStats.Tools > 0 {
+		segs = append(segs, seg{fmt.Sprintf("%s %s", theme.Meta.Render(strconv.Itoa(v.HeaderStats.Tools)), theme.Help.Render("tools")), 60})
+	}
+	if v.HeaderStats.MCP > 0 {
+		segs = append(segs, seg{fmt.Sprintf("%s %s", theme.Meta.Render(strconv.Itoa(v.HeaderStats.MCP)), theme.Help.Render("mcp")), 50})
+	}
+	if v.HeaderStats.Skills > 0 {
+		segs = append(segs, seg{fmt.Sprintf("%s %s", theme.Meta.Render(strconv.Itoa(v.HeaderStats.Skills)), theme.Help.Render("skills")), 40})
+	}
+
+	// Right side: cwd.
+	cwd := theme.Meta.Render(v.Cwd)
+
+	// Fit segments between left and cwd, dropping lowest-priority first.
+	sepDot := theme.SepStyle.Render(theme.Sep)
+	availWidth := v.Width - lipgloss.Width(left) - lipgloss.Width(cwd) - 2 // 2 for gaps
+
+	// Sort segments by priority descending so we keep the highest.
+	// (Already in priority order from append above.)
+
+	// Greedily include segments until they don't fit.
+	var included []seg
+	usedWidth := 0
+	for _, s := range segs {
+		w := lipgloss.Width(s.text) + 3 // text + sep + spaces
+		if usedWidth+w <= availWidth {
+			included = append(included, s)
+			usedWidth += w
+		}
+	}
+
+	// Build the middle string from included segments.
+	var mid string
+	for i, s := range included {
+		if i > 0 {
+			mid += sepDot + " "
+		}
+		mid += s.text + " "
+	}
+
+	// Compose: left + [mid +] cwd, right-aligned.
+	// When mid is empty, the header is just left + gap + cwd (same as before
+	// the stats were added, so golden tests with zero-value HeaderStats don't drift).
+	var line string
+	midTrim := strings.TrimRight(mid, " ")
+	if midTrim != "" {
+		gap := v.Width - lipgloss.Width(left) - lipgloss.Width(midTrim) - lipgloss.Width(cwd) - 1
+		if gap < 1 {
+			gap = 1
+		}
+		line = left + " " + midTrim + strings.Repeat(" ", gap) + cwd
+	} else {
+		gap := v.Width - lipgloss.Width(left) - lipgloss.Width(cwd)
+		if gap < 1 {
+			gap = 1
+		}
+		line = left + strings.Repeat(" ", gap) + cwd
+	}
+	b.WriteString(line)
 	b.WriteString("\n")
 	b.WriteString(theme.Hairline(v.Width))
 	b.WriteString("\n")
