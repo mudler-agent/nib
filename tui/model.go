@@ -3249,12 +3249,10 @@ func compactNotice(before, after int) string {
 // threshold (clay — the palette's warmest attention color).
 var ctxBadgeWarn = lipgloss.NewStyle().Foreground(theme.Accent)
 
-// contextBudget is the number the badge measures against: the window the
-// session is really using, less the reserve held back for the response. It is
-// what chat.shouldAutoCompact takes its threshold of, so a badge drawn against
-// it reaches 100% exactly where compaction fires — when compaction is on at
-// all. With Compaction.Disabled the scale is still honest headroom, and
-// contextBadgeWarns is what withholds the prediction.
+// contextBudget is the number the compaction point is taken from: the window
+// the session is really using, less the reserve held back for the response.
+// It is what chat.shouldAutoCompact takes its threshold of, so the gauge's tick
+// sits exactly where compaction fires — when compaction is on at all.
 //
 // Both halves used to be wrong. The raw cfg.Compaction.MaxContextTokens ignores
 // the reserve (a few percent at 128k) and, worse, ignores a window learned from
@@ -3263,58 +3261,141 @@ var ctxBadgeWarn = lipgloss.NewStyle().Foreground(theme.Accent)
 // authority whenever there is one; the config is the fallback for a model with
 // no session yet.
 func (m Model) contextBudget() int {
-	window := m.cfg.Compaction.MaxContextTokens
-	if m.session != nil {
-		window = m.session.ContextWindow()
-	}
-	return chat.ContextBudget(m.cfg.Compaction, window)
+	return chat.ContextBudget(m.cfg.Compaction, m.contextWindow())
 }
 
-// contextBadgeWarns reports whether the badge should highlight: usage has
-// reached the fraction of the budget auto-compaction triggers on, AND
-// compaction can actually fire.
-//
-// The Disabled half is the part that is easy to forget. The highlight is a
-// warning that something is about to happen; with compaction off nothing is,
-// and lighting the badge at 80% predicts a compaction that cannot come. It
-// mirrors chat.shouldAutoCompact, which rejects Disabled first for the same
-// reason, and the default threshold is the same 0.8 that function applies.
-//
-// Split out of contextBadge because it is the only part of the badge a test can
-// assert on: lipgloss renders both styles as plain text when tests run without
-// a TTY, so a rendered badge cannot say whether it was highlighted.
-func (m Model) contextBadgeWarns(used, budget int) bool {
-	if m.cfg.Compaction.Disabled {
-		return false
+// contextNearFraction is how close to the compaction point the badge starts
+// warning, as a fraction of that point. Warning a little early is the point:
+// a badge that lights up only as compaction fires tells the user nothing they
+// can act on.
+const contextNearFraction = 0.9
+
+// contextGaugeCells is the width of the context gauge, in cells.
+const contextGaugeCells = 10
+
+// contextCompactAt returns the token count at which auto-compaction fires, or 0
+// when it cannot fire. It mirrors chat.shouldAutoCompact: Threshold × budget,
+// with Disabled rejected first and the same 0.8 default.
+func (m Model) contextCompactAt(budget int) int {
+	if m.cfg.Compaction.Disabled || budget <= 0 {
+		return 0
 	}
 	threshold := m.cfg.Compaction.Threshold
 	if threshold <= 0 || threshold > 1 {
 		threshold = 0.8
 	}
-	return float64(used) >= float64(budget)*threshold
+	return int(float64(budget) * threshold)
 }
 
-// contextBadge renders the right-aligned context-size indicator for the bottom
-// bar, e.g. "ctx 8k (6%)". It highlights once usage reaches the auto-compaction
-// threshold and compaction is on. Returns "" when there's nothing to show yet.
-func (m Model) contextBadge() string {
+// contextBadgeWarns reports whether the badge should highlight: usage is
+// within contextNearFraction of the compaction point, AND compaction can
+// actually fire.
+//
+// The Disabled half is the part that is easy to forget. The highlight is a
+// warning that something is about to happen; with compaction off nothing is,
+// and lighting the badge predicts a compaction that cannot come.
+//
+// Split out of contextBadge because it is the only part of the badge a test can
+// assert on: lipgloss renders both styles as plain text when tests run without
+// a TTY, so a rendered badge cannot say whether it was highlighted.
+func (m Model) contextBadgeWarns(used, budget int) bool {
+	at := m.contextCompactAt(budget)
+	return at > 0 && float64(used) >= float64(at)*contextNearFraction
+}
+
+// contextWindow is the full window the gauge is drawn against: the one the
+// session really uses, falling back to the config before a session exists.
+func (m Model) contextWindow() int {
+	if m.session != nil {
+		return m.session.ContextWindow()
+	}
+	return m.cfg.Compaction.MaxContextTokens
+}
+
+// contextGauge draws used/window as contextGaugeCells cells, with a tick at
+// the compaction point when compaction can fire, e.g. "▰▰▰▰▱▱▱▱│▱▱".
+func contextGauge(used, window, compactAt int, warn bool) string {
+	cell := func(n int) int {
+		c := (n*contextGaugeCells + window/2) / window
+		return min(max(c, 0), contextGaugeCells)
+	}
+	filled := cell(used)
+	if used > 0 && filled == 0 {
+		filled = 1 // something is in the window; never draw it empty
+	}
+	tick := -1
+	if compactAt > 0 {
+		tick = cell(compactAt)
+	}
+	fill := theme.Help
+	if warn {
+		fill = ctxBadgeWarn
+	}
+	var b strings.Builder
+	for i := range contextGaugeCells {
+		if i == tick {
+			b.WriteString(theme.Help.Render("│"))
+		}
+		if i < filled {
+			b.WriteString(fill.Render("▰"))
+		} else {
+			b.WriteString(theme.Meta.Render("▱"))
+		}
+	}
+	return b.String()
+}
+
+// contextBadges returns the context indicator for the bottom bar at each
+// width it can take, widest first, e.g.
+//
+//	ctx ▰▰▰▰▰▱▱▱│▱▱ 48k/200k · 152k left
+//	ctx 48k/200k · 152k left
+//	ctx 48k/200k
+//
+// The figures are against the full window, which is what "how much room is
+// there" means to a reader. The compaction point is the tick on the gauge, and
+// once usage nears it the trailing text names it instead of the headroom,
+// because at that point it is the number that matters.
+//
+// Returns nil when there's nothing to show yet.
+func (m Model) contextBadges() []string {
 	used := m.contextTokens
 	if used <= 0 {
-		return ""
+		return nil
+	}
+	window := m.contextWindow()
+	if window <= 0 {
+		// No window at all: show the bare size.
+		return []string{theme.Meta.Render("ctx " + chat.HumanTokens(used))}
 	}
 	budget := m.contextBudget()
-	if budget <= 0 {
-		// No window at all: show the bare size.
-		return theme.Meta.Render("ctx " + chat.HumanTokens(used))
+	compactAt := m.contextCompactAt(budget)
+	warn := m.contextBadgeWarns(used, budget)
+
+	text := theme.Meta
+	if warn {
+		text = ctxBadgeWarn
 	}
-	pct := used * 100 / budget
-	// The percentage is shown even with compaction disabled: it is real headroom
-	// against a real budget. Only the highlight is withheld.
-	label := fmt.Sprintf("ctx %s (%d%%)", chat.HumanTokens(used), pct)
-	if m.contextBadgeWarns(used, budget) {
-		return ctxBadgeWarn.Render(label)
+	size := fmt.Sprintf("%s/%s", chat.HumanTokensOrZero(used), chat.HumanTokens(window))
+	tail := fmt.Sprintf("%s left", chat.HumanTokensOrZero(max(window-used, 0)))
+	if warn {
+		tail = "compacts at " + chat.HumanTokens(compactAt)
 	}
-	return theme.Meta.Render(label)
+	label := theme.Meta.Render("ctx ")
+	return []string{
+		label + contextGauge(used, window, compactAt, warn) + " " + text.Render(size+" · "+tail),
+		label + text.Render(size+" · "+tail),
+		label + text.Render(size),
+	}
+}
+
+// contextBadge renders the widest form of the context indicator, or "" when
+// there's nothing to show yet.
+func (m Model) contextBadge() string {
+	if b := m.contextBadges(); len(b) > 0 {
+		return b[0]
+	}
+	return ""
 }
 
 // usageBadge renders the session's cumulative token spend for the bottom bar,
@@ -3374,8 +3455,17 @@ func (m Model) footerBadges(helpWidth int) string {
 	}
 	var badges []badge
 
-	ctx, usage := m.contextBadge(), m.usageBadge()
-	if ctx != "" {
+	// The context badge takes the widest form that fits beside the help line,
+	// falling back to its narrowest when none does; the rest share what is left.
+	usage := m.usageBadge()
+	if forms := m.contextBadges(); len(forms) > 0 {
+		ctx := forms[len(forms)-1]
+		for _, f := range forms {
+			if helpWidth+1+lipgloss.Width(f) <= m.width {
+				ctx = f
+				break
+			}
+		}
 		badges = append(badges, badge{ctx, 100})
 	}
 	if usage != "" {

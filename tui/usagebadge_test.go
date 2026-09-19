@@ -23,7 +23,7 @@ func TestUsageBadgeHiddenWhenZero(t *testing.T) {
 	}
 }
 
-// Plain words, matching contextBadge's "ctx 8k (6%)" phrasing and the calm
+// Plain words, matching contextBadge's "ctx 8k/128k" phrasing and the calm
 // no-emoji voice TestNoEmojiInRenderHelpers guards.
 func TestUsageBadgeFormatsBothDirections(t *testing.T) {
 	m := newTestModel(Model{sessionUsage: chat.SessionUsage{PromptTokens: 312000, CompletionTokens: 18400}})
@@ -112,12 +112,10 @@ func TestContextBadgeSubtractsTheReserve(t *testing.T) {
 	if got := m.contextBudget(); got != 123904 {
 		t.Fatalf("contextBudget = %d, want 128000-4096 = 123904", got)
 	}
+	// 0.8 × 123904 = 99123; against the raw window it would read 102.4k.
 	got := m.contextBadge()
-	if !strings.Contains(got, "(80%)") {
-		t.Fatalf("contextBadge = %q, want 80%% of the 123904-token budget", got)
-	}
-	if strings.Contains(got, "(78%)") {
-		t.Fatalf("contextBadge = %q; still budgeting against the raw window", got)
+	if !strings.Contains(got, "compacts at 99.1k") {
+		t.Fatalf("contextBadge = %q, want the compaction point at 80%% of the 123904-token budget", got)
 	}
 }
 
@@ -144,8 +142,12 @@ func TestContextBadgeDoesNotWarnWhenCompactionIsDisabled(t *testing.T) {
 	if off.contextBadgeWarns(100000, off.contextBudget()) {
 		t.Fatal("the badge warns at 80% while compaction is disabled, predicting a compaction that cannot fire")
 	}
-	if got := off.contextBadge(); !strings.Contains(got, "(80%)") {
-		t.Fatalf("contextBadge = %q, want the percentage still shown", got)
+	got := off.contextBadge()
+	if !strings.Contains(got, "100k/128k · 28k left") {
+		t.Fatalf("contextBadge = %q, want the headroom still shown", got)
+	}
+	if strings.Contains(got, "│") || strings.Contains(got, "compacts") {
+		t.Fatalf("contextBadge = %q marks a compaction point that cannot fire", got)
 	}
 }
 
@@ -210,12 +212,10 @@ func TestContextBadgeFollowsTheLearnedWindow(t *testing.T) {
 	m := Model{width: 120, contextTokens: 209000, session: s}
 	m.cfg.Compaction = compaction
 
+	// 0.8 × (262144-4096) = 206438.
 	got := m.contextBadge()
-	if !strings.Contains(got, "(80%)") {
-		t.Fatalf("contextBadge = %q, want 80%% of the learned window's budget (262144-4096)", got)
-	}
-	if strings.Contains(got, "(52%)") {
-		t.Fatalf("contextBadge = %q; still budgeting against the configured 400000 while compaction fires", got)
+	if !strings.Contains(got, "209k/262.1k") || !strings.Contains(got, "compacts at 206.4k") {
+		t.Fatalf("contextBadge = %q, want the learned 262144 window and its compaction point", got)
 	}
 }
 
@@ -441,5 +441,64 @@ func TestUsageBadgePrefersRealUsageOverEstimateWhenSessionIsPresent(t *testing.T
 	got := m.usageBadge()
 	if strings.Contains(got, theme.UsageEstimatedPrefix) {
 		t.Fatalf("a session with real measured usage was marked as estimated: %q", got)
+	}
+}
+
+// Well below the compaction point the badge shows the gauge, the size against
+// the full window and the headroom, with a tick where compaction fires.
+func TestContextBadgeShowsGaugeAndHeadroom(t *testing.T) {
+	m := Model{width: 120, contextTokens: 48000}
+	m.cfg.Compaction = types.CompactionConfig{
+		MaxContextTokens: 200000, Threshold: 0.8, ReserveTokens: 4096,
+	}
+
+	// 48k of 200k fills 2.4 → 2 cells; the tick at 0.8 × 195904 ≈ 156.7k lands
+	// before cell 8.
+	want := "ctx ▰▰▱▱▱▱▱▱│▱▱ 48k/200k · 152k left"
+	if got := m.contextBadge(); got != want {
+		t.Fatalf("contextBadge = %q, want %q", got, want)
+	}
+	if m.contextBadgeWarns(48000, m.contextBudget()) {
+		t.Fatal("the badge warns at 24% of the window")
+	}
+}
+
+// The badge warns a little before the compaction point, not only once it has
+// been reached, so the warning arrives while it can still be acted on.
+func TestContextBadgeWarnsNearTheCompactionPoint(t *testing.T) {
+	m := Model{width: 120}
+	m.cfg.Compaction = types.CompactionConfig{
+		MaxContextTokens: 200000, Threshold: 0.8, ReserveTokens: 4096,
+	}
+	at := m.contextCompactAt(m.contextBudget())
+	if m.contextBadgeWarns(at*8/10, m.contextBudget()) {
+		t.Fatal("the badge warns at 80% of the way to the compaction point")
+	}
+	if !m.contextBadgeWarns(at*95/100, m.contextBudget()) {
+		t.Fatal("the badge does not warn at 95% of the way to the compaction point")
+	}
+}
+
+// A narrowing footer drops the gauge first, then the headroom, and keeps the
+// size against the window to the end.
+func TestContextBadgeShrinksWithTheFooter(t *testing.T) {
+	cases := []struct {
+		width      int
+		want, nope string
+	}{
+		{120, "▰", ""},
+		{45, "48k/200k · 152k left", "▰"},
+		{30, "48k/200k", "left"},
+	}
+	for _, tc := range cases {
+		m := newTestModel(Model{width: tc.width, contextTokens: 48000})
+		m.cfg.Compaction = types.CompactionConfig{MaxContextTokens: 200000}
+		got := m.footerBadges(10)
+		if !strings.Contains(got, tc.want) {
+			t.Errorf("width %d: footer = %q, want %q", tc.width, got, tc.want)
+		}
+		if tc.nope != "" && strings.Contains(got, tc.nope) {
+			t.Errorf("width %d: footer = %q, should not contain %q", tc.width, got, tc.nope)
+		}
 	}
 }
