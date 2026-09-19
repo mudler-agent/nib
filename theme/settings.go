@@ -31,6 +31,23 @@ const (
 	// SettingsNotSet answers an unset of a key the file never had.
 	SettingsNotSet = "%s is not set in %s · default %s already applies"
 
+	// SettingsEndpointOverride is appended instead of SettingsNextStart when
+	// a provider-owned key (model/provider/base_url) is written or reset
+	// while a DIFFERENT endpoint than config.yaml's is active: the write
+	// lands in the file, but %s (ActiveProviderName) is what the session
+	// actually runs. /endpoint config switches back to it.
+	SettingsEndpointOverride = " · not in use: this session is on %s · /endpoint config to use config.yaml"
+	// SettingsModelOverride is the same notice for the narrower case where
+	// the session is already on config.yaml's own endpoint, but a model pick
+	// saved earlier (SetModel persists on every endpoint, including the
+	// default) still shadows the model the file names. %s is the model
+	// actually running. /model reset drops that saved pick.
+	SettingsModelOverride = " · not in use: this session is running the saved model %s · /model reset to use config.yaml's"
+
+	// SettingsSourceOverridden marks a provider-owned key in the listing and
+	// detail view whose file value the running session is not using.
+	SettingsSourceOverridden = "file (overridden)"
+
 	// Completion descriptions for the value popup.
 	SettingsValueCurrent = "current"
 	SettingsValueDefault = "remove from the file, use the default"

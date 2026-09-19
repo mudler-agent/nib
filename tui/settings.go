@@ -3,8 +3,10 @@ package tui
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 
+	"github.com/mudler/nib/chat"
 	"github.com/mudler/nib/config"
 	"github.com/mudler/nib/slash"
 	"github.com/mudler/nib/theme"
@@ -33,6 +35,73 @@ func isLiveSetting(key string) bool {
 		}
 	}
 	return false
+}
+
+// providerOwnedSettings are the config keys the running connection can
+// diverge from config.yaml on: the triple SwitchProvider/SetModel rebuild
+// the client from. Writing one of these while it is overridden changes the
+// file and nothing else — the running session goes on using whatever
+// overrode it.
+var providerOwnedSettings = []string{"model", "provider", "base_url"}
+
+// endpointOverrides reports whether a write to key would be inert: the
+// running connection is not built from what config.yaml declares for it, so
+// /settings must say so instead of promising the write "applies on next
+// start". It is the union of two independent tests.
+//
+// The first arm is a genuine endpoint-identity check, and it is NOT
+// redundant with the second: while the active endpoint is a NAMED
+// config.yaml endpoint or a /login provider, endpoint.Set builds the
+// addressing keys (model/provider/base_url) from that entry ALONE —
+// endpointConfig defaults an absent provider to "openai" without ever
+// looking at config.yaml's top level — so a write to the top-level key
+// cannot take effect regardless of what value it lands on. In particular,
+// when neither side names a provider explicitly, both resolve to the same
+// "openai" default and a pure value comparison finds no divergence at all:
+// that is a false negative that would reintroduce exactly the silent-no-op
+// bug this command exists to kill.
+//
+// The second arm is the value comparison alone, which is what remains once
+// the session IS on config.yaml's own default endpoint: there the keys ARE
+// consulted, but SetModel persists a model pick on every endpoint
+// uniformly, including the default one, so a saved pick can still shadow
+// config.yaml's own model even though the endpoint identity matches.
+func (m Model) endpointOverrides(key string) bool {
+	if m.session == nil || !slices.Contains(providerOwnedSettings, key) {
+		return false
+	}
+	if m.session.EndpointID() != chat.ConfigProviderID {
+		return true // arm 1: a different endpoint owns addressing entirely
+	}
+	switch key { // arm 2: on the default endpoint, only a saved pick can shadow it
+	case "model":
+		return m.session.Model() != m.session.ConfigModel()
+	case "provider":
+		return m.session.Provider() != m.session.ConfigProvider()
+	case "base_url":
+		return m.session.BaseURL() != m.session.ConfigBaseURL()
+	default:
+		return false
+	}
+}
+
+// endpointOverrideNotice explains, for a key endpointOverrides has already
+// said is overridden, what is actually running and how to get back to
+// config.yaml.
+//
+// Two distinct situations both count as "overridden": the session can be on
+// a different endpoint entirely (a named config.yaml endpoint or a /login
+// provider), in which case /endpoint config is the way back and applies to
+// any of the three keys; or, only for "model", the session can still be ON
+// config.yaml's own endpoint while a model pick saved earlier shadows the
+// file's model, in which case /endpoint config would be a confusing thing
+// to suggest (the session is already there) and /model reset is the true
+// escape hatch.
+func (m Model) endpointOverrideNotice(key string) string {
+	if key == "model" && m.session.EndpointID() == chat.ConfigProviderID {
+		return fmt.Sprintf(theme.SettingsModelOverride, m.session.Model())
+	}
+	return fmt.Sprintf(theme.SettingsEndpointOverride, m.session.ActiveProviderName())
 }
 
 // settingsPath is the config file /settings reads and writes: the one this
@@ -90,7 +159,10 @@ func (m Model) settingsListing() string {
 			val, anyPending = clipSettingValue(saved)+theme.SettingsPendingMark, true
 		}
 		src := theme.SettingsSourceDefault
-		if present[s.Key] {
+		switch {
+		case present[s.Key] && m.endpointOverrides(s.Key):
+			src = theme.SettingsSourceOverridden
+		case present[s.Key]:
 			src = theme.SettingsSourceFile
 		}
 		fmt.Fprintf(&b, "  %-*s  %-18s %s\n", keyW, s.Key, val, src)
@@ -118,7 +190,10 @@ func (m Model) settingDetail(s config.Setting) string {
 	path := m.settingsPath()
 	_, present, _ := config.FileSettings(path)
 	src := theme.SettingsSourceDefault
-	if present[s.Key] {
+	switch {
+	case present[s.Key] && m.endpointOverrides(s.Key):
+		src = theme.SettingsSourceOverridden
+	case present[s.Key]:
 		src = theme.SettingsSourceFile
 	}
 	var b strings.Builder
@@ -157,7 +232,10 @@ func (m *Model) setSetting(s config.Setting, raw string) {
 	}
 	live := m.applySettingChange(s, before, path)
 	notice := fmt.Sprintf(theme.SettingsSaved, s.Key, config.FormatSettingValue(v), shortenPath(path))
-	if !live {
+	switch {
+	case m.endpointOverrides(s.Key):
+		notice += m.endpointOverrideNotice(s.Key)
+	case !live:
 		notice += theme.SettingsNextStart
 	}
 	m.appendMessage(ChatMessage{Role: "agent", Content: notice})
@@ -183,7 +261,10 @@ func (m *Model) resetSetting(s config.Setting) {
 	live := m.applySettingChange(s, before, path)
 	after, _, _ := config.FileSettings(path)
 	notice := fmt.Sprintf(theme.SettingsReset, s.Key, s.Format(after), shortenPath(path))
-	if !live {
+	switch {
+	case m.endpointOverrides(s.Key):
+		notice += m.endpointOverrideNotice(s.Key)
+	case !live:
 		notice += theme.SettingsNextStart
 	}
 	m.appendMessage(ChatMessage{Role: "agent", Content: notice})
@@ -218,6 +299,13 @@ func (m *Model) applySettingChange(named config.Setting, before types.Config, pa
 	live := false
 	for _, s := range changed {
 		if !isLiveSetting(s.Key) {
+			// An overridden key's write is inert, not pending: the running
+			// session already ignores config.yaml for it, so there is
+			// nothing waiting for a restart to pick up.
+			if m.endpointOverrides(s.Key) {
+				delete(m.pendingSettings, s.Key)
+				continue
+			}
 			if m.pendingSettings == nil {
 				m.pendingSettings = map[string]string{}
 			}

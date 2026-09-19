@@ -93,6 +93,38 @@ func (s *Session) ConfigModel() string {
 	return s.configProvider.Model
 }
 
+// Provider returns the LLM transport the session is currently talking
+// through ("openai", "codex", ...). Safe to call from another goroutine
+// while a turn is running.
+func (s *Session) Provider() string {
+	s.modelMu.RLock()
+	defer s.modelMu.RUnlock()
+	return s.mainProvider.Provider
+}
+
+// ConfigProvider is the LLM transport config.yaml names for its own
+// endpoint, whichever provider is active. Paired with Provider() the same
+// way ConfigModel() is paired with Model(), so a UI can tell a /settings
+// write to the "provider" key apart from what the session actually runs.
+func (s *Session) ConfigProvider() string {
+	return s.configProvider.Provider
+}
+
+// BaseURL returns the endpoint address the session is currently talking to.
+// Safe to call from another goroutine while a turn is running.
+func (s *Session) BaseURL() string {
+	s.modelMu.RLock()
+	defer s.modelMu.RUnlock()
+	return s.mainProvider.BaseURL
+}
+
+// ConfigBaseURL is the endpoint address config.yaml names for its own
+// endpoint, whichever provider is active. Paired with BaseURL() the same
+// way ConfigModel() is paired with Model().
+func (s *Session) ConfigBaseURL() string {
+	return s.configProvider.BaseURL
+}
+
 // SavesModelAsDefault reports whether a model pick made right now, via
 // SetModel, is worth calling out in the UI as "this outlives the session and
 // overrides config.yaml": true on a /login provider or a named config.yaml
