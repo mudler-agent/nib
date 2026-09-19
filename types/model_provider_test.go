@@ -66,3 +66,26 @@ func TestResolvedClassifierSupportsCodexIndependentOfOpenAIMain(t *testing.T) {
 		t.Fatalf("classifier = %#v", classifier)
 	}
 }
+
+func TestResolvedAPIKeyPrefersInlineKey(t *testing.T) {
+	t.Setenv("NIB_TEST_KEY", "from-env")
+	c := ModelProviderConfig{APIKey: "inline", APIKeyEnv: "NIB_TEST_KEY"}
+	if got := c.ResolvedAPIKey(); got != "inline" {
+		t.Fatalf("ResolvedAPIKey = %q, want \"inline\"", got)
+	}
+}
+
+func TestResolvedAPIKeyFallsBackToEnv(t *testing.T) {
+	t.Setenv("NIB_TEST_KEY", "from-env")
+	c := ModelProviderConfig{APIKeyEnv: "NIB_TEST_KEY"}
+	if got := c.ResolvedAPIKey(); got != "from-env" {
+		t.Fatalf("ResolvedAPIKey = %q, want \"from-env\"", got)
+	}
+}
+
+func TestResolvedAPIKeyEmptyWhenEnvUnset(t *testing.T) {
+	c := ModelProviderConfig{APIKeyEnv: "NIB_TEST_KEY_ABSENT"}
+	if got := c.ResolvedAPIKey(); got != "" {
+		t.Fatalf("ResolvedAPIKey = %q, want empty", got)
+	}
+}

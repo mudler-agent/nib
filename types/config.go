@@ -302,6 +302,10 @@ type ModelProviderConfig struct {
 	Provider        string            `yaml:"provider,omitempty"`
 	Model           string            `yaml:"model,omitempty"`
 	APIKey          string            `yaml:"api_key,omitempty"`
+	// APIKeyEnv names an environment variable holding the key, so a config
+	// file can describe an endpoint without carrying its secret. APIKey
+	// wins when both are set.
+	APIKeyEnv       string            `yaml:"api_key_env,omitempty"`
 	BaseURL         string            `yaml:"base_url,omitempty"`
 	Metadata        map[string]string `yaml:"metadata,omitempty"`
 	ReasoningEffort string            `yaml:"reasoning_effort,omitempty"`
@@ -311,9 +315,21 @@ type ModelProviderConfig struct {
 }
 
 func (c ModelProviderConfig) Configured() bool {
-	return c.Provider != "" || c.Model != "" || c.APIKey != "" || c.BaseURL != "" ||
+	return c.Provider != "" || c.Model != "" || c.APIKey != "" || c.APIKeyEnv != "" || c.BaseURL != "" ||
 		len(c.Metadata) != 0 || c.ReasoningEffort != "" || c.MaxTokens != 0 ||
 		c.Command != "" || len(c.Args) != 0
+}
+
+// ResolvedAPIKey is the key to send: the inline one, else the value of the
+// environment variable APIKeyEnv names, else empty.
+func (c ModelProviderConfig) ResolvedAPIKey() string {
+	if c.APIKey != "" {
+		return c.APIKey
+	}
+	if c.APIKeyEnv != "" {
+		return os.Getenv(c.APIKeyEnv)
+	}
+	return ""
 }
 
 // ResolvedMainModel turns the top-level config into a provider config. An empty
