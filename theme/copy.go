@@ -76,6 +76,19 @@ const (
 	LoginWaitHint             = "finish in the browser · esc cancel"
 	LoginCancelled            = "login cancelled"
 
+	// /endpoint picker (tui/endpointpicker.go): the same dialog as /login's,
+	// but listing every endpoint — the config.yaml default, named endpoints,
+	// and the registry — not just the registry.
+	EndpointPickerTitle   = "endpoint"
+	EndpointPickerKeyHint = "type to filter · ↑↓ move · enter use or log in · esc cancel"
+	// EndpointSwitched is the transcript notice after /endpoint switches
+	// straight to the default or a named endpoint (a %s for its name, a %s
+	// for the model now in use).
+	EndpointSwitched = "endpoint: %s · model: %s"
+	// EndpointUnknown is `/endpoint <id>`'s refusal for an ID that matches no
+	// entry (a %s for the typed ID).
+	EndpointUnknown = "unknown endpoint %q · /endpoint lists them"
+
 	CLIWelcome = "a calm assistant for your terminal."
 	CLIExit    = "ctrl+c or 'exit' to leave · 'help' for commands"
 
@@ -164,26 +177,28 @@ const (
 	// Name is the verb shown, matched against the typed query, and used to
 	// build the option's Insert token; Desc is the one-line summary shown
 	// beside it in the popup.
-	CompLoopName    = "loop"
-	CompLoopDesc    = "recurring or self-paced task"
-	CompCompactName = "compact"
-	CompCompactDesc = "compact the conversation"
-	CompGoalName    = "goal"
-	CompGoalDesc    = "set a goal nib checks before stopping"
-	CompModelName   = "model"
-	CompModelDesc   = "switch model (current provider)"
-	CompModelsName  = "models"
-	CompModelsDesc  = "list the current provider's models"
-	CompAttachName  = "attach"
-	CompAttachDesc  = "stage a file for the next message"
-	CompYoloName    = "yolo"
-	CompYoloDesc    = "toggle (or on/off) auto-approve every tool call"
-	CompResumeName  = "resume"
-	CompResumeDesc  = "resume a recorded session"
-	CompLoginName   = "login"
-	CompLoginDesc   = "log in to a provider / switch provider"
-	CompLogoutName  = "logout"
-	CompLogoutDesc  = "remove a stored provider login"
+	CompLoopName     = "loop"
+	CompLoopDesc     = "recurring or self-paced task"
+	CompCompactName  = "compact"
+	CompCompactDesc  = "compact the conversation"
+	CompGoalName     = "goal"
+	CompGoalDesc     = "set a goal nib checks before stopping"
+	CompModelName    = "model"
+	CompModelDesc    = "switch model (current provider)"
+	CompModelsName   = "models"
+	CompModelsDesc   = "list the current provider's models"
+	CompAttachName   = "attach"
+	CompAttachDesc   = "stage a file for the next message"
+	CompYoloName     = "yolo"
+	CompYoloDesc     = "toggle (or on/off) auto-approve every tool call"
+	CompResumeName   = "resume"
+	CompResumeDesc   = "resume a recorded session"
+	CompLoginName    = "login"
+	CompLoginDesc    = "log in to a provider"
+	CompLogoutName   = "logout"
+	CompLogoutDesc   = "remove a stored provider login"
+	CompEndpointName = "endpoint"
+	CompEndpointDesc = "switch endpoint"
 
 	// ToolResultNoOutput is fmtBashResult's (chat/resultfmt.go) fallback for a
 	// failed bash/bash_job_output call whose stdout and stderr were both

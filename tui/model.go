@@ -2021,7 +2021,7 @@ func (m *Model) dispatchResolved(input string) tea.Cmd {
 		return nil
 	case slash.KindLogin:
 		if action.Provider == "" {
-			m.openProviderPicker(false)
+			m.openProviderPicker(pickerLogin)
 			return nil
 		}
 		e, ok := m.providerEntry(action.Provider)
@@ -2032,11 +2032,22 @@ func (m *Model) dispatchResolved(input string) tea.Cmd {
 		return m.useProvider(e, true)
 	case slash.KindLogout:
 		if action.Provider == "" {
-			m.openProviderPicker(true)
+			m.openProviderPicker(pickerLogout)
 			return nil
 		}
 		m.logout(action.Provider)
 		return nil
+	case slash.KindEndpoint:
+		if action.Endpoint == "" {
+			m.openEndpointPicker()
+			return nil
+		}
+		e, ok := m.providerEntry(action.Endpoint)
+		if !ok {
+			m.appendMessage(ChatMessage{Role: "error", Content: fmt.Sprintf(theme.EndpointUnknown, action.Endpoint)})
+			return nil
+		}
+		return m.useEndpoint(e)
 	case slash.KindResume:
 		return m.startResume(action.ResumeAll, action.ResumeID)
 	case slash.KindSettings:
@@ -3292,8 +3303,10 @@ func (m Model) helpLine() string {
 		return theme.ModelPickerTypeName
 	case m.modelPicker.active:
 		return theme.ModelPickerKeyHint
-	case m.providerPicker.active && m.providerPicker.logout:
+	case m.providerPicker.active && m.providerPicker.mode == pickerLogout:
 		return theme.ProviderPickerLogoutHint
+	case m.providerPicker.active && m.providerPicker.mode == pickerEndpoint:
+		return theme.EndpointPickerKeyHint
 	case m.providerPicker.active:
 		return theme.ProviderPickerKeyHint
 	case m.loginForm.active:

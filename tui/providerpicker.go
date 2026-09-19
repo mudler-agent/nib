@@ -10,16 +10,34 @@ import (
 
 	"github.com/mudler/nib/auth"
 	"github.com/mudler/nib/chat"
+	"github.com/mudler/nib/endpoint"
 	"github.com/mudler/nib/provider"
 	"github.com/mudler/nib/theme"
 	"github.com/mudler/nib/tui/render"
 )
 
-// providerPicker is the /login (and /logout) dialog: a searchable list of
-// providers with their login state, the same idiom as the model picker.
+// pickerMode selects which rows providerPicker.open lists and what Enter
+// does with the one chosen, so the same dialog serves three different verbs.
+type pickerMode int
+
+const (
+	// pickerLogin is /login: registry providers only, Enter authenticates
+	// (or, once ready, moves straight to model selection).
+	pickerLogin pickerMode = iota
+	// pickerLogout is /logout: only entries with a stored credential, Enter
+	// removes it.
+	pickerLogout
+	// pickerEndpoint is /endpoint: every entry — the config.yaml default, its
+	// named endpoints, then the registry — Enter switches to it.
+	pickerEndpoint
+)
+
+// providerPicker is the /login, /logout and /endpoint dialog: a searchable
+// list of providers (or endpoints) with their state, the same idiom as the
+// model picker.
 type providerPicker struct {
 	active   bool
-	logout   bool // /logout: only stored logins, Enter removes one
+	mode     pickerMode
 	all      []chat.ProviderEntry
 	matches  []chat.ProviderEntry
 	query    string
@@ -27,11 +45,18 @@ type providerPicker struct {
 	offset   int
 }
 
-func (p *providerPicker) open(entries []chat.ProviderEntry, logout bool) {
-	*p = providerPicker{active: true, logout: logout}
+func (p *providerPicker) open(entries []chat.ProviderEntry, mode pickerMode) {
+	*p = providerPicker{active: true, mode: mode}
 	for _, e := range entries {
-		if logout && !e.Stored {
-			continue
+		switch mode {
+		case pickerLogout:
+			if !e.Stored {
+				continue
+			}
+		case pickerLogin:
+			if e.Kind != endpoint.KindProvider {
+				continue
+			}
 		}
 		p.all = append(p.all, e)
 	}
@@ -93,8 +118,11 @@ func (p providerPicker) choice() (chat.ProviderEntry, bool) {
 
 func (p providerPicker) dialog() render.Dialog {
 	title, hint := theme.ProviderPickerTitle, theme.ProviderPickerKeyHint
-	if p.logout {
+	switch p.mode {
+	case pickerLogout:
 		title, hint = theme.ProviderPickerLogoutTitle, theme.ProviderPickerLogoutHint
+	case pickerEndpoint:
+		title, hint = theme.EndpointPickerTitle, theme.EndpointPickerKeyHint
 	}
 	title += " " + theme.ModelPickerSearchLabel
 	if p.query != "" {
@@ -189,10 +217,12 @@ type loginResultMsg struct {
 	err   error
 }
 
-// openProviderPicker opens /login's picker (or /logout's).
-func (m *Model) openProviderPicker(logout bool) {
-	m.providerPicker.open(m.session.Providers(), logout)
-	if logout && len(m.providerPicker.all) == 0 {
+// openProviderPicker opens /login's picker, /logout's, or /endpoint's. This
+// is the one production call site of providerPicker.open; openEndpointPicker
+// (tui/endpointpicker.go) routes through it rather than calling open itself.
+func (m *Model) openProviderPicker(mode pickerMode) {
+	m.providerPicker.open(m.session.Providers(), mode)
+	if mode == pickerLogout && len(m.providerPicker.all) == 0 {
 		m.providerPicker.close()
 		m.appendMessage(ChatMessage{Role: "agent", Content: theme.ProviderNoneLoggedIn})
 	}
@@ -351,11 +381,14 @@ func (m Model) handleProviderPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		p.backspace()
 	case tea.KeyEnter:
 		if e, ok := p.choice(); ok {
-			logout := p.logout
+			mode := p.mode
 			p.close()
-			if logout {
+			switch mode {
+			case pickerLogout:
 				m.logout(e.ID)
-			} else {
+			case pickerEndpoint:
+				cmd = m.useEndpoint(e)
+			default:
 				cmd = m.useProvider(e, false)
 			}
 		}
