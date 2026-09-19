@@ -47,6 +47,14 @@ const (
 	ModelPickerTypeName  = "type the model name · enter use it · esc cancel"
 	ModelPickerNameLabel = "name:"
 	ModelPickerUseTyped  = "enter uses the typed name."
+	// ModelPickerLoginHint follows the key hint in /model's picker, which
+	// only lists the current provider's models: switching provider is /login.
+	ModelPickerLoginHint = "/login to switch provider"
+
+	// BootModelOverride is the dim note on the boot log's model line when a
+	// saved /login pick replaces config.yaml's model (a %s for that model):
+	// both are configured, and only one is used, so the log says which.
+	BootModelOverride = "(config.yaml: %s, overridden by /login)"
 
 	// /login provider picker, API-key form and OAuth wait dialog
 	// (tui/providerpicker.go).
@@ -163,9 +171,9 @@ const (
 	CompGoalName    = "goal"
 	CompGoalDesc    = "set a goal nib checks before stopping"
 	CompModelName   = "model"
-	CompModelDesc   = "switch the session model"
+	CompModelDesc   = "switch model (current provider)"
 	CompModelsName  = "models"
-	CompModelsDesc  = "list the models this endpoint serves"
+	CompModelsDesc  = "list the current provider's models"
 	CompAttachName  = "attach"
 	CompAttachDesc  = "stage a file for the next message"
 	CompYoloName    = "yolo"
@@ -173,7 +181,7 @@ const (
 	CompResumeName  = "resume"
 	CompResumeDesc  = "resume a recorded session"
 	CompLoginName   = "login"
-	CompLoginDesc   = "log in to a provider or switch provider"
+	CompLoginDesc   = "log in to a provider / switch provider"
 	CompLogoutName  = "logout"
 	CompLogoutDesc  = "remove a stored provider login"
 

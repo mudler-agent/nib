@@ -1,9 +1,12 @@
 package render
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
+
+var baseTestSGR = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 // TestBaseContentWidthUsesInjectedPrefix pins the embedding fix Task 17
 // depends on: Base cannot call back into an embedder's own contentPrefix (Go
@@ -52,6 +55,25 @@ func TestBaseHeaderHeightMatchesHeader(t *testing.T) {
 	v := ViewState{Width: 60, Brand: "nib", Cwd: "~/src/project"}
 	if got, want := b.HeaderHeight(v), BlockRows(b.Header(v)); got != want {
 		t.Errorf("HeaderHeight = %d, want %d (BlockRows of the real Header output)", got, want)
+	}
+}
+
+// TestBaseHeaderNamesTheProvider: the header shows "provider · model" so a
+// /login pick is never mistaken for config.yaml's model, and on a terminal
+// too narrow for both the provider gives way before the model does.
+func TestBaseHeaderNamesTheProvider(t *testing.T) {
+	b := Base{}
+	v := ViewState{Width: 80, Brand: "nib", Cwd: "~/p",
+		HeaderStats: HeaderStats{Provider: "regolo", Model: "glm5.2"}}
+	line := baseTestSGR.ReplaceAllString(strings.SplitN(b.Header(v), "\n", 2)[0], "")
+	if !strings.Contains(line, "regolo · glm5.2") {
+		t.Fatalf("header = %q, want %q", line, "regolo · glm5.2")
+	}
+
+	v.Width = 22 // room for brand, model and cwd, not the provider
+	line = baseTestSGR.ReplaceAllString(strings.SplitN(b.Header(v), "\n", 2)[0], "")
+	if strings.Contains(line, "regolo") || !strings.Contains(line, "glm5.2") {
+		t.Fatalf("narrow header = %q, want the model without the provider", line)
 	}
 }
 

@@ -49,6 +49,45 @@ func (s *Session) ProviderID() string {
 	return s.providerID
 }
 
+// ConfigProviderName is how the UI names the config.yaml endpoint: the same
+// label its /login picker row carries, so the header, boot log and pickers
+// all agree on where the model comes from.
+const ConfigProviderName = "config.yaml"
+
+// ActiveProviderName is the display name of the provider the session is
+// talking to right now: the registry name of a /login provider ("Regolo"), or
+// ConfigProviderName while config.yaml's endpoint is in use.
+//
+// It is the single source of truth for "which provider" in the UI. A saved
+// /login pick overrides config.yaml at startup (restoreDefaultProvider), so a
+// front end that read types.Config.Provider/Model instead would name an
+// endpoint and model that no request goes to.
+func (s *Session) ActiveProviderName() string {
+	id := s.ProviderID()
+	if id == "" || id == ConfigProviderID {
+		return ConfigProviderName
+	}
+	if def, ok := provider.Get(id); ok && def.Name != "" {
+		return def.Name
+	}
+	return id
+}
+
+// ConfigModel is the model config.yaml names for its own endpoint, whichever
+// provider is active. A UI compares it with Model() to explain that a /login
+// selection overrides it, instead of silently showing one or the other.
+func (s *Session) ConfigModel() string {
+	return s.configProvider.Model
+}
+
+// SavesModelAsDefault reports whether SetModel also records the model as the
+// startup default (provider.json). That only happens on a /login provider:
+// config.yaml owns the model for its own endpoint, and nib never edits it.
+func (s *Session) SavesModelAsDefault() bool {
+	id := s.ProviderID()
+	return s.providerStatePath != "" && id != "" && id != ConfigProviderID
+}
+
 // Providers lists every provider the picker offers: the config.yaml endpoint
 // first, then the registry in its display order.
 func (s *Session) Providers() []ProviderEntry {
@@ -62,7 +101,7 @@ func (s *Session) Providers() []ProviderEntry {
 
 	out := []ProviderEntry{{
 		ID:      ConfigProviderID,
-		Name:    "config.yaml",
+		Name:    ConfigProviderName,
 		Ready:   true,
 		Status:  describeConfigEndpoint(s.configProvider),
 		Current: current == ConfigProviderID,

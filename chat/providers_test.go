@@ -174,3 +174,48 @@ func TestSwitchModelHonoursPartialLists(t *testing.T) {
 		t.Fatalf("ModelChoices = %v, %v, %v", ids, partial, err)
 	}
 }
+
+// The TUI's boot log, header and /model picker all name the provider the
+// session really talks to. A saved /login pick overrides config.yaml's model
+// at startup, so reading config.yaml there showed a model no request used.
+func TestActiveProviderNameFollowsTheLogin(t *testing.T) {
+	s := newProviderSession(t, types.ModelProviderConfig{Provider: "openai", Model: "uncensored", BaseURL: "http://localhost:8080/v1"})
+	s.providerStatePath = filepath.Join(t.TempDir(), ProviderStateFile)
+
+	if got := s.ActiveProviderName(); got != "config.yaml" {
+		t.Fatalf("ActiveProviderName on config.yaml = %q, want config.yaml", got)
+	}
+	if s.SavesModelAsDefault() {
+		t.Fatal("config.yaml owns its model: a /model pick there is not saved as the default")
+	}
+	if got := s.ConfigModel(); got != "uncensored" {
+		t.Fatalf("ConfigModel = %q, want uncensored", got)
+	}
+
+	if _, err := s.SaveAPIKey("regolo", "rg-secret", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SwitchProvider("regolo", "glm5.2"); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.ActiveProviderName(); got != "Regolo" {
+		t.Fatalf("ActiveProviderName after /login = %q, want Regolo", got)
+	}
+	if !s.SavesModelAsDefault() {
+		t.Fatal("a /model pick on a /login provider is saved to provider.json")
+	}
+	if got := s.ConfigModel(); got != "uncensored" {
+		t.Fatalf("ConfigModel after /login = %q, want config.yaml's model unchanged", got)
+	}
+	if got := s.Model(); got != "glm5.2" {
+		t.Fatalf("Model = %q, want glm5.2", got)
+	}
+}
+
+func TestFormatProviderModelListNamesTheProvider(t *testing.T) {
+	got := FormatProviderModelList("Regolo", []string{"a", "b"}, "b")
+	want := "Regolo models:\n  a\n* b\n"
+	if got != want {
+		t.Fatalf("FormatProviderModelList = %q, want %q", got, want)
+	}
+}

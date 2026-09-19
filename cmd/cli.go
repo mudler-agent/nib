@@ -539,7 +539,7 @@ func RunCLI(ctx context.Context, cfg types.Config, streams Streams, shellJobs *w
 					// Raw, like the assistant's own reply: these are names the
 					// user reads and copies, and the marker column is the
 					// emphasis the listing needs.
-					fmt.Fprint(out, chat.FormatModelList(models, session.Model()))
+					fmt.Fprint(out, chat.FormatProviderModelList(session.ActiveProviderName(), models, session.Model()))
 				}
 				continue
 			case slash.KindModelSet:

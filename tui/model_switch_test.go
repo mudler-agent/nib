@@ -11,8 +11,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mudler/nib/chat"
-	"github.com/mudler/nib/tui/render"
 	"github.com/mudler/nib/theme"
+	"github.com/mudler/nib/tui/render"
 	"github.com/mudler/nib/types"
 )
 
@@ -33,8 +33,11 @@ func newModelSwitchTestModel(t *testing.T, ids ...string) Model {
 	t.Cleanup(srv.Close)
 
 	cfg := types.Config{
-		Model:    ids[0],
-		BaseURL:  srv.URL + "/v1",
+		Model:   ids[0],
+		BaseURL: srv.URL + "/v1",
+		// A temp base dir keeps the developer's own provider.json (a saved
+		// /login pick) from switching this session off the fake endpoint.
+		BaseDir:    t.TempDir(),
 		Compaction: types.CompactionConfig{MaxContextTokens: 128000},
 	}
 	s, err := chat.NewSession(context.Background(), cfg, chat.Callbacks{})
@@ -213,8 +216,11 @@ func TestModelPickerNavigationAndEnterSwitch(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	cfg := types.Config{
-		Model:    "model-a",
-		BaseURL:  srv.URL + "/v1",
+		Model:   "model-a",
+		BaseURL: srv.URL + "/v1",
+		// A temp base dir keeps the developer's own provider.json (a saved
+		// /login pick) from switching this session off the fake endpoint.
+		BaseDir:    t.TempDir(),
 		Compaction: types.CompactionConfig{MaxContextTokens: 128000},
 	}
 	s, err := chat.NewSession(context.Background(), cfg, chat.Callbacks{})
@@ -408,8 +414,9 @@ func TestModelPickerDialogStates(t *testing.T) {
 		if d.Kind != render.DialogModelPicker {
 			t.Fatalf("kind = %v, want DialogModelPicker", d.Kind)
 		}
-		if d.Hint != theme.ModelPickerKeyHint {
-			t.Fatalf("hint = %q, want %q", d.Hint, theme.ModelPickerKeyHint)
+		// /model's picker also points at /login, the only way to switch provider.
+		if want := theme.ModelPickerKeyHint + " · " + theme.ModelPickerLoginHint; d.Hint != want {
+			t.Fatalf("hint = %q, want %q", d.Hint, want)
 		}
 		if !strings.Contains(d.Title, theme.ModelPickerSearchLabel) {
 			t.Fatalf("title = %q, want search label", d.Title)

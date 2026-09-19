@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbletea"
+	"github.com/mudler/nib/chat"
 )
 
 // headerModel returns the model name for the header bar.
@@ -20,6 +21,22 @@ func (m Model) headerModel() string {
 		return m.cfg.Model
 	}
 	return ""
+}
+
+// headerProvider returns the short name of the provider headerModel runs on:
+// the /login provider's ID ("regolo") or chat.ConfigProviderName for
+// config.yaml's endpoint. It is the ID rather than the display name because
+// registry names run long ("Anthropic (Claude Pro/Max)") and the header is
+// the tightest line on screen. Empty before the session exists, when the
+// active provider is not known yet.
+func (m Model) headerProvider() string {
+	if m.session == nil {
+		return ""
+	}
+	if id := m.session.ProviderID(); id != "" && id != chat.ConfigProviderID {
+		return id
+	}
+	return chat.ConfigProviderName
 }
 
 // headerCtx returns the context size badge for the header bar.

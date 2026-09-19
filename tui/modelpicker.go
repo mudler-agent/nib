@@ -164,8 +164,14 @@ func (m Model) buildModelPickerDialog() render.Dialog {
 	if p.typed {
 		search = theme.ModelPickerNameLabel
 	}
-	if p.target != nil {
+	// The title always names the provider whose models are listed: /model
+	// only offers the current provider's, and without its name a /login pick
+	// and config.yaml's endpoint look the same.
+	switch {
+	case p.target != nil:
 		search = p.target.Name + " model " + search
+	case m.session != nil:
+		search = m.session.ActiveProviderName() + " model " + search
 	}
 	if p.query != "" {
 		search += " " + p.query
@@ -175,6 +181,11 @@ func (m Model) buildModelPickerDialog() render.Dialog {
 		Kind:  render.DialogModelPicker,
 		Title: search,
 		Hint:  theme.ModelPickerKeyHint,
+	}
+	if p.target == nil {
+		// /model cannot change provider; say where that lives. A /login pick
+		// (target set) is already the provider switch.
+		d.Hint += " · " + theme.ModelPickerLoginHint
 	}
 
 	switch {
@@ -204,6 +215,17 @@ func (m Model) buildModelPickerDialog() render.Dialog {
 	}
 
 	return d
+}
+
+// modelSwitchNotice confirms a /model pick. On a /login provider SetModel also
+// saved the model to provider.json, so the notice names the provider and says
+// it is the new default: the pick outlives the session, and the user should
+// not have to discover that from the next start's header.
+func (m Model) modelSwitchNotice(model string) string {
+	if m.session == nil || !m.session.SavesModelAsDefault() {
+		return "model: " + model
+	}
+	return "provider: " + m.session.ActiveProviderName() + " · model: " + model + " · " + theme.ProviderSavedDefault
 }
 
 func clipModelPickerLine(line string, width int) string {

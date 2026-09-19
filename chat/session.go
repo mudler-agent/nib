@@ -21,8 +21,8 @@ import (
 	"github.com/mudler/nib/manage"
 	wizmcp "github.com/mudler/nib/mcp"
 	"github.com/mudler/nib/plugin"
-	"github.com/mudler/nib/provider"
 	"github.com/mudler/nib/provenance"
+	"github.com/mudler/nib/provider"
 	"github.com/mudler/nib/specialist"
 	"github.com/mudler/nib/trace"
 	"github.com/mudler/nib/types"
@@ -103,12 +103,12 @@ type Session struct {
 	// sub-agents). May be nil (e.g. headless CLI without a job registry).
 	shellJobs *wizmcp.ShellJobs
 
-	agentManager   *cogito.AgentManager
-	agentDefs      []cogito.AgentDefinition
-	agentModels         map[string]bool // models configured per agent type (for the LLM-model guard)
-	endpointModels      []string        // models the endpoint advertises (lazy-fetched on first spawn_agent)
-	endpointModelsOnce  sync.Once       // guards the one-time lazy fetch in allowedAgentModels
-	agentLogs           *agentLogStore   // per-sub-agent activity log (for the agent_logs tool)
+	agentManager       *cogito.AgentManager
+	agentDefs          []cogito.AgentDefinition
+	agentModels        map[string]bool // models configured per agent type (for the LLM-model guard)
+	endpointModels     []string        // models the endpoint advertises (lazy-fetched on first spawn_agent)
+	endpointModelsOnce sync.Once       // guards the one-time lazy fetch in allowedAgentModels
+	agentLogs          *agentLogStore  // per-sub-agent activity log (for the agent_logs tool)
 
 	// modelMu guards the (llm, llmModel) pair, which SetModel replaces together
 	// when the user switches model mid-session. Not turnMu: that one is held
@@ -118,17 +118,17 @@ type Session struct {
 	// turn on one client from start to finish while the switch applies from the
 	// next one. The rest of the endpoint state below (apiKey, baseURL,
 	// metadata, reasoningEffort) is fixed at construction and read lock-free.
- 	modelMu         sync.RWMutex
-	llmModel        string // guarded by modelMu
-	mainProvider    types.ModelProviderConfig // guarded by modelMu
-	providerID      string                    // guarded by modelMu; ConfigProviderID until /login switches
+	modelMu      sync.RWMutex
+	llmModel     string                    // guarded by modelMu
+	mainProvider types.ModelProviderConfig // guarded by modelMu
+	providerID   string                    // guarded by modelMu; ConfigProviderID until /login switches
 	// configProvider is the endpoint config.yaml describes, kept so the
 	// provider picker can switch back to it after using a /login provider.
 	configProvider types.ModelProviderConfig
 	// providerStatePath is where the /login-picked default provider is kept
 	// (ProviderStateFile); empty disables persistence.
 	providerStatePath string
-	credStore       *auth.Store // credential store for /login-managed providers
+	credStore         *auth.Store // credential store for /login-managed providers
 
 	// learnedWindow is the context window a backend stated in an overflow
 	// error, and learnedWindowModel is the model it was learned for. They are
@@ -2207,6 +2207,15 @@ func FormatModelList(models []string, current string) string {
 		b.WriteByte('\n')
 	}
 	return b.String()
+}
+
+// FormatProviderModelList is FormatModelList headed by the provider that
+// serves the list ("Regolo models:"). /models lists the current provider's
+// models only; naming it keeps a /login selection and config.yaml's endpoint
+// from being mistaken for one another, and hints that another provider's
+// models are one /login away.
+func FormatProviderModelList(providerName string, models []string, current string) string {
+	return providerName + " models:\n" + FormatModelList(models, current)
 }
 
 // UnservedModelError is what SwitchModel returns when the endpoint's listing

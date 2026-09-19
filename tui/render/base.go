@@ -284,7 +284,8 @@ func (Base) Dialog(d Dialog, w int) string {
 
 // Header renders the brand/badge line with responsive stat segments and the
 // rule beneath it. Stats drop by ascending priority on narrow terminals:
-// cwd(30) < skills(40) < mcp(50) < tools(60) < model(90).
+// cwd(30) < skills(40) < mcp(50) < tools(60) < model(90); the model
+// segment reads "provider · model" and sheds the provider before the model.
 func (Base) Header(v ViewState) string {
 	var b strings.Builder
 
@@ -296,29 +297,39 @@ func (Base) Header(v ViewState) string {
 
 	// Middle: stat segments, each with a separator dot. Built left-to-right
 	// but dropped right-to-left (lowest priority first) when space is tight.
+	// fallback, when set, is a shorter text tried when text does not fit.
 	type seg struct {
 		text     string
 		priority int
+		fallback string
 	}
+	sepDot := theme.SepStyle.Render(theme.Sep)
 	var segs []seg
 	if v.HeaderStats.Model != "" {
-		segs = append(segs, seg{theme.Meta.Render(v.HeaderStats.Model), 90})
+		model := theme.Meta.Render(v.HeaderStats.Model)
+		s := seg{text: model, priority: 90}
+		if v.HeaderStats.Provider != "" {
+			// "provider · model": the provider is dimmer than the model it
+			// qualifies, and is what gives way first when space is tight.
+			s.text = theme.Help.Render(v.HeaderStats.Provider) + " " + sepDot + " " + model
+			s.fallback = model
+		}
+		segs = append(segs, s)
 	}
 	if v.HeaderStats.Tools > 0 {
-		segs = append(segs, seg{fmt.Sprintf("%s %s", theme.Meta.Render(strconv.Itoa(v.HeaderStats.Tools)), theme.Help.Render("tools")), 60})
+		segs = append(segs, seg{text: fmt.Sprintf("%s %s", theme.Meta.Render(strconv.Itoa(v.HeaderStats.Tools)), theme.Help.Render("tools")), priority: 60})
 	}
 	if v.HeaderStats.MCP > 0 {
-		segs = append(segs, seg{fmt.Sprintf("%s %s", theme.Meta.Render(strconv.Itoa(v.HeaderStats.MCP)), theme.Help.Render("mcp")), 50})
+		segs = append(segs, seg{text: fmt.Sprintf("%s %s", theme.Meta.Render(strconv.Itoa(v.HeaderStats.MCP)), theme.Help.Render("mcp")), priority: 50})
 	}
 	if v.HeaderStats.Skills > 0 {
-		segs = append(segs, seg{fmt.Sprintf("%s %s", theme.Meta.Render(strconv.Itoa(v.HeaderStats.Skills)), theme.Help.Render("skills")), 40})
+		segs = append(segs, seg{text: fmt.Sprintf("%s %s", theme.Meta.Render(strconv.Itoa(v.HeaderStats.Skills)), theme.Help.Render("skills")), priority: 40})
 	}
 
 	// Right side: cwd.
 	cwd := theme.Meta.Render(v.Cwd)
 
 	// Fit segments between left and cwd, dropping lowest-priority first.
-	sepDot := theme.SepStyle.Render(theme.Sep)
 	availWidth := v.Width - lipgloss.Width(left) - lipgloss.Width(cwd) - 2 // 2 for gaps
 
 	// Sort segments by priority descending so we keep the highest.
@@ -329,6 +340,10 @@ func (Base) Header(v ViewState) string {
 	usedWidth := 0
 	for _, s := range segs {
 		w := lipgloss.Width(s.text) + 3 // text + sep + spaces
+		if usedWidth+w > availWidth && s.fallback != "" {
+			s.text = s.fallback
+			w = lipgloss.Width(s.text) + 3
+		}
 		if usedWidth+w <= availWidth {
 			included = append(included, s)
 			usedWidth += w

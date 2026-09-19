@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbletea"
+	"github.com/mudler/nib/chat"
 	"github.com/mudler/nib/theme"
 )
 
@@ -41,15 +42,15 @@ type bootScriptEntry struct {
 
 func bootScript() []bootScriptEntry {
 	return []bootScriptEntry{
-		{0,   "core/init",    "nib :: starting"},
-		{60,  "config",       ""},
-		{120, "provider",     ""},
-		{200, "model",        ""},
-		{260, "mcp.connect",  ""},
-		{400, "tools.mount",  ""},
+		{0, "core/init", "nib :: starting"},
+		{60, "config", ""},
+		{120, "provider", ""},
+		{200, "model", ""},
+		{260, "mcp.connect", ""},
+		{400, "tools.mount", ""},
 		{460, "skills.index", ""},
-		{520, "session",      ""},
-		{580, "memory",       "0 notes loaded"},
+		{520, "session", ""},
+		{580, "memory", "0 notes loaded"},
 	}
 }
 
@@ -85,57 +86,105 @@ func (b *bootState) tick(m *Model) {
 	e := entries[b.index]
 	b.index++
 
-	entry := bootEntry{
+	b.entries = append(b.entries, bootEntry{
 		ts: fmt.Sprintf("%05.3f", time.Since(b.start).Seconds()),
 		ev: e.ev,
-	}
-	if e.dt != "" {
-		entry.dt = e.dt
-	}
+		dt: bootDetail(m, e),
+	})
+}
 
+// bootDetail is the detail text for a scripted event, filled from m's real
+// state where the event has one and from the script's static text otherwise.
+func bootDetail(m *Model, e bootScriptEntry) string {
 	switch e.ev {
 	case "config":
 		if m.cfg.BaseDir != "" {
-			entry.dt = m.cfg.BaseDir
-		} else {
-			entry.dt = "defaults"
+			return m.cfg.BaseDir
 		}
+		return "defaults"
 	case "provider":
-		entry.dt = m.cfg.Provider
-		if entry.dt == "" {
-			entry.dt = "openai-compat"
-		}
+		return m.bootProvider()
 	case "model":
-		model := m.cfg.Model
-		if model == "" {
-			model = "default"
-		}
-		entry.dt = model
+		return m.bootModel()
 	case "mcp.connect":
 		n := len(m.transports)
 		if n == 0 {
-			entry.dt = "no transports"
-		} else {
-			entry.dt = fmt.Sprintf("connecting %d transports", n)
+			return "no transports"
 		}
+		return fmt.Sprintf("connecting %d transports", n)
 	case "tools.mount":
-		entry.dt = "tools registered"
+		return "tools registered"
 	case "skills.index":
-		n := len(m.cfg.Skills)
-		entry.dt = fmt.Sprintf("%d skills indexed", n)
+		return fmt.Sprintf("%d skills indexed", len(m.cfg.Skills))
 	case "session":
 		sid := m.sessionID
 		if len(sid) > 8 {
 			sid = sid[:8]
 		}
-		entry.dt = fmt.Sprintf("new :: %s", sid)
+		return fmt.Sprintf("new :: %s", sid)
 	}
+	return e.dt
+}
 
-	b.entries = append(b.entries, entry)
+// bootProvider names the provider requests go to. The session is the source
+// of truth: a /login pick saved in provider.json replaces config.yaml's
+// endpoint when the session is built, so config.yaml is only a stand-in for
+// the moment before the session exists (refreshSession corrects it then).
+func (m *Model) bootProvider() string {
+	if m.session != nil {
+		return m.session.ActiveProviderName()
+	}
+	if m.cfg.Provider != "" {
+		return m.cfg.Provider
+	}
+	return "openai-compat"
+}
+
+// bootModel is the model requests use, from the session like bootProvider.
+// When a /login pick overrides a model config.yaml also names, both are
+// configured and only one is used, so the line says which instead of leaving
+// the user to guess why the header disagrees with config.yaml.
+func (m *Model) bootModel() string {
+	if m.session == nil {
+		if m.cfg.Model != "" {
+			return m.cfg.Model
+		}
+		return "default"
+	}
+	model := m.session.Model()
+	if model == "" {
+		model = "default"
+	}
+	if cfgModel := m.session.ConfigModel(); cfgModel != "" && cfgModel != model &&
+		m.session.ProviderID() != chat.ConfigProviderID {
+		model += "  " + fmt.Sprintf(theme.BootModelOverride, cfgModel)
+	}
+	return model
+}
+
+// refreshSession rewrites the provider and model lines once the session
+// exists. The session is built concurrently with the animation, so those lines
+// are often printed from config.yaml first; left alone they would keep naming
+// a model a saved /login pick has already replaced.
+func (b *bootState) refreshSession(m *Model) {
+	if b == nil {
+		return
+	}
+	for i := range b.entries {
+		switch b.entries[i].ev {
+		case "provider":
+			b.entries[i].dt = m.bootProvider()
+		case "model":
+			b.entries[i].dt = m.bootModel()
+		}
+	}
 }
 
 // markReady flushes remaining scripted entries and appends the READY line.
-func (b *bootState) markReady() {
+// Flushed entries get the same real details tick would have given them: a
+// session that is ready early must not leave the provider/model lines blank.
+func (b *bootState) markReady(m *Model) {
+	b.refreshSession(m)
 	script := bootScript()
 	for b.index < len(script) {
 		e := script[b.index]
@@ -143,7 +192,7 @@ func (b *bootState) markReady() {
 		b.entries = append(b.entries, bootEntry{
 			ts: fmt.Sprintf("%05.3f", time.Since(b.start).Seconds()),
 			ev: e.ev,
-			dt: e.dt,
+			dt: bootDetail(m, e),
 		})
 	}
 	b.entries = append(b.entries, bootEntry{

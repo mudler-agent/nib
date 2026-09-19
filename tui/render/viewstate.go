@@ -192,13 +192,19 @@ type FooterRow struct {
 //   - Footers: plain {Glyph, Text, Kind} data for the active-jobs/shell-jobs/
 //     loops/goal footer rows (see FooterRow) — the presenter styles (per
 //     Kind) and joins whichever are present, in order.
+//
 // HeaderStats carries the header's stat segments for responsive rendering.
 // Lower-priority fields drop first on narrow terminals.
 type HeaderStats struct {
-	Model  string // priority 90
-	Tools  int    // priority 60
-	MCP    int    // priority 50
-	Skills int    // priority 40
+	// Provider names where Model runs ("regolo", "config.yaml"). It rides in
+	// the model segment as "provider · model", because a model name alone
+	// cannot tell a /login pick from config.yaml's endpoint; on a terminal too
+	// narrow for both it drops before the model does.
+	Provider string
+	Model    string // priority 90
+	Tools    int    // priority 60
+	MCP      int    // priority 50
+	Skills   int    // priority 40
 }
 
 type ViewState struct {

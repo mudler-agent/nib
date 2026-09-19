@@ -943,7 +943,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					} else {
 						m.session.SetModel(choice)
-						m.appendMessage(ChatMessage{Role: "agent", Content: "model: " + choice})
+						m.appendMessage(ChatMessage{Role: "agent", Content: m.modelSwitchNotice(choice)})
 					}
 					m.modelPicker.close()
 				}
@@ -1350,7 +1350,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.carryAutoApprove = nil
 		}
 		if m.boot != nil {
-			m.boot.markReady()
+			m.boot.markReady(&m)
 		}
 		// Reload durable cron loops persisted from a previous session.
 		if n, err := m.loops.Load(m.loopsPath); err == nil && n > 0 {
@@ -1911,7 +1911,7 @@ func (m *Model) dispatchResolved(input string) tea.Cmd {
 		if err != nil {
 			m.appendMessage(ChatMessage{Role: "error", Content: err.Error()})
 		} else {
-			listing := fencedListing(chat.FormatModelList(models, m.session.Model()))
+			listing := fencedListing(chat.FormatProviderModelList(m.session.ActiveProviderName(), models, m.session.Model()))
 			m.appendMessage(ChatMessage{Role: "agent", Content: listing})
 		}
 		return nil
@@ -2917,17 +2917,18 @@ func (m Model) viewState() render.ViewState {
 			Collapsed: m.reasoningCollapsed,
 			MaxLines:  theme.ReasoningMaxLines,
 		},
-		Dialogs:     m.currentDialogs(),
-		Help:        help,
-		Badges:      m.footerBadges(lipgloss.Width(help)),
-		Clock:       m.hudClock,
-		CPU:         m.hudCPU,
-		RAM:         int(m.hudMemUsed / (1 << 20)),
+		Dialogs: m.currentDialogs(),
+		Help:    help,
+		Badges:  m.footerBadges(lipgloss.Width(help)),
+		Clock:   m.hudClock,
+		CPU:     m.hudCPU,
+		RAM:     int(m.hudMemUsed / (1 << 20)),
 		HeaderStats: render.HeaderStats{
-			Model:  m.headerModel(),
-			Tools:  m.headerToolCount(),
-			MCP:    len(m.transports),
-			Skills: len(m.cfg.Skills),
+			Provider: m.headerProvider(),
+			Model:    m.headerModel(),
+			Tools:    m.headerToolCount(),
+			MCP:      len(m.transports),
+			Skills:   len(m.cfg.Skills),
 		},
 
 		// New content arrived below the fold while the user was scrolled up.
