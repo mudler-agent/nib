@@ -351,6 +351,37 @@ func TestSwitchModelHonoursPartialLists(t *testing.T) {
 	}
 }
 
+// SwitchModel validates the name and then calls SetModel, whose own error
+// (a client the provider factory could not build) is a DIFFERENT failure
+// than an unserved name. Every branch of SwitchModel's switch used to call
+// SetModel and discard that error, unconditionally returning a success
+// notice — a rebuild failure was reported to the user as a switch that
+// worked. A Session literal with an unrecognized provider ID is the cheapest
+// way to make SetModel's rebuild fail deterministically, with no network
+// call: ModelsEndpoint (behind the lookup SwitchModel does first) and
+// llmprovider.NewWithStore (behind SetModel) both fail at the provider.Get
+// lookup, before either would dial anything.
+func TestSwitchModelReportsASetModelFailureInsteadOfSuccess(t *testing.T) {
+	s := &Session{
+		llmModel: "model-a",
+		mainProvider: types.ModelProviderConfig{
+			Provider: "not-a-real-provider",
+			Model:    "model-a",
+		},
+	}
+
+	notice, err := s.SwitchModel(context.Background(), "model-b")
+	if err == nil {
+		t.Fatalf("SwitchModel returned notice %q, want an error: the provider factory cannot build a client for an unrecognized provider", notice)
+	}
+	if notice != "" {
+		t.Fatalf("SwitchModel returned notice %q alongside an error, want it empty on failure", notice)
+	}
+	if got := s.Model(); got != "model-a" {
+		t.Fatalf("Model() = %q after a failed switch, want it left at model-a", got)
+	}
+}
+
 // The TUI's boot log, header and /model picker all name the provider the
 // session really talks to. A saved /login pick overrides config.yaml's model
 // at startup, so reading config.yaml there showed a model no request used.

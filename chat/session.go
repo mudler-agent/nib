@@ -2313,16 +2313,18 @@ func (e *UnservedModelError) Error() string {
 // returns the notice to show the user, or an error to show instead. Both front
 // ends go through it, so the policy and its wording cannot drift between them.
 //
-// SetModel takes no error by design, so a typo would otherwise switch happily
-// and surface a turn later as a 404 from the backend, with nothing pointing at
-// the cause. Validating here turns that into an immediate message that names
-// the models the endpoint does serve.
+// SetModel's own error only covers rebuilding the LLM client (a bad
+// provider config), not an unserved model name — without validating here, a
+// typo would switch happily and surface a turn later as a 404 from the
+// backend, with nothing pointing at the cause. Validating here turns that
+// into an immediate message that names the models the endpoint does serve.
 //
 // A lookup that fails does NOT veto the switch. The list is a convenience, and
 // a user asking for a different model may well be asking precisely because
 // something is wrong with the endpoint right now; refusing would leave them
 // stuck. The same goes for an endpoint that answers with an empty list. Both
-// cases switch and say the name went unverified.
+// cases switch (unless SetModel itself errors) and say the name went
+// unverified.
 func (s *Session) SwitchModel(ctx context.Context, name string) (string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -2335,19 +2337,27 @@ func (s *Session) SwitchModel(ctx context.Context, name string) (string, error) 
 
 	switch {
 	case partial && !slices.Contains(models, name):
-		s.SetModel(name)
+		if serr := s.SetModel(name); serr != nil {
+			return "", serr
+		}
 		return "model: " + name + " (not in the suggested list; the provider decides)", nil
 	case err != nil:
-		s.SetModel(name)
+		if serr := s.SetModel(name); serr != nil {
+			return "", serr
+		}
 		return "model: " + name + " (unverified: " + err.Error() + ")", nil
 	case len(models) == 0:
-		s.SetModel(name)
+		if serr := s.SetModel(name); serr != nil {
+			return "", serr
+		}
 		return "model: " + name + " (unverified: the endpoint advertises no models)", nil
 	case !slices.Contains(models, name):
 		return "", &UnservedModelError{Name: name, Models: models, Current: s.Model()}
 	}
 
-	s.SetModel(name)
+	if serr := s.SetModel(name); serr != nil {
+		return "", serr
+	}
 	return "model: " + name, nil
 }
 

@@ -50,6 +50,17 @@ const (
 	// ModelPickerLoginHint follows the key hint in /model's picker, which
 	// only lists the current provider's models: switching provider is /login.
 	ModelPickerLoginHint = "/login to switch provider"
+	// ModelListFailed is the picker's listErr when an endpoint could not be
+	// reached to list its models (%s the endpoint's name, %s the error). It
+	// precedes ModelPickerTypeName in the hint, so the dialog both explains
+	// the failure and says a model name can still be typed — it never closes
+	// silently on a listing failure.
+	ModelListFailed = "could not list models for %s: %v"
+
+	// ModelResetNotice follows "model: <name>" in /model reset's success
+	// notice: the sticky per-endpoint override is gone and the endpoint's own
+	// model applies again.
+	ModelResetNotice = "reset to the endpoint's own model"
 
 	// BootModelOverride is the dim note on the boot log's model line when a
 	// saved /login pick replaces config.yaml's model (a %s for that model):

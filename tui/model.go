@@ -952,8 +952,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						} else {
 							m.appendMessage(ChatMessage{Role: "agent", Content: "provider: " + target.Name + " · model: " + choice + " · " + theme.ProviderSavedDefault})
 						}
+					} else if err := m.session.SetModel(choice); err != nil {
+						m.appendMessage(ChatMessage{Role: "error", Content: err.Error()})
 					} else {
-						m.session.SetModel(choice)
 						m.appendMessage(ChatMessage{Role: "agent", Content: m.modelSwitchNotice(choice)})
 					}
 					m.modelPicker.close()
@@ -1404,7 +1405,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// model list: let the user type the model name instead.
 			m.modelPicker.loading = false
 			m.modelPicker.typed = true
-			m.modelPicker.listErr = msg.err.Error()
+			name := m.session.ActiveProviderName()
+			if m.modelPicker.target != nil {
+				name = m.modelPicker.target.Name
+			}
+			m.modelPicker.listErr = fmt.Sprintf(theme.ModelListFailed, name, msg.err)
 		case msg.err != nil:
 			m.modelPicker.close()
 			m.appendMessage(ChatMessage{Role: "error", Content: msg.err.Error()})
@@ -1953,12 +1958,30 @@ func (m *Model) dispatchResolved(input string) tea.Cmd {
 		// that accepts the connection and never answers would freeze the TUI.
 		lookupCtx, cancel := context.WithTimeout(m.ctx, chat.ModelListTimeout)
 		defer cancel()
-		models, err := m.session.ListModels(lookupCtx)
+		// action.Endpoint ("" = the current endpoint) lets /models list ANY
+		// endpoint without switching to it, unlike /model's picker which is
+		// always the current one.
+		models, _, err := m.session.ModelChoices(lookupCtx, action.Endpoint)
+		name := m.session.ActiveProviderName()
+		if action.Endpoint != "" {
+			name = action.Endpoint
+			if e, ok := m.providerEntry(action.Endpoint); ok {
+				name = e.Name
+			}
+		}
 		if err != nil {
 			m.appendMessage(ChatMessage{Role: "error", Content: err.Error()})
 		} else {
-			listing := fencedListing(chat.FormatProviderModelList(m.session.ActiveProviderName(), models, m.session.Model()))
+			listing := fencedListing(chat.FormatProviderModelList(name, models, m.session.Model()))
 			m.appendMessage(ChatMessage{Role: "agent", Content: listing})
+		}
+		return nil
+	case slash.KindModelReset:
+		model, err := m.session.ResetModel()
+		if err != nil {
+			m.appendMessage(ChatMessage{Role: "error", Content: err.Error()})
+		} else {
+			m.appendMessage(ChatMessage{Role: "agent", Content: "model: " + model + " · " + theme.ModelResetNotice})
 		}
 		return nil
 	case slash.KindModelSet:
