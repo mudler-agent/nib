@@ -447,6 +447,10 @@ type Model struct {
 	// kicks in.
 	reasoningChan chan reasoningEvent
 
+	// carryAutoApprove holds the /yolo state across a session rebuild
+	// (/resume), applied to the new session when it is ready.
+	carryAutoApprove *bool
+
 	// boot tracks the startup animation state. See boot.go.
 	boot *bootState
 	// HUD live telemetry for the footer.
@@ -550,6 +554,10 @@ type reasoningEventsMsg []reasoningEvent
 
 // toolCallMsg is sent when a tool call needs approval
 type toolCallMsg chat.ToolCallRequest
+
+// toolAnsweredMsg reports that a tool call's approval response was delivered,
+// so the next request can be read.
+type toolAnsweredMsg struct{}
 
 // askMsg is sent when the agent asks the user a question.
 type askMsg chat.AskRequest
@@ -1233,6 +1241,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
+			// /yolo acts at once, whatever state the run is in. It never starts a
+			// turn, and it is typed precisely when a run is prompting: queueing it
+			// behind the run (as slash commands otherwise are) left every tool
+			// call of that run still asking, and inside the approval prompt it
+			// went to the model as an adjustment to the call.
+			if slash.Resolve(input, m.cfg.Commands, m.cfg.Skills, m.cfg.Agents).Kind == slash.KindYolo {
+				m.pushHistory(input)
+				m.textarea.Reset()
+				m.completion.sync("")
+				m.dispatchResolved(input)
+				// The prompt on screen is one yolo would not have raised.
+				if m.awaitingApproval && m.session.AutoApprove() {
+					return m.resolveApproval(chat.ToolCallResponse{Approved: true})
+				}
+				m.updateViewportFollow()
+				return m, nil
+			}
+
 			// Check if we're in tool approval mode
 			if m.awaitingApproval {
 				return m.handleToolApproval(input)
@@ -1319,6 +1345,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.session = msg.session
 		m.sessionReady = true
+		if m.carryAutoApprove != nil {
+			m.session.SetAutoApprove(*m.carryAutoApprove)
+			m.carryAutoApprove = nil
+		}
 		if m.boot != nil {
 			m.boot.markReady()
 		}
@@ -1692,13 +1722,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.listenReasoningEvents())
 
 	case toolCallMsg:
+		// A request can have been waiting since before yolo was turned on (a
+		// parallel call, a sub-agent's). Answer it the way the session would
+		// now, instead of raising a prompt yolo would not have raised.
+		if m.session != nil && m.session.AutoApprove() {
+			cmds = append(cmds, m.answerToolCall(chat.ToolCallResponse{Approved: true}))
+			break
+		}
 		m.pendingTool = (*chat.ToolCallRequest)(&msg)
 		m.awaitingApproval = true
 		m.approvalEditing = false // every approval starts in key-driven choice mode
 		m.loading = false         // Allow user input for approval
 		m.textarea.Focus()        // Ensure textarea is focused for input
 		m.updateViewport()
-		// Continue listening for more tool requests
+		// The next request is read only once this one is answered, in
+		// resolveApproval. Both channels are unbuffered, so that keeps exactly
+		// one caller waiting on toolResponseChan, and each answer reaches the
+		// call it was given for.
+
+	case toolAnsweredMsg:
 		cmds = append(cmds, m.listenToolRequest())
 
 	case askMsg:
@@ -2314,9 +2356,16 @@ func (m Model) resolveApproval(resp chat.ToolCallResponse) (tea.Model, tea.Cmd) 
 	m.loading = true
 	m.status = theme.StatusRunning
 	m.updateViewportFollow()
-	return m, func() tea.Msg {
+	return m, m.answerToolCall(resp)
+}
+
+// answerToolCall hands resp to the call waiting on toolResponseChan. The
+// toolAnsweredMsg it returns re-arms the request listener only after the send
+// completed, which is what serializes approvals: see the toolCallMsg case.
+func (m Model) answerToolCall(resp chat.ToolCallResponse) tea.Cmd {
+	return func() tea.Msg {
 		m.toolResponseChan <- resp
-		return nil
+		return toolAnsweredMsg{}
 	}
 }
 

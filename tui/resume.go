@@ -224,6 +224,11 @@ func restoredTranscript(hist []openai.ChatCompletionMessage) []ChatMessage {
 // mutate in place, exactly like applyAgentEvent elsewhere in this package.
 func (m *Model) applyResume(rec chat.SessionRecord) tea.Cmd {
 	if m.session != nil {
+		// The new session takes its approval mode from m.cfg, a startup
+		// snapshot; carry a runtime /yolo across so resuming does not
+		// silently switch prompting back on.
+		on := m.session.AutoApprove()
+		m.carryAutoApprove = &on
 		m.session.Close()
 	}
 	m.cfg.InitialHistory = rec.Messages
