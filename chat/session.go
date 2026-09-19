@@ -2366,7 +2366,17 @@ func (s *Session) Logout(providerID string) (string, error) {
 	if err := s.credStore.Delete(def.ID); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("Logged out of %s (%s)", def.Name, def.ID), nil
+	notice := fmt.Sprintf("Logged out of %s (%s)", def.Name, def.ID)
+	if s.EndpointID() != def.ID {
+		return notice, nil
+	}
+	// The session was talking to this provider: leaving it selected would
+	// keep a credential-less endpoint as the startup default, and the next
+	// session would silently change model instead.
+	if err := s.SwitchProvider(endpoint.DefaultID, ""); err != nil {
+		return notice, nil
+	}
+	return notice + " · back on " + endpoint.DefaultName + " · model: " + s.Model(), nil
 }
 
 // StartLogin begins a login flow for the given provider. For OAuth-code and

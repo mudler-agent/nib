@@ -309,3 +309,46 @@ func TestFormatProviderModelListNamesTheProvider(t *testing.T) {
 		t.Fatalf("FormatProviderModelList = %q, want %q", got, want)
 	}
 }
+
+func TestLogoutOfTheActiveProviderReturnsToTheDefault(t *testing.T) {
+	s := newTestSessionWithConfig(t, types.Config{Model: "default-model", BaseURL: "http://localhost:8080/v1"})
+	if err := s.credStore.Save(auth.Credential{
+		ProviderID: "anthropic", Kind: auth.CredentialAPIKey, APIKey: "k",
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := s.SwitchProvider("anthropic", "claude-opus-5"); err != nil {
+		t.Fatalf("SwitchProvider: %v", err)
+	}
+	notice, err := s.Logout("anthropic")
+	if err != nil {
+		t.Fatalf("Logout: %v", err)
+	}
+	if s.EndpointID() != endpoint.DefaultID {
+		t.Fatalf("EndpointID = %q, want the default after logging out of the active provider", s.EndpointID())
+	}
+	if s.Model() != "default-model" {
+		t.Fatalf("Model = %q", s.Model())
+	}
+	if !strings.Contains(notice, "config.yaml") {
+		t.Fatalf("notice = %q, want it to name the endpoint it fell back to", notice)
+	}
+}
+
+func TestLogoutOfAnotherProviderDoesNotSwitch(t *testing.T) {
+	s := newTestSessionWithConfig(t, types.Config{Model: "default-model", BaseURL: "http://localhost:8080/v1"})
+	for _, id := range []string{"anthropic", "openai"} {
+		if err := s.credStore.Save(auth.Credential{ProviderID: id, Kind: auth.CredentialAPIKey, APIKey: "k"}); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+	}
+	if err := s.SwitchProvider("anthropic", "claude-opus-5"); err != nil {
+		t.Fatalf("SwitchProvider: %v", err)
+	}
+	if _, err := s.Logout("openai"); err != nil {
+		t.Fatalf("Logout: %v", err)
+	}
+	if s.EndpointID() != "anthropic" {
+		t.Fatalf("EndpointID = %q, want the session left alone", s.EndpointID())
+	}
+}
