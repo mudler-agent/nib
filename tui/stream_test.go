@@ -611,6 +611,58 @@ func TestStaleContentDeltaAcrossToolCallDoesNotFabricateBubble(t *testing.T) {
 	}
 }
 
+// TestStaleBoundaryDoesNotRepaintPreviousThinking is the thinking-box flicker:
+// the previous step's trace reappearing for a single frame just after the user
+// sends the next message.
+//
+// reasoningEventBoundary was the one kind Update did NOT check against
+// turnGen. The tolerance was argued from turn end: a stale boundary only ever
+// overwrites m.reasoning with a complete (if outdated) block, and responseMsg
+// clears that at every turn end anyway. But the boundary does not have to
+// arrive BEFORE that reset — reasoningChan is buffered and bubbletea relays
+// each listen Cmd on its own goroutine, so turn N's last boundary can land
+// after responseMsg already cleared the box and after turn N+1 has dispatched.
+// It then repaints turn N's trace into an empty box, where it stays until
+// turn N+1's first delta disarms reasoningResetPending and starts over: one
+// frame of the previous answer's thinking, every time the user writes.
+func TestStaleBoundaryDoesNotRepaintPreviousThinking(t *testing.T) {
+	m := Model{
+		viewport:  viewport.New(80, 20),
+		width:     80,
+		loading:   true,
+		presenter: testPresenter(),
+		turnGen:   new(atomic.Int32), // turn N runs at generation 0
+	}
+
+	// Turn N thinks, then ends — responseMsg clears the box.
+	next, _ := m.Update(reasoningEventsMsg{{kind: reasoningEventDelta, text: "turn one thinking", gen: 0}})
+	next, _ = next.(Model).Update(responseMsg{content: "turn one reply"})
+	cur := next.(Model)
+	if cur.reasoning != "" {
+		t.Fatalf("setup: reasoning after turn end = %q, want empty", cur.reasoning)
+	}
+
+	// The user writes: turn N+1 dispatches for real, bumping the generation.
+	cur.loading = true
+	_ = cur.sendMessage("question two")
+
+	// Turn N's step boundary arrives late, still tagged gen 0.
+	next, _ = cur.Update(reasoningEventsMsg{{kind: reasoningEventBoundary, text: "turn one thinking", gen: 0}})
+	cur = next.(Model)
+	if cur.reasoning != "" {
+		t.Fatalf("reasoning = %q after a stale boundary, want empty (previous thinking repainted)", cur.reasoning)
+	}
+	if cur.reasoningResetPending {
+		t.Fatal("a stale boundary armed reasoningResetPending for a turn it does not belong to")
+	}
+
+	// Turn N+1's own trace still streams normally.
+	next, _ = cur.Update(reasoningEventsMsg{{kind: reasoningEventDelta, text: "turn two thinking", gen: 1}})
+	if got := next.(Model).reasoning; got != "turn two thinking" {
+		t.Fatalf("reasoning = %q, want %q", got, "turn two thinking")
+	}
+}
+
 // TestRefreshContextTokensOnlyRunsDuringATurn pins the two guards on the
 // mid-turn gauge refresh. The figure itself is pinned on the session side
 // (chat.TestContextTokensTracksTheRunInFlight): a zero-value chat.Session

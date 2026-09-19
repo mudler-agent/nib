@@ -448,6 +448,9 @@ type Model struct {
 	// correctness bug: a dropped delta leaves a gap in the accumulated trace,
 	// and a dropped boundary means reasoningResetPending never gets armed, so
 	// the next step's deltas silently keep appending onto stale text forever.
+	// (Update does drop a boundary stamped with an ENDED turn's generation —
+	// that one belongs to no live trace and arming anything for it would be
+	// arming it for the wrong turn.)
 	// The buffer just gives a fast token burst some slack before backpressure
 	// kicks in.
 	reasoningChan chan reasoningEvent
@@ -709,12 +712,14 @@ func (m Model) initSession() tea.Cmd {
 			// why dropping a boundary event is a real correctness bug here,
 			// not a harmless "only the latest matters" case.
 			OnReasoning: func(reasoning string) {
-				// gen is carried for consistency with the other reasoningChan
-				// sends below (same field, same call), but reasoningEventBoundary
-				// is not gen-checked in Update: unlike a delta, a stale boundary
-				// only ever overwrites m.reasoning with a complete (if outdated)
-				// block, and responseMsg already resets that unconditionally at
-				// every turn end — the same tolerance Task 23 established.
+				// gen is checked in Update, like the two delta kinds. It used
+				// to be carried "for consistency" only, on the argument that a
+				// stale boundary merely repaints a complete (if outdated)
+				// block that responseMsg clears at turn end anyway — but it
+				// can arrive AFTER that reset and after the next turn has
+				// dispatched, which is the thinking-box flicker the user sees
+				// on every message they send. See the reasoningEventBoundary
+				// case in Update.
 				m.reasoningChan <- reasoningEvent{kind: reasoningEventBoundary, text: reasoning, gen: m.currentTurnGen()}
 			},
 			// OnStream opts the session into cogito's streaming path so the
@@ -1706,6 +1711,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for _, ev := range msg {
 			switch ev.kind {
 			case reasoningEventBoundary:
+				// Same staleness check as the two delta kinds below. This one
+				// was omitted on the argument that a stale boundary only
+				// repaints a complete (if outdated) block, which responseMsg
+				// clears at every turn end anyway — but the boundary does not
+				// have to arrive BEFORE that reset. reasoningChan is buffered
+				// and bubbletea relays each listen Cmd on its own goroutine,
+				// so turn N's last boundary can land after responseMsg cleared
+				// the box AND after turn N+1 dispatched. It then repaints turn
+				// N's trace into an empty box, where it stays until N+1's
+				// first delta disarms reasoningResetPending and starts over:
+				// one frame of the previous answer's thinking, every time the
+				// user writes.
+				if ev.gen != m.currentTurnGen() {
+					continue
+				}
 				m.reasoning = ev.text
 				// This step just ended: its complete text is authoritative,
 				// but the NEXT step's streamed deltas are a fresh trace, not
