@@ -2,7 +2,8 @@ package tui
 
 import (
 	"fmt"
-	"runtime"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbletea"
@@ -59,23 +60,29 @@ func (m *Model) handleHudTick() {
 	now := time.Now()
 	m.hudClock = now.Format("15:04:05")
 
-	// CPU: count goroutines as a rough activity proxy. Not a real CPU%,
-	// but gives the header a live pulse without a cgo dependency.
-	// Scale: 1 goroutine ≈ 1%, capped at 100.
-	goroutines := runtime.NumGoroutine()
-	m.hudCPU = goroutines
-	if m.hudCPU > 100 {
-		m.hudCPU = 100
+	// CPU: system-wide utilization between this tick and the last. The first
+	// tick only records the baseline.
+	if busy, total, ok := systemCPUTimes(); ok {
+		if dt := total - m.hudPrevTotal; m.hudPrevTotal > 0 && total > m.hudPrevTotal {
+			m.hudCPU = int((busy - m.hudPrevBusy) * 100 / dt)
+			m.hudCPUOK = true
+		}
+		m.hudPrevBusy, m.hudPrevTotal = busy, total
 	}
 
-	// RAM: use runtime memory stats (Sys in MB).
-	var ms runtime.MemStats
-	runtime.ReadMemStats(&ms)
-	m.hudRAM = int(ms.Sys / 1024 / 1024)
+	// RAM: system memory in use, as free(1) counts it.
+	if used, total, ok := systemMemory(); ok {
+		m.hudMemUsed, m.hudMemTotal = used, total
+	}
 }
 
 // initHudClock sets the initial clock value so the header isn't blank
 // before the first tick.
 func (m *Model) initHudClock() {
 	m.hudClock = time.Now().Format("15:04:05")
+}
+
+// humanGiB formats bytes as GiB with one decimal, trimming a trailing ".0".
+func humanGiB(b int64) string {
+	return strings.TrimSuffix(strconv.FormatFloat(float64(b)/(1<<30), 'f', 1, 64), ".0")
 }

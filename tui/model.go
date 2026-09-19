@@ -451,8 +451,16 @@ type Model struct {
 	boot *bootState
 	// HUD live telemetry for the footer.
 	hudClock string
-	hudCPU   int
-	hudRAM   int
+	// hudCPU is system CPU% over the last tick; hudCPUOK is false until two
+	// samples exist, so an idle 0% still renders once it is measured.
+	hudCPU       int
+	hudCPUOK     bool
+	hudPrevBusy  uint64
+	hudPrevTotal uint64
+	// hudMemUsed and hudMemTotal are system memory in bytes; 0 total where it
+	// is unavailable.
+	hudMemUsed  int64
+	hudMemTotal int64
 }
 
 // responseMsg is sent when the AI responds
@@ -2865,7 +2873,7 @@ func (m Model) viewState() render.ViewState {
 		Badges:      m.footerBadges(lipgloss.Width(help)),
 		Clock:       m.hudClock,
 		CPU:         m.hudCPU,
-		RAM:         m.hudRAM,
+		RAM:         int(m.hudMemUsed / (1 << 20)),
 		HeaderStats: render.HeaderStats{
 			Model:  m.headerModel(),
 			Tools:  m.headerToolCount(),
@@ -3445,7 +3453,7 @@ func (m Model) usageBadge() string {
 // helpWidth columns. Badges are priority-based: the lowest-priority badge drops
 // first when space is tight.
 //
-// Priority (lowest drops first): ram(20), cpu(40), clock(60), usage(80),
+// Priority (lowest drops first): mem(20), cpu(40), clock(60), usage(80),
 // context(100). The context badge earns the highest priority because it
 // predicts auto-compaction and is therefore actionable.
 func (m Model) footerBadges(helpWidth int) string {
@@ -3474,11 +3482,11 @@ func (m Model) footerBadges(helpWidth int) string {
 	if m.hudClock != "" {
 		badges = append(badges, badge{theme.Meta.Render(m.hudClock), 60})
 	}
-	if m.hudCPU > 0 {
-		badges = append(badges, badge{fmt.Sprintf("%s %s", theme.Meta.Render(strconv.Itoa(m.hudCPU)), theme.Help.Render("gor")), 40})
+	if m.hudCPUOK {
+		badges = append(badges, badge{theme.Help.Render("cpu ") + theme.Meta.Render(strconv.Itoa(m.hudCPU)+"%"), 40})
 	}
-	if m.hudRAM > 0 {
-		badges = append(badges, badge{fmt.Sprintf("%s %s", theme.Meta.Render(strconv.Itoa(m.hudRAM)), theme.Help.Render("mb")), 20})
+	if m.hudMemTotal > 0 {
+		badges = append(badges, badge{theme.Help.Render("mem ") + theme.Meta.Render(humanGiB(m.hudMemUsed)+"/"+humanGiB(m.hudMemTotal)+"G"), 20})
 	}
 
 	if len(badges) == 0 {

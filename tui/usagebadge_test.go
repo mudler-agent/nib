@@ -502,3 +502,15 @@ func TestContextBadgeShrinksWithTheFooter(t *testing.T) {
 		}
 	}
 }
+
+// The HUD badges name what they measure.
+func TestHudBadgesAreLabelled(t *testing.T) {
+	m := newTestModel(Model{width: 200, hudCPU: 12, hudCPUOK: true, hudMemUsed: 9 << 30, hudMemTotal: 31 << 30})
+	got := m.footerBadges(10)
+	if !strings.Contains(got, "cpu 12%") || !strings.Contains(got, "mem 9/31G") {
+		t.Fatalf("footer = %q, want cpu and mem badges", got)
+	}
+	if strings.Contains(got, "gor") {
+		t.Fatalf("footer = %q still shows the goroutine count", got)
+	}
+}
