@@ -177,6 +177,85 @@ func TestANamedEndpointIsRestoredOnTheNextSession(t *testing.T) {
 	}
 }
 
+func TestPickingAModelOnTheDefaultEndpointPersists(t *testing.T) {
+	cfg := types.Config{BaseDir: t.TempDir(), Model: "default-model", BaseURL: "http://localhost:8080/v1"}
+	first := newTestSessionWithConfig(t, cfg)
+	if err := first.SetModel("other-model"); err != nil {
+		t.Fatalf("SetModel: %v", err)
+	}
+	second := newTestSessionWithConfig(t, cfg)
+	second.restoreStartupEndpoint()
+	if got := second.Model(); got != "other-model" {
+		t.Fatalf("Model = %q, want the pick to survive the session", got)
+	}
+	if got := second.EndpointID(); got != endpoint.DefaultID {
+		t.Fatalf("EndpointID = %q", got)
+	}
+}
+
+func TestResetModelRestoresTheEndpointModel(t *testing.T) {
+	cfg := types.Config{BaseDir: t.TempDir(), Model: "default-model", BaseURL: "http://localhost:8080/v1"}
+	s := newTestSessionWithConfig(t, cfg)
+	if err := s.SetModel("other-model"); err != nil {
+		t.Fatalf("SetModel: %v", err)
+	}
+	got, err := s.ResetModel()
+	if err != nil {
+		t.Fatalf("ResetModel: %v", err)
+	}
+	if got != "default-model" || s.Model() != "default-model" {
+		t.Fatalf("ResetModel = %q, Model = %q", got, s.Model())
+	}
+
+	next := newTestSessionWithConfig(t, cfg)
+	next.restoreStartupEndpoint()
+	if next.Model() != "default-model" {
+		t.Fatalf("Model = %q, want the reset to survive too", next.Model())
+	}
+}
+
+func TestResetModelOnANamedEndpointRestoresItsOwnModel(t *testing.T) {
+	cfg := types.Config{
+		BaseDir: t.TempDir(),
+		Model:   "default-model", BaseURL: "http://localhost:8080/v1",
+		Endpoints: types.Endpoints{{
+			Name:                "work",
+			ModelProviderConfig: types.ModelProviderConfig{BaseURL: "https://vllm.corp/v1", Model: "llama"},
+		}},
+	}
+	s := newTestSessionWithConfig(t, cfg)
+	if err := s.SwitchProvider("@work", "llama-70b"); err != nil {
+		t.Fatalf("SwitchProvider: %v", err)
+	}
+	got, err := s.ResetModel()
+	if err != nil {
+		t.Fatalf("ResetModel: %v", err)
+	}
+	if got != "llama" || s.Model() != "llama" {
+		t.Fatalf("ResetModel = %q, Model = %q, want @work's own model (llama)", got, s.Model())
+	}
+	if s.EndpointID() != "@work" {
+		t.Fatalf("EndpointID = %q, want the endpoint kept, only the override dropped", s.EndpointID())
+	}
+}
+
+func TestResetModelErrorsWhenTheEndpointNamesNoModel(t *testing.T) {
+	s := newTestSessionWithConfig(t, types.Config{Model: "default-model", BaseURL: "http://localhost:8080/v1"})
+	if _, err := s.SaveAPIKey("regolo", "rg-key", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SwitchProvider("regolo", "Llama-3.3-70B-Instruct"); err != nil {
+		t.Fatalf("SwitchProvider: %v", err)
+	}
+	if _, err := s.ResetModel(); err == nil {
+		t.Fatal("want an error: regolo names no model of its own")
+	}
+	// The failed reset must not have disturbed the current model.
+	if s.Model() != "Llama-3.3-70B-Instruct" {
+		t.Fatalf("Model = %q, want the pick left alone after a failed reset", s.Model())
+	}
+}
+
 func TestListProviderModelsWithoutListing(t *testing.T) {
 	s := newProviderSession(t, types.ModelProviderConfig{Provider: "openai", Model: "local", BaseURL: "http://unused.invalid/v1"})
 	// Azure's adapter has no model listing (deployments are per account).
@@ -199,7 +278,9 @@ func TestSwitchProviderPersistsTheDefault(t *testing.T) {
 	if err := s.SwitchProvider("regolo", "model-one"); err != nil {
 		t.Fatal(err)
 	}
-	s.SetModel("model-two") // /model on a /login provider updates the default
+	if err := s.SetModel("model-two"); err != nil { // /model on a /login provider updates the default
+		t.Fatal(err)
+	}
 
 	// A fresh session over the same state directory starts where the last
 	// one left off.
@@ -213,21 +294,29 @@ func TestSwitchProviderPersistsTheDefault(t *testing.T) {
 	if err := next.SwitchProvider(ConfigProviderID, ""); err != nil {
 		t.Fatal(err)
 	}
-	t.Run("removesProviderState", func(t *testing.T) {
-		// Task 6 makes SwitchProvider always persist through
-		// endpoint.WriteSaved, including for ConfigProviderID, so
-		// provider.json is no longer removed here — it now records
-		// {"id":"config"}. Task 8 deliberately changes this (see its brief)
-		// and should unskip this subtest, replacing the removal assertion
-		// with one for the new record.
-		t.Skip("provider.json retention changes in Task 8: the record becomes {\"id\":\"config\"}")
-		if _, err := os.Stat(next.savedPath); !os.IsNotExist(err) {
-			t.Fatalf("provider.json should be removed after switching back, stat err=%v", err)
+	t.Run("recordsTheDefaultInstead", func(t *testing.T) {
+		// Every endpoint's pick is saved uniformly now, including the
+		// config.yaml default: switching back to it no longer removes
+		// provider.json, it records {"id":"config"}. SwitchProvider resolves
+		// the default's own model before writing (model is not left blank
+		// here), but restoreStartupEndpoint honors it identically to a
+		// blank model, since the default entry names the same model either
+		// way — that equivalence, not the exact bytes, is what the escape
+		// hatch relies on.
+		if _, err := os.Stat(next.savedPath); err != nil {
+			t.Fatalf("provider.json should still exist after switching back, stat err=%v", err)
+		}
+		sv := endpoint.LoadSaved(next.savedPath)
+		if sv.ID != ConfigProviderID {
+			t.Fatalf("Saved = %#v, want ID %q", sv, ConfigProviderID)
+		}
+		if sv.Model != "" && sv.Model != "local" {
+			t.Fatalf("Saved.Model = %q, want empty or the default's own model (local)", sv.Model)
 		}
 		fresh := newTestSessionWithConfig(t, cfg)
 		fresh.restoreStartupEndpoint()
 		if fresh.ProviderID() != ConfigProviderID || fresh.Model() != "local" {
-			t.Fatalf("with no saved default: provider=%q model=%q", fresh.ProviderID(), fresh.Model())
+			t.Fatalf("with the default recorded: provider=%q model=%q", fresh.ProviderID(), fresh.Model())
 		}
 	})
 }
@@ -274,12 +363,11 @@ func TestActiveProviderNameFollowsTheLogin(t *testing.T) {
 	if got := s.ConfigModel(); got != "uncensored" {
 		t.Fatalf("ConfigModel = %q, want uncensored", got)
 	}
-	// SavesModelAsDefault is a stub for this task (it just reports whether
-	// provider.json persistence is wired up at all, which it always is for a
-	// session built through NewSession — Task 8 makes it endpoint-aware
-	// again, mirroring the pre-Task-6 "not on config.yaml" rule).
-	if !s.SavesModelAsDefault() {
-		t.Fatal("SavesModelAsDefault should report true whenever persistence is wired up")
+	// On the default endpoint, SetModel still records the pick (every entry's
+	// pick is saved now), but config.yaml already documents its own model, so
+	// there is nothing for the UI to flag as a hidden override.
+	if s.SavesModelAsDefault() {
+		t.Fatal("SavesModelAsDefault should report false on the default endpoint")
 	}
 
 	if _, err := s.SaveAPIKey("regolo", "rg-secret", ""); err != nil {
@@ -292,13 +380,37 @@ func TestActiveProviderNameFollowsTheLogin(t *testing.T) {
 		t.Fatalf("ActiveProviderName after /login = %q, want Regolo", got)
 	}
 	if !s.SavesModelAsDefault() {
-		t.Fatal("SavesModelAsDefault should report true whenever persistence is wired up")
+		t.Fatal("SavesModelAsDefault should report true on a /login provider")
 	}
 	if got := s.ConfigModel(); got != "uncensored" {
 		t.Fatalf("ConfigModel after /login = %q, want config.yaml's model unchanged", got)
 	}
 	if got := s.Model(); got != "glm5.2" {
 		t.Fatalf("Model = %q, want glm5.2", got)
+	}
+
+	// A named config.yaml endpoint is just as much an override hidden from
+	// config.yaml's top-level block as a /login provider is.
+	named := newTestSessionWithConfig(t, types.Config{
+		Model: "default-model", BaseURL: "http://localhost:8080/v1",
+		Endpoints: types.Endpoints{{
+			Name:                "work",
+			ModelProviderConfig: types.ModelProviderConfig{BaseURL: "https://vllm.corp/v1", Model: "llama"},
+		}},
+	})
+	if err := named.SwitchProvider("@work", ""); err != nil {
+		t.Fatalf("SwitchProvider: %v", err)
+	}
+	if !named.SavesModelAsDefault() {
+		t.Fatal("SavesModelAsDefault should report true on a named yaml endpoint")
+	}
+
+	// Switching back to the default endpoint drops the flag again.
+	if err := named.SwitchProvider(ConfigProviderID, ""); err != nil {
+		t.Fatalf("SwitchProvider back to default: %v", err)
+	}
+	if named.SavesModelAsDefault() {
+		t.Fatal("SavesModelAsDefault should report false again after switching back to the default")
 	}
 }
 

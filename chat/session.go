@@ -2069,20 +2069,48 @@ func (s *Session) currentLLM() (cogito.LLM, string) {
 // A turn already in flight finishes on the client it started with (see
 // currentLLM); the switch applies from the next turn. Safe to call from another
 // goroutine while a turn is running.
-func (s *Session) SetModel(name string) {
+//
+// The pick is recorded for the current endpoint via endpoint.WriteSaved,
+// uniformly across every endpoint (including the config.yaml default): the
+// next session starts back on this model rather than silently reverting to
+// whatever config.yaml or the endpoint's own definition says. A failed write
+// is only logged — the switch already happened, and a state-file problem
+// should not be reported as if the model change itself failed.
+func (s *Session) SetModel(name string) error {
 	provider := s.resolvedSessionProvider()
 	provider.Model = name
 	if err := s.applyProvider(provider, ""); err != nil {
 		xlog.Error("could not switch model", "model", name, "error", err)
-		return
+		return err
 	}
-	// On a named endpoint or /login provider the saved default follows the
-	// model; config.yaml owns the model for its own endpoint.
-	if id := s.EndpointID(); id != "" && id != ConfigProviderID {
-		if err := endpoint.WriteSaved(s.savedPath, endpoint.Saved{ID: id, Model: name}); err != nil {
-			xlog.Warn("could not save the default endpoint", "endpoint", id, "error", err)
-		}
+	id := s.EndpointID()
+	if err := endpoint.WriteSaved(s.savedPath, endpoint.Saved{ID: id, Model: name}); err != nil {
+		xlog.Warn("could not save the endpoint default", "endpoint", id, "error", err)
 	}
+	return nil
+}
+
+// ResetModel drops the saved model override for the current endpoint, so the
+// model the endpoint itself names applies again, and reports the model now
+// in use. This is the escape hatch from a sticky pick: nib never edits
+// config.yaml, so the yaml's own model is restored by forgetting the pick
+// rather than by rewriting anything on disk that config.yaml owns.
+func (s *Session) ResetModel() (string, error) {
+	id := s.EndpointID()
+	p, err := s.endpoints.Config(id)
+	if err != nil {
+		return "", err
+	}
+	if p.Model == "" {
+		return "", fmt.Errorf("%s names no model of its own: pick one with /model", id)
+	}
+	if err := s.applyProvider(p, id); err != nil {
+		return "", err
+	}
+	if err := endpoint.WriteSaved(s.savedPath, endpoint.Saved{ID: id}); err != nil {
+		xlog.Warn("could not clear the saved model", "endpoint", id, "error", err)
+	}
+	return p.Model, nil
 }
 
 // applyProvider rebuilds the session LLM for provider (see SetModel). A

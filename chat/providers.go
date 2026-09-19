@@ -93,10 +93,17 @@ func (s *Session) ConfigModel() string {
 	return s.configProvider.Model
 }
 
-// SavesModelAsDefault reports whether SetModel also records the model as the
-// startup default (provider.json).
+// SavesModelAsDefault reports whether a model pick made right now, via
+// SetModel, is worth calling out in the UI as "this outlives the session and
+// overrides config.yaml": true on a /login provider or a named config.yaml
+// endpoint, whose pick lives only in provider.json, so nothing else records
+// it. False on the default endpoint: SetModel still records the pick there
+// too (every entry's pick is saved uniformly now, including the default),
+// but config.yaml already documents its own model, so there is nothing
+// hidden for the notice to point out.
 func (s *Session) SavesModelAsDefault() bool {
-	return s.savedPath != ""
+	id := s.EndpointID()
+	return s.savedPath != "" && id != "" && id != ConfigProviderID
 }
 
 // Providers lists every endpoint the pickers offer: the config.yaml default
@@ -178,8 +185,8 @@ const ProviderStateFile = "provider.json"
 func (s *Session) restoreStartupEndpoint() {
 	e, p, note := s.endpoints.Startup(endpoint.LoadSaved(s.savedPath))
 	s.startupNote = note
-	if e.ID == endpoint.DefaultID && note == "" {
-		return // already built from the default
+	if e.ID == endpoint.DefaultID && note == "" && p.Model == s.Model() {
+		return // already built from the default, with the same model
 	}
 	if p.Model == "" {
 		return

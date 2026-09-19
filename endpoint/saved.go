@@ -46,7 +46,14 @@ func LoadSaved(path string) Saved {
 }
 
 // WriteSaved records the pick atomically, creating the directory if needed.
+// An empty path is a no-op, mirroring LoadSaved's treatment of "": a Session
+// built without a state directory (as some low-level tests do) has nowhere
+// to persist to, and must not go writing a stray file into the process's
+// working directory instead.
 func WriteSaved(path string, sv Saved) error {
+	if path == "" {
+		return nil
+	}
 	sv.Provider = ""
 	data, err := json.MarshalIndent(sv, "", "  ")
 	if err != nil {
