@@ -9,7 +9,7 @@ import (
 
 // Endpoint is one named model endpoint config.yaml offers besides its
 // default top-level block. Addressing fields are self-contained; behavior
-// fields inherit from the default when unset (see Config.ResolvedEndpoint).
+// fields inherit from the default when unset (see endpoint.Set.Config).
 type Endpoint struct {
 	Name                string `yaml:"-"`
 	ModelProviderConfig `yaml:",inline"`

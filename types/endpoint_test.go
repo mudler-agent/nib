@@ -8,20 +8,31 @@ import (
 )
 
 func TestEndpointsKeepFileOrder(t *testing.T) {
+	// Six keys, deliberately out of alphabetical order: a map-backed
+	// implementation would reshuffle these often enough that a 3-key test
+	// could pass by chance (about 1 run in 6). Six keys make that
+	// vanishingly unlikely, so this test actually exercises order
+	// preservation rather than getting lucky.
 	const src = `
 endpoints:
+  middle:
+    base_url: http://middle/v1
   zeta:
     base_url: http://zeta/v1
   alpha:
     base_url: http://alpha/v1
-  middle:
-    base_url: http://middle/v1
+  kappa:
+    base_url: http://kappa/v1
+  bravo:
+    base_url: http://bravo/v1
+  delta:
+    base_url: http://delta/v1
 `
 	var cfg Config
 	if err := yaml.Unmarshal([]byte(src), &cfg); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	want := []string{"zeta", "alpha", "middle"}
+	want := []string{"middle", "zeta", "alpha", "kappa", "bravo", "delta"}
 	if len(cfg.Endpoints) != len(want) {
 		t.Fatalf("got %d endpoints, want %d", len(cfg.Endpoints), len(want))
 	}
