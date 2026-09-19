@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mudler/nib/chat"
 	"github.com/mudler/nib/tui/render"
@@ -372,3 +373,61 @@ var errFrameTest = frameTestError("something failed")
 type frameTestError string
 
 func (e frameTestError) Error() string { return string(e) }
+
+// TestTypingDoesNotOverflowTheFrame is the flicker regression. syncLayout ran
+// only from updateViewport, and nothing on the keystroke path calls it — so a
+// composer that changed height under the user's own typing (the `/` completion
+// popup opening, then narrowing, then closing) left the viewport budgeted for
+// the old chrome. The composed frame was up to a dozen rows TALLER than the
+// terminal while the popup was open and, once a tick had re-budgeted it,
+// rows SHORTER the moment the popup closed. Bubble Tea's inline renderer drops
+// lines from the top of an over-tall frame and erases the screen below a short
+// one, so the transcript jumped away and snapped back on the next 1s
+// shellTick: the flicker the user reported while typing.
+//
+// The invariant: every keystroke leaves the frame exactly as tall as the one
+// updateViewport budgeted.
+func TestTypingDoesNotOverflowTheFrame(t *testing.T) {
+	m := frameModel()
+	m.sessionReady = true
+	m.textarea.SetHeight(1)
+	m.textarea.Focus()
+	m.completion.setRegistries(nil, nil, nil)
+	for i := 0; i < 60; i++ {
+		m = withMessages(m, ChatMessage{Role: "user", Content: "history line"})
+	}
+	m.updateDimensions()
+	m.updateViewport()
+	want := lipgloss.Height(m.View())
+	if want != m.height {
+		t.Fatalf("baseline frame is %d rows, terminal is %d", want, m.height)
+	}
+
+	type step struct {
+		label string
+		msg   tea.Msg
+	}
+	steps := []step{
+		{"/", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}}},
+		{"m", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}}},
+		{"o", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}}},
+		// Navigating the popup can add or drop its ghost-hint row.
+		{"down", tea.KeyMsg{Type: tea.KeyDown}},
+		{"up", tea.KeyMsg{Type: tea.KeyUp}},
+		// Tab accepts, which narrows the popup to the accepted verb.
+		{"tab", tea.KeyMsg{Type: tea.KeyTab}},
+		// A space ends the verb, so the popup closes: the rows it was using
+		// must come back to the viewport in the same frame.
+		{"space", tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}}},
+	}
+	var cur tea.Model = m
+	for _, s := range steps {
+		next, _ := cur.Update(s.msg)
+		cur = next
+		mm := cur.(Model)
+		if got := lipgloss.Height(mm.View()); got != want {
+			t.Errorf("after typing %q the frame is %d rows tall, want %d (composer %d rows, viewport %d)",
+				s.label, got, want, lipgloss.Height(mm.renderComposer(mm.width)), mm.viewport.Height)
+		}
+	}
+}

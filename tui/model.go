@@ -1157,6 +1157,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.logSel = 0
 			m.logOpenID = ""
 			m.logOpenKind = ""
+			// The log viewer owns the keystrokes, so the composer's input line
+			// goes away with it: re-budget rather than leave the frame a row
+			// short until the next tick (see reflowLayout).
+			m.reflowLayout()
 			return m, nil
 
 		case tea.KeyCtrlR:
@@ -1173,12 +1177,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.textarea.SetValue(ins)
 					m.completion.sync(ins)
 				}
+				// Accepting narrows the popup to one row, or closes it: either
+				// way the composer just changed height (see reflowLayout).
+				m.reflowLayout()
 				return m, nil
 			}
 
 		case tea.KeyUp:
 			if m.completion.active {
 				m.completion.up()
+				// Moving the highlight can add or drop the ghost hint row.
+				m.reflowLayout()
 				return m, nil
 			}
 			if strings.TrimSpace(m.textarea.Value()) == "" && len(m.queue) > 0 {
@@ -1191,6 +1200,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyDown:
 			if m.completion.active {
 				m.completion.down()
+				m.reflowLayout()
 				return m, nil
 			}
 			if strings.TrimSpace(m.textarea.Value()) == "" && len(m.queue) > 0 {
@@ -1213,6 +1223,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.textarea.SetValue(ins)
 					m.completion.sync(ins)
 				}
+				m.reflowLayout()
 				return m, nil
 			}
 
@@ -1854,6 +1865,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.textarea, cmd = m.textarea.Update(msg)
 	cmds = append(cmds, cmd)
 	m.completion.sync(m.textarea.Value())
+	// The keystroke just changed the composer's height — the `/` completion
+	// popup opened, narrowed or closed — so the viewport's budget is stale
+	// until something re-runs it. Nothing else on this path does: syncLayout
+	// runs from updateViewport, and typing does not touch the transcript.
+	m.reflowLayout()
 
 	// Update viewport
 	m.viewport, cmd = m.viewport.Update(msg)
@@ -2518,6 +2534,41 @@ func (m *Model) syncLayout(vs render.ViewState) {
 	fh := m.footerHeight(vs)
 	if m.layoutBudget(vs, fh) != m.chromeBudget {
 		m.applyDimensions(vs, fh)
+	}
+}
+
+// reflowLayout re-budgets the viewport when the chrome around it changed but
+// the transcript did not — the composer growing or shrinking under the user's
+// own keystrokes, which is the `/` completion popup opening (up to a dozen
+// rows), narrowing as the verb is typed, and closing again.
+//
+// syncLayout's only other caller is updateViewport, which the keystroke path
+// never reaches, so the viewport kept the height it was budgeted for BEFORE
+// the popup existed: the composed frame ran over the terminal while the popup
+// was open and, once a tick had re-budgeted it, came up short the moment it
+// closed. Bubble Tea's inline renderer drops lines from the TOP of an
+// over-tall frame and erases the screen below a short one, so the transcript
+// jumped away and snapped back on the next one-second shellTick — the flicker
+// a user sees while typing.
+//
+// The content is untouched, so this re-budgets and re-pins the scroll position
+// rather than re-rendering the whole transcript (glamour included) on every
+// keystroke.
+func (m *Model) reflowLayout() {
+	if m.height == 0 {
+		return
+	}
+	// Captured before syncLayout can change the height AtBottom() is relative
+	// to — the same ordering hazard updateViewport guards against.
+	wasAtBottom := m.viewport.AtBottom()
+	vs := m.viewState()
+	vs.NewOutput = m.showingViewport() && !wasAtBottom
+	before := m.viewport.Height
+	m.syncLayout(vs)
+	// A taller viewport can leave YOffset past the last line, which reads as
+	// blank rows below the newest output for a user who was pinned there.
+	if m.viewport.Height != before && wasAtBottom {
+		m.viewport.GotoBottom()
 	}
 }
 
