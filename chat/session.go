@@ -111,6 +111,11 @@ type Session struct {
 	endpointModelsOnce sync.Once       // guards the one-time lazy fetch in allowedAgentModels
 	agentLogs          *agentLogStore  // per-sub-agent activity log (for the agent_logs tool)
 
+	// live carries the prompt-token count of the turn in flight, so the
+	// context gauge advances with each call of a multi-step turn instead of
+	// jumping once at the end. See liveUsage.
+	live liveUsage
+
 	// modelMu guards the (llm, llmModel) pair, which SetModel replaces together
 	// when the user switches model mid-session. Not turnMu: that one is held
 	// only across beginTurn/endTurn/Interrupt (it guards turnCancel, not the
@@ -1223,6 +1228,10 @@ func (s *Session) SendMessage(text string, parts ...ContentPart) (string, error)
 	s.overflowRetried = 0
 	s.overflowMu.Unlock()
 	defer s.endTurn()
+	// Report this turn's own size while it runs; hand authority back to
+	// s.fragment (which compaction may since have shrunk) once it ends.
+	s.live.begin()
+	defer s.live.end()
 
 	// Mark the run live so Inject can target it; clear on return. Drain the
 	// injection channel so stale entries can't leak into the next run — but
@@ -1275,6 +1284,12 @@ func (s *Session) SendMessage(text string, parts ...ContentPart) (string, error)
 	// hold a turn), and a turn that changed model halfway would send its
 	// remaining requests to a different model than the one it started on.
 	llm, mainModel := s.currentLLM()
+	// Every request this turn makes reports its prompt size through the
+	// wrapper, which is the only race-free place to observe it: cogito writes
+	// LastUsage onto a Status the UI goroutine must not read (see liveUsage).
+	// Sub-agent and reviewer clients are deliberately left unwrapped — their
+	// spend is not this conversation's context size.
+	llm = trackUsage(llm, &s.live)
 
 	// Build cogito options from config
 	cogitoOpts := []cogito.Option{

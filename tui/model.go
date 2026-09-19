@@ -1613,6 +1613,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// are started by the model) while the user is idle. Completion handling no
 		// longer lives here: finished background work injects into the live run
 		// (shell jobs via SetShellJobs, sub-agents via cogito's auto-injection).
+		// It also paces the context gauge: a turn's size changes with every
+		// call it makes, and once a second is as often as a gauge ten cells
+		// wide can say anything new.
+		m.refreshContextTokens()
 		m.updateViewport()
 		if m.showLogs && m.logOpenID != "" {
 			m.syncLogViewport()
@@ -3428,6 +3432,25 @@ func (m Model) contextWindow() int {
 		return m.session.ContextWindow()
 	}
 	return m.cfg.Compaction.MaxContextTokens
+}
+
+// refreshContextTokens re-reads the session's context size mid-turn.
+//
+// m.contextTokens is otherwise only assigned at turn boundaries (responseMsg,
+// parkMsg and the two compaction notices), so the gauge sat still for the
+// whole turn and jumped once at the end — the "used" figure frozen while the
+// window beside it stayed correct, because the window does not depend on the
+// run in flight. The session reports the live figure for the duration of a
+// turn (see chat.liveUsage), so a periodic re-read is all this needs; between
+// turns the session answers from the fragment, which is the same number the
+// boundary handlers already wrote.
+func (m *Model) refreshContextTokens() {
+	if m.session == nil || !m.loading {
+		return
+	}
+	if n := m.session.ContextTokens(); n > 0 {
+		m.contextTokens = n
+	}
 }
 
 // contextGauge draws used/window as contextGaugeCells cells, with a tick at

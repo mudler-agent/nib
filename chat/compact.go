@@ -306,6 +306,18 @@ func estimateUsageSplit(msgs []openai.ChatCompletionMessage) (prompt, completion
 // backend hasn't reported usage yet (e.g. before the first turn). This is the
 // same signal the auto-compaction trigger watches.
 func (s *Session) ContextTokens() int {
+	// A turn in flight is the authority over its own size: s.fragment still
+	// holds the PREVIOUS turn's Status until ExecuteTools returns, so reading
+	// it here froze the gauge for the whole turn — a multi-step turn could add
+	// fifty thousand tokens without the footer moving. See liveUsage.
+	if n := s.live.promptTokens(); n > 0 {
+		return n
+	}
+	// The fallback reads the fragment, which the turn goroutine reassigns at
+	// each run's end — and the UI polls this once a second now, not only at
+	// turn boundaries, so the read takes the lock that guards it.
+	s.historyMu.Lock()
+	defer s.historyMu.Unlock()
 	if s.fragment.Status != nil && s.fragment.Status.LastUsage.PromptTokens > 0 {
 		return s.fragment.Status.LastUsage.PromptTokens
 	}
@@ -466,11 +478,24 @@ func (s *Session) compactHistory(ctx context.Context) (before, after int, err er
 	s.historyMu.Lock()
 	newFrag := cogito.NewFragment(newFragMsgs...)
 	if s.fragment.Status != nil {
-		newFrag.Status = s.fragment.Status // preserve running token counters
+		// Preserve the running token counters — but NOT LastUsage, which
+		// measured a request against the conversation this one just replaced.
+		// Left in place it outlives the history it describes: ContextTokens
+		// would keep reporting the pre-compaction size, so the footer's own
+		// "compacted 180k → 40k" notice would be contradicted by the gauge
+		// beside it. Zeroed, the fragment's estimate answers instead — the
+		// same number the notice quotes — until the next request reports a
+		// real one. The copy keeps this off the Status a reader may hold.
+		statusCopy := *s.fragment.Status
+		statusCopy.LastUsage = cogito.LLMUsage{}
+		newFrag.Status = &statusCopy
 	}
 	s.fragment = newFrag
 	s.messages = newMessages
 	s.historyMu.Unlock()
+	// Same reason, for a turn still in flight: the live figure was measured
+	// against the history that just went away.
+	s.live.reset()
 
 	after = estimateTokens(newFrag.Messages)
 	return before, after, nil

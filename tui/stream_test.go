@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/mudler/nib/chat"
 )
 
 // delta wraps one streamed reasoning chunk as the batch-of-one Update expects
@@ -607,5 +608,41 @@ func TestStaleContentDeltaAcrossToolCallDoesNotFabricateBubble(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("assistant messages = %+v, want %+v", got, want)
 		}
+	}
+}
+
+// TestRefreshContextTokensOnlyRunsDuringATurn pins the two guards on the
+// mid-turn gauge refresh. The figure itself is pinned on the session side
+// (chat.TestContextTokensTracksTheRunInFlight): a zero-value chat.Session
+// reports 0 tokens, which is exactly the "nothing to say yet" case the
+// refresh must not write through.
+//
+// Between turns the boundary handlers (responseMsg, parkMsg, the compaction
+// notices) own m.contextTokens — a compaction notice in particular writes the
+// POST-compaction size, and a tick that re-read the session behind it would
+// put the pre-compaction number back on screen.
+func TestRefreshContextTokensOnlyRunsDuringATurn(t *testing.T) {
+	m := &Model{contextTokens: 4242}
+
+	m.session = nil
+	m.loading = true
+	m.refreshContextTokens()
+	if m.contextTokens != 4242 {
+		t.Fatalf("contextTokens = %d with no session, want it untouched", m.contextTokens)
+	}
+
+	m.session = &chat.Session{}
+	m.loading = false
+	m.refreshContextTokens()
+	if m.contextTokens != 4242 {
+		t.Fatalf("contextTokens = %d between turns, want it untouched", m.contextTokens)
+	}
+
+	// Loading, but the session has nothing to report: a zero must not blank
+	// the gauge that the last turn left standing.
+	m.loading = true
+	m.refreshContextTokens()
+	if m.contextTokens != 4242 {
+		t.Fatalf("contextTokens = %d after a zero reading, want it untouched", m.contextTokens)
 	}
 }
