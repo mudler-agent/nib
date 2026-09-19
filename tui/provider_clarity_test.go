@@ -2,11 +2,14 @@ package tui
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mudler/nib/chat"
+	"github.com/mudler/nib/endpoint"
+	"github.com/mudler/nib/plugin"
 	"github.com/mudler/nib/theme"
 	"github.com/mudler/nib/types"
 )
@@ -54,7 +57,7 @@ func bootLine(t *testing.T, b *bootState, ev string) string {
 }
 
 // The boot log's provider and model lines name what requests really use, and
-// say so when a /login pick overrides config.yaml's model.
+// say so when a saved pick overrides config.yaml's model.
 func TestBootLogNamesTheActiveProviderAndModel(t *testing.T) {
 	m := newRegoloOverrideModel(t)
 	m.boot = newBootState()
@@ -69,8 +72,8 @@ func TestBootLogNamesTheActiveProviderAndModel(t *testing.T) {
 	if !strings.HasPrefix(model, "glm5.2") {
 		t.Fatalf("model line = %q, want it to start with the active model glm5.2", model)
 	}
-	if !strings.Contains(model, "config.yaml: uncensored") || !strings.Contains(model, "/login") {
-		t.Fatalf("model line = %q, want a note that /login overrides config.yaml's uncensored", model)
+	if !strings.Contains(model, "config.yaml: uncensored") || !strings.Contains(model, "overridden by a saved pick") {
+		t.Fatalf("model line = %q, want a note that a saved pick overrides config.yaml's uncensored", model)
 	}
 }
 
@@ -171,6 +174,152 @@ func TestModelPickerConfirmsTheSavedDefault(t *testing.T) {
 	msg := lastMessage(t, m)
 	if !strings.Contains(msg.Content, "Regolo") || !strings.Contains(msg.Content, "qwen") || !strings.Contains(msg.Content, theme.ProviderSavedDefault) {
 		t.Fatalf("confirmation = %q, want provider, model and %q", msg.Content, theme.ProviderSavedDefault)
+	}
+}
+
+// writeSavedPick seeds provider.json under base's plugin state directory, the
+// same file endpoint.WriteSaved/LoadSaved read, so a session built with
+// BaseDir: base starts on sv as if a previous run had picked it.
+func writeSavedPick(t *testing.T, base string, sv endpoint.Saved) {
+	t.Helper()
+	path := filepath.Join(plugin.BaseDirIn(base), chat.ProviderStateFile)
+	if err := endpoint.WriteSaved(path, sv); err != nil {
+		t.Fatalf("writeSavedPick: %v", err)
+	}
+}
+
+// The header names a named config.yaml endpoint by its "@"-prefixed ID, the
+// same ID EndpointID() and the /endpoint picker use, not the generic
+// chat.ConfigProviderName it shows for the default endpoint.
+func TestHeaderNamesTheActiveNamedEndpoint(t *testing.T) {
+	m := newEndpointTestModel(t)
+	if cmd := m.dispatchResolved("/endpoint @home"); cmd != nil {
+		t.Fatal("/endpoint <id> must not start a turn")
+	}
+	if got := m.headerProvider(); got != "@home" {
+		t.Fatalf("headerProvider() = %q, want @home", got)
+	}
+}
+
+// A saved pick that no longer resolves (its named endpoint is gone from
+// config.yaml) must not vanish silently: Session.StartupNote() names it, and
+// the boot log must actually say so, not just carry the accessor unused.
+func TestBootLogReportsADroppedSavedPick(t *testing.T) {
+	base := t.TempDir()
+	writeSavedPick(t, base, endpoint.Saved{ID: "@gone", Model: "m"})
+	cfg := types.Config{
+		Model:      "default-model",
+		BaseURL:    "http://127.0.0.1:1/v1",
+		BaseDir:    base,
+		Compaction: types.CompactionConfig{MaxContextTokens: 128000},
+	}
+	s, err := chat.NewSession(context.Background(), cfg, chat.Callbacks{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+
+	if !strings.Contains(s.StartupNote(), "@gone") {
+		t.Fatalf("StartupNote = %q, want it to name @gone", s.StartupNote())
+	}
+
+	m := newQueueTestModel()
+	m.ctx = context.Background()
+	m.cfg = cfg
+	m.session = s
+	m.boot = newBootState()
+	m.boot.markReady(&m)
+
+	view := m.View()
+	if !strings.Contains(view, "@gone") {
+		t.Fatalf("boot log does not mention the dropped pick:\n%s", view)
+	}
+}
+
+// A config.yaml endpoint rejected at load (here: no base_url or provider, so
+// it cannot address anywhere) must name itself in the boot log instead of
+// vanishing — Session.ConfigErrors() already exists to carry exactly this,
+// per the comment on types.Endpoints.Validate.
+func TestBootLogReportsARejectedEndpoint(t *testing.T) {
+	cfg := types.Config{
+		Model:      "default-model",
+		BaseURL:    "http://127.0.0.1:1/v1",
+		BaseDir:    t.TempDir(),
+		Compaction: types.CompactionConfig{MaxContextTokens: 128000},
+		Endpoints: types.Endpoints{{
+			Name:                "bad",
+			ModelProviderConfig: types.ModelProviderConfig{Model: "m"},
+		}},
+	}
+	s, err := chat.NewSession(context.Background(), cfg, chat.Callbacks{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+	if len(s.ConfigErrors()) == 0 {
+		t.Fatal("test setup: the bad endpoint should have been rejected")
+	}
+
+	m := newQueueTestModel()
+	m.ctx = context.Background()
+	m.cfg = cfg
+	m.session = s
+	m.boot = newBootState()
+	m.boot.markReady(&m)
+
+	view := m.View()
+	if !strings.Contains(view, "bad") {
+		t.Fatalf("boot log does not name the rejected endpoint:\n%s", view)
+	}
+}
+
+// The carried requirement: bootModel's override note must fire on actual
+// model divergence, not on endpoint identity. A model pick saved on
+// config.yaml's OWN default endpoint (SetModel now persists uniformly on
+// every endpoint, including the default) shadows config.yaml's model just as
+// much as a /login pick does, while EndpointID() never leaves "config" — the
+// old identity-only gate hid this case entirely.
+func TestBootLogNotesADefaultEndpointModelOverride(t *testing.T) {
+	base := t.TempDir()
+	cfg := types.Config{
+		Model:      "default-model",
+		BaseURL:    "http://127.0.0.1:1/v1",
+		BaseDir:    base,
+		Compaction: types.CompactionConfig{MaxContextTokens: 128000},
+	}
+	first, err := chat.NewSession(context.Background(), cfg, chat.Callbacks{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	if err := first.SetModel("saved-model"); err != nil {
+		t.Fatalf("SetModel: %v", err)
+	}
+	first.Close()
+
+	s, err := chat.NewSession(context.Background(), cfg, chat.Callbacks{})
+	if err != nil {
+		t.Fatalf("NewSession (restart): %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+
+	if got := s.EndpointID(); got != chat.ConfigProviderID {
+		t.Fatalf("EndpointID = %q, want the restarted session to still be on the default endpoint", got)
+	}
+	if s.Model() == s.ConfigModel() {
+		t.Fatalf("test setup: Model() and ConfigModel() should diverge, both are %q", s.Model())
+	}
+
+	m := newQueueTestModel()
+	m.ctx = context.Background()
+	m.cfg = cfg
+	m.session = s
+
+	got := m.bootModel()
+	if !strings.Contains(got, "config.yaml: default-model") || !strings.Contains(got, "overridden by a saved pick") {
+		t.Fatalf("bootModel() = %q, want the same honest note the /login case gets, naming config.yaml's default-model", got)
+	}
+	if !strings.HasPrefix(got, "saved-model") {
+		t.Fatalf("bootModel() = %q, want it to lead with the running model saved-model", got)
 	}
 }
 

@@ -23,17 +23,18 @@ func (m Model) headerModel() string {
 	return ""
 }
 
-// headerProvider returns the short name of the provider headerModel runs on:
-// the /login provider's ID ("regolo") or chat.ConfigProviderName for
-// config.yaml's endpoint. It is the ID rather than the display name because
-// registry names run long ("Anthropic (Claude Pro/Max)") and the header is
-// the tightest line on screen. Empty before the session exists, when the
-// active provider is not known yet.
+// headerProvider returns the short name of the endpoint headerModel runs on:
+// the already-"@"-prefixed ID of a named config.yaml endpoint ("@work"), the
+// /login provider's ID ("regolo"), or chat.ConfigProviderName for
+// config.yaml's own default endpoint. It is the ID rather than the display
+// name because registry names run long ("Anthropic (Claude Pro/Max)") and
+// the header is the tightest line on screen. Empty before the session
+// exists, when the active endpoint is not known yet.
 func (m Model) headerProvider() string {
 	if m.session == nil {
 		return ""
 	}
-	if id := m.session.ProviderID(); id != "" && id != chat.ConfigProviderID {
+	if id := m.session.EndpointID(); id != "" && id != chat.ConfigProviderID {
 		return id
 	}
 	return chat.ConfigProviderName

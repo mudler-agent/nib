@@ -62,10 +62,15 @@ const (
 	// model applies again.
 	ModelResetNotice = "reset to the endpoint's own model"
 
-	// BootModelOverride is the dim note on the boot log's model line when a
-	// saved /login pick replaces config.yaml's model (a %s for that model):
-	// both are configured, and only one is used, so the log says which.
-	BootModelOverride = "(config.yaml: %s, overridden by /login)"
+	// BootModelOverride is the dim note on the boot log's model line when the
+	// running model diverges from config.yaml's own (a %s for config.yaml's
+	// model): both are configured, and only one is used, so the log says
+	// which. The cause is always the same shape — a pick saved in
+	// provider.json shadowing config.yaml — whether it came from a /login
+	// provider, a named endpoint, or a /model pick on config.yaml's own
+	// default endpoint, so one wording covers all three instead of naming
+	// /login specifically and being wrong for the other two.
+	BootModelOverride = "(config.yaml: %s, overridden by a saved pick)"
 
 	// /login provider picker, API-key form and OAuth wait dialog
 	// (tui/providerpicker.go).
