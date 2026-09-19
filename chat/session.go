@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/mudler/nib/auth"
+	"github.com/mudler/nib/endpoint"
 	"github.com/mudler/nib/hooks"
 	"github.com/mudler/nib/llmprovider"
 	"github.com/mudler/nib/llmprovider/copilot"
@@ -127,14 +128,26 @@ type Session struct {
 	modelMu      sync.RWMutex
 	llmModel     string                    // guarded by modelMu
 	mainProvider types.ModelProviderConfig // guarded by modelMu
-	providerID   string                    // guarded by modelMu; ConfigProviderID until /login switches
+	endpointID   string                    // guarded by modelMu; endpoint.DefaultID until switched
 	// configProvider is the endpoint config.yaml describes, kept so the
-	// provider picker can switch back to it after using a /login provider.
+	// provider picker can switch back to it after using a named endpoint or a
+	// /login provider.
 	configProvider types.ModelProviderConfig
-	// providerStatePath is where the /login-picked default provider is kept
-	// (ProviderStateFile); empty disables persistence.
-	providerStatePath string
-	credStore         *auth.Store // credential store for /login-managed providers
+	// endpoints is the resolvable set of endpoints for this config: the
+	// config.yaml default, its named endpoints, and the provider registry.
+	endpoints *endpoint.Set
+	// configErrs are the config.yaml endpoints rejected while building
+	// endpoints, for the boot log.
+	configErrs []error
+	// startupNote is set by restoreStartupEndpoint when a saved pick could
+	// not be honored at startup, for the boot log.
+	startupNote string
+	// savedPath is where the picked endpoint is kept (ProviderStateFile),
+	// next to credentials.json. NewSession always sets it (plugin.BaseDirIn
+	// never resolves to ""); only a Session built directly within this
+	// package's own tests can leave it unset.
+	savedPath string
+	credStore *auth.Store // credential store for /login-managed providers
 
 	// learnedWindow is the context window a backend stated in an overflow
 	// error, and learnedWindowModel is the model it was learned for. They are
@@ -402,6 +415,7 @@ func NewSession(ctx context.Context, cfg types.Config, callbacks Callbacks, tran
 	if err != nil {
 		return nil, fmt.Errorf("create main LLM: %w", err)
 	}
+	endpoints, configErrs := endpoint.New(cfg, credStore)
 	classifier, err := provenance.ClassifierForConfig(cfg)
 	if err != nil {
 		return nil, err
@@ -462,8 +476,10 @@ func NewSession(ctx context.Context, cfg types.Config, callbacks Callbacks, tran
 		llmModel:             mainProvider.Model,
 		mainProvider:         mainProvider,
 		configProvider:       mainProvider,
-		providerStatePath:    filepath.Join(plugin.BaseDirIn(cfg.BaseDir), ProviderStateFile),
-		providerID:           ConfigProviderID,
+		endpoints:            endpoints,
+		configErrs:           configErrs,
+		savedPath:            filepath.Join(plugin.BaseDirIn(cfg.BaseDir), ProviderStateFile),
+		endpointID:           endpoint.DefaultID,
 		credStore:            credStore,
 		apiKey:               mainProvider.APIKey,
 		baseURL:              mainProvider.BaseURL,
@@ -519,8 +535,8 @@ func NewSession(ctx context.Context, cfg types.Config, callbacks Callbacks, tran
 	}
 	s.hooks.Fire(ctx, hooks.EventSessionStart, "", map[string]any{"event": "SessionStart"})
 
-	// A provider picked with /login in an earlier session is the default.
-	s.restoreDefaultProvider()
+	// An endpoint picked in an earlier session is the default.
+	s.restoreStartupEndpoint()
 
 	// Auto-detect the context window when the user did not set one explicitly.
 	// A zero MaxContextTokens means "unset" (config.go no longer defaults it);
@@ -2060,16 +2076,18 @@ func (s *Session) SetModel(name string) {
 		xlog.Error("could not switch model", "model", name, "error", err)
 		return
 	}
-	// On a /login provider the saved default follows the model; config.yaml
-	// owns the model for its own endpoint.
-	if id := s.ProviderID(); id != "" && id != ConfigProviderID {
-		s.saveDefaultProvider(id, name)
+	// On a named endpoint or /login provider the saved default follows the
+	// model; config.yaml owns the model for its own endpoint.
+	if id := s.EndpointID(); id != "" && id != ConfigProviderID {
+		if err := endpoint.WriteSaved(s.savedPath, endpoint.Saved{ID: id, Model: name}); err != nil {
+			xlog.Warn("could not save the default endpoint", "endpoint", id, "error", err)
+		}
 	}
 }
 
 // applyProvider rebuilds the session LLM for provider (see SetModel). A
-// non-empty providerID also records which picker entry is now current.
-func (s *Session) applyProvider(provider types.ModelProviderConfig, providerID string) error {
+// non-empty id also records which picker entry is now current.
+func (s *Session) applyProvider(provider types.ModelProviderConfig, id string) error {
 	// Built outside the lock: every input is construction-time state, so
 	// nothing here needs to be ordered against a reader.
 	name := provider.Model
@@ -2085,8 +2103,8 @@ func (s *Session) applyProvider(provider types.ModelProviderConfig, providerID s
 	s.llm = llm
 	s.llmModel = name
 	s.mainProvider = provider
-	if providerID != "" {
-		s.providerID = providerID
+	if id != "" {
+		s.endpointID = id
 	}
 	s.modelMu.Unlock()
 
