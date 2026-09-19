@@ -230,7 +230,10 @@ type Config struct {
 	// own session bookkeeping (Model.sessionID/sessionTitle) alongside
 	// InitialHistory above, so continuing a --resume'd conversation autosaves
 	// back over the SAME stored session file instead of forking a new one.
-	// Set at runtime by the --resume flag, never from the YAML config.
+	// Set at runtime by --resume (the session it loaded) or by --session-id
+	// (an id chosen by whoever spawned nib, so a fresh session is recorded
+	// under an id they already know and can resume with later), never from
+	// the YAML config.
 	ResumeSessionID    string `yaml:"-"`
 	ResumeSessionTitle string `yaml:"-"`
 	// WorkingDir, when non-empty, is the directory host tools (bash, filesystem)

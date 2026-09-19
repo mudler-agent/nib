@@ -349,6 +349,7 @@ func runCtx(ctx context.Context, o Options) int {
 	yoloFlag := fs.Bool("yolo", false, "Auto-approve every tool call without prompting; also via NIB_YOLO")
 	resumeFlag := fs.Bool("resume", false, "Resume a recorded session: an id given as a bare argument after this flag loads it directly, otherwise the newest session (this directory unless --all) is used")
 	allFlag := fs.Bool("all", false, "With --resume, widen the match to sessions recorded in any working directory, not just this one")
+	sessionIDFlag := fs.String("session-id", "", "Record this session under the given id instead of minting one; with --resume, the session to load")
 	if err := fs.Parse(args); err != nil {
 		// ContinueOnError hands back ErrHelp for -h/--help, which the global
 		// flag.CommandLine used to turn into a clean exit. Keep that.
@@ -415,18 +416,11 @@ func runCtx(ctx context.Context, o Options) int {
 
 	// --resume mirrors /resume's own semantics but resolved up front, before
 	// the TUI/CLI ever starts, so the very first turn already carries the
-	// prior history: an id given as fs.Args()[0] loads it directly, otherwise
-	// the newest session in scope (cwd-filtered unless --all) is used. A
-	// resume failure (bad id, nothing recorded) is reported but not fatal —
+	// prior history; --session-id names the session on both sides of that.
+	// A resume failure (bad id, nothing recorded) is reported but not fatal —
 	// the run continues as a fresh session rather than refusing to start.
-	if *resumeFlag {
-		id := ""
-		if a := fs.Args(); len(a) > 0 {
-			id = a[0]
-		}
-		if err := applyResumeFlag(&cfg, id, *allFlag); err != nil {
-			fmt.Fprintf(o.stderr(), "%s: --resume: %v\n", o.name(), err)
-		}
+	if err := applySessionIdentity(&cfg, *sessionIDFlag, *resumeFlag, *allFlag, fs.Args()); err != nil {
+		fmt.Fprintf(o.stderr(), "%s: --resume: %v\n", o.name(), err)
 	}
 
 	if cfg.LogLevel == "" {
@@ -570,6 +564,44 @@ func envTrue(v string) bool {
 	default:
 		return true
 	}
+}
+
+// applySessionIdentity resolves --session-id and --resume into the session
+// bookkeeping the TUI starts from. The two flags answer different questions
+// and compose: --resume asks for prior history to be loaded, --session-id
+// names WHICH session — on the way in (which record to load) and on the way
+// out (which record the autosave writes).
+//
+// Naming the session on the way out is what an external supervisor needs.
+// voro spawns nib, and later has to resume the same conversation; the id the
+// TUI mints for itself (tui.newSessionID) is visible nowhere outside the
+// store, so the supervisor passes an id of its own at create time and the
+// same id at resume time — the pattern claude's --session-id/--resume pair
+// already establishes.
+//
+// Precedence: a bare argument after --resume outranks --session-id, keeping
+// `nib --resume abc` working for humans. The flag is also the ONLY form a
+// supervisor should use: Go's flag package stops parsing at the first
+// non-flag argument, so an id passed positionally would swallow every flag
+// after it (--trace-dir included).
+//
+// A pin survives a failed resume. The first restart of a session that never
+// reached a turn boundary has nothing recorded to load; pinning anyway means
+// this run autosaves under the supervisor's id, so the NEXT restart finds it
+// instead of chasing a fresh id each time.
+func applySessionIdentity(cfg *types.Config, sessionID string, resume, all bool, args []string) error {
+	var err error
+	if resume {
+		id := sessionID
+		if len(args) > 0 {
+			id = args[0]
+		}
+		err = applyResumeFlag(cfg, id, all)
+	}
+	if sessionID != "" && cfg.ResumeSessionID == "" {
+		cfg.ResumeSessionID = sessionID
+	}
+	return err
 }
 
 // applyResumeFlag resolves a --resume invocation against the same session
