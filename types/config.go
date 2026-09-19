@@ -146,6 +146,9 @@ type Config struct {
 	Model    string `yaml:"model"`
 	APIKey   string `yaml:"api_key"`
 	BaseURL  string `yaml:"base_url"`
+	// Endpoints are the named endpoints config.yaml offers besides the
+	// top-level default. See types/endpoint.go.
+	Endpoints Endpoints `yaml:"endpoints,omitempty"`
 	// PromptInjectionProtection controls provenance tracking, LLM classification,
 	// redaction, and approval hardening for untrusted external data. It is
 	// disabled by default to preserve existing behavior.
@@ -299,9 +302,9 @@ type PromptInjectionProtectionConfig struct {
 // ModelProviderConfig overrides the top-level provider settings for the
 // classifier. Empty fields inherit their top-level counterparts.
 type ModelProviderConfig struct {
-	Provider        string            `yaml:"provider,omitempty"`
-	Model           string            `yaml:"model,omitempty"`
-	APIKey          string            `yaml:"api_key,omitempty"`
+	Provider string `yaml:"provider,omitempty"`
+	Model    string `yaml:"model,omitempty"`
+	APIKey   string `yaml:"api_key,omitempty"`
 	// APIKeyEnv names an environment variable holding the key, so a config
 	// file can describe an endpoint without carrying its secret. APIKey
 	// wins when both are set.
