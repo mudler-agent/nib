@@ -119,6 +119,10 @@ func prunedE2ESession(t *testing.T, rec *pruneRecorder, marker string, results i
 		ToolOutputPruning: types.ToolOutputPruningConfig{
 			HighWaterTokens: 1000, LowWaterTokens: 1, MinResultTokens: 1,
 		},
+		// A small window keeps the window-relative water marks near the
+		// configured ones; the 128k default would lift the sweep far above the
+		// ~4.5k of seeded tool output and nothing would be pruned.
+		Compaction:     types.CompactionConfig{MaxContextTokens: 8000},
 		InitialHistory: hist,
 	}
 

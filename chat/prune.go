@@ -296,19 +296,38 @@ func (s *Session) pruneMessages(msgs []openai.ChatCompletionMessage) []openai.Ch
 // sweep can so the summary has less to cover.
 const pruningMinScale = 0.25
 
-// effectivePruning returns cfg with water marks scaled by context utilization
-// and a low-water mark that cannot exceed the high-water mark.
+// pruningHighWaterFraction and pruningLowWaterFraction set the water marks
+// relative to the context window. The configured marks are absolute token
+// counts, and on their own they are tuned for small windows: 24k of tool
+// output is three medium file reads, which on a 200k or 1M window stubbed
+// results the model had only just fetched. The effective mark is the larger
+// of the configured value and this fraction of the window, so a small window
+// keeps its configured policy and a large one gets room in proportion to it.
+const (
+	pruningHighWaterFraction = 0.30
+	pruningLowWaterFraction  = 0.10
+)
+
+// effectivePruning returns cfg with water marks sized to the context window,
+// scaled by context utilization, and a low-water mark that cannot exceed the
+// high-water mark.
 //
-// Pressure scaling: the configured water marks are the values at zero
+// Window sizing: each configured mark is a floor, raised to
+// pruningHighWaterFraction / pruningLowWaterFraction of the window when that
+// is larger. This runs before pressure scaling, so the scaling applies to the
+// window-sized marks.
+//
+// Pressure scaling: the window-sized marks are the values at zero
 // utilization. As the context fills, both marks shrink linearly toward
-// pruningMinScale × configured value, reaching that floor at the compaction
+// pruningMinScale × that value, reaching that floor at the compaction
 // threshold. Below the threshold, pruning is gentler (larger marks → sweeps
 // less often and less deeply); at the threshold, it is at its most aggressive
 // because compaction is about to fire anyway and every reclaimed token is one
 // the summary does not have to cover.
 //
-// Scaling is skipped when size pruning is off (HighWaterTokens ≤ 0), when the
-// window is unknown, or when there is nothing to measure — the stale-read rule
+// Both steps are skipped when size pruning is off (HighWaterTokens ≤ 0) or the
+// window is unknown, and pressure scaling is skipped when there is nothing to
+// measure — the stale-read rule
 // still applies in all those cases.
 //
 // The low ≤ high clamp is applied here, where a config becomes a live policy,
@@ -320,7 +339,16 @@ func effectivePruning(cfg types.ToolOutputPruningConfig, promptTokens, window in
 	if cfg.LowWaterTokens > cfg.HighWaterTokens {
 		cfg.LowWaterTokens = cfg.HighWaterTokens
 	}
-	if cfg.HighWaterTokens <= 0 || window <= 0 || promptTokens <= 0 {
+	if cfg.HighWaterTokens <= 0 || window <= 0 {
+		return cfg
+	}
+	if high := int(float64(window) * pruningHighWaterFraction); high > cfg.HighWaterTokens {
+		cfg.HighWaterTokens = high
+	}
+	if low := int(float64(window) * pruningLowWaterFraction); low > cfg.LowWaterTokens {
+		cfg.LowWaterTokens = low
+	}
+	if promptTokens <= 0 {
 		return cfg
 	}
 	if threshold <= 0 || threshold > 1 {
