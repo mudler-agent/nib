@@ -63,7 +63,8 @@ type Session struct {
 	allowedBashPrefixes  map[string]bool  // bash first-word grants ("git" → simple `git …` auto-approved)
 	autoApprove          atomic.Bool      // approval_mode: auto, or the /yolo toggle — approve every tool call
 	allowAllTurn         bool             // user chose "allow all this turn"; reset each top-level turn
-	approvalMode         string           // raw approval_mode: "" / "prompt" / "strict" / "allowlist" / "auto"
+	approvalMode         string           // raw approval_mode: "" / "prompt" / "strict" / "allowlist" / "auto"; guarded by approvalMu
+	approvalMu           sync.RWMutex     // guards approvalMode: /settings changes it while a turn reads it
 	readOnlyCommands     readOnlyCommands // bash commands auto-approved in prompt mode
 	hooks                *hooks.Dispatcher
 	provenanceMu         sync.Mutex
@@ -636,7 +637,7 @@ func (s *Session) decideToolCall(req ToolCallRequest) cogito.ToolCallDecision {
 	// In the default prompt mode, auto-approve calls that only observe state.
 	// Not applied in allowlist (explicitly restrictive), strict (prompt for
 	// everything), or auto (already approved above). Hooks above still win.
-	if (s.approvalMode == "" || s.approvalMode == "prompt") &&
+	if mode := s.currentApprovalMode(); (mode == "" || mode == "prompt") &&
 		IsReadOnly(req.Name, req.Arguments, s.readOnlyCommands) {
 		return cogito.ToolCallDecision{Approved: true}
 	}

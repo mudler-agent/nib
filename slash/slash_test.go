@@ -207,3 +207,30 @@ func TestResolveResume(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveSettings(t *testing.T) {
+	cases := []struct {
+		in         string
+		key, value string
+		hasValue   bool
+		unset      bool
+	}{
+		{in: "/settings"},
+		{in: "/settings   "},
+		{in: "/settings ui.hide_hud", key: "ui.hide_hud"},
+		{in: "/settings ui.hide_hud on", key: "ui.hide_hud", value: "on", hasValue: true},
+		// Everything after the key is the value, so a string may hold spaces.
+		{in: "/settings prompt you are   terse", key: "prompt", value: "you are   terse", hasValue: true},
+		{in: "/settings compaction.threshold default", key: "compaction.threshold", unset: true},
+		{in: "/settings compaction.threshold unset", key: "compaction.threshold", unset: true},
+	}
+	for _, c := range cases {
+		a := Resolve(c.in, nil, nil, nil)
+		if a.Kind != KindSettings {
+			t.Fatalf("%q: kind %v, want KindSettings", c.in, a.Kind)
+		}
+		if a.SettingKey != c.key || a.SettingValue != c.value || a.SettingHasValue != c.hasValue || a.SettingUnset != c.unset {
+			t.Fatalf("%q: key %q value %q has %v unset %v", c.in, a.SettingKey, a.SettingValue, a.SettingHasValue, a.SettingUnset)
+		}
+	}
+}

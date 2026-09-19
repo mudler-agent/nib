@@ -372,6 +372,11 @@ type Model struct {
 	// Unified `/` completion state
 	completion compState
 
+	// pendingSettings maps each config key /settings saved but could not apply
+	// to the running session to the saved value, so /settings can show what
+	// the next start will use (tui/settings.go).
+	pendingSettings map[string]string
+
 	// Model picker state. modelPickerRequest monotonically identifies endpoint
 	// lookups so a response from a cancelled picker cannot populate a newer one.
 	modelPicker        modelPicker
@@ -672,6 +677,7 @@ func NewModel(ctx context.Context, cfg types.Config, height int, shellJobs *wizm
 		m.sessionID = newSessionID()
 	}
 	m.completion.setRegistries(cfg.Commands, cfg.Skills, cfg.Agents)
+	m.completion.setSettingsConfig(cfg)
 	return m
 }
 
@@ -1993,6 +1999,9 @@ func (m *Model) dispatchResolved(input string) tea.Cmd {
 		return nil
 	case slash.KindResume:
 		return m.startResume(action.ResumeAll, action.ResumeID)
+	case slash.KindSettings:
+		m.runSettings(action)
+		return nil
 	case slash.KindAttach:
 		switch action.AttachOp {
 		case slash.AttachStage:
@@ -3529,13 +3538,16 @@ func (m Model) footerBadges(helpWidth int) string {
 	if usage != "" {
 		badges = append(badges, badge{usage, 80})
 	}
-	if m.hudClock != "" {
+	// ui.hide_hud drops the machine badges (clock, cpu, mem) and keeps the
+	// session ones above, which predict compaction and spend.
+	hud := !m.cfg.UI.HideHUD
+	if hud && m.hudClock != "" {
 		badges = append(badges, badge{theme.Meta.Render(m.hudClock), 60})
 	}
-	if m.hudCPUOK {
+	if hud && m.hudCPUOK {
 		badges = append(badges, badge{theme.Help.Render("cpu ") + theme.Meta.Render(strconv.Itoa(m.hudCPU)+"%"), 40})
 	}
-	if m.hudMemTotal > 0 {
+	if hud && m.hudMemTotal > 0 {
 		badges = append(badges, badge{theme.Help.Render("mem ") + theme.Meta.Render(humanGiB(m.hudMemUsed)+"/"+humanGiB(m.hudMemTotal)+"G"), 20})
 	}
 

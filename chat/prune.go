@@ -267,7 +267,7 @@ func (s *Session) pruneMessages(msgs []openai.ChatCompletionMessage) []openai.Ch
 	// under prunedMu.
 	promptTokens := estimateTokens(msgs)
 	window := s.contextWindow()
-	threshold := s.compaction.Threshold
+	threshold := s.compactionConfig().Threshold
 
 	s.prunedMu.Lock()
 	if s.prunedIDs == nil {

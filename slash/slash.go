@@ -21,18 +21,19 @@ type Kind int
 // Command verbs — typed constants to avoid string literals scattered
 // through the switch in Resolve and its helpers.
 const (
-	cmdSkill   = "skill"
-	cmdAgent   = "agent"
-	cmdCompact = "compact"
-	cmdModels  = "models"
-	cmdModel   = "model"
-	cmdLoop    = "loop"
-	cmdYolo    = "yolo"
-	cmdGoal    = "goal"
-	cmdResume  = "resume"
-	cmdLogin   = "login"
-	cmdLogout  = "logout"
-	cmdAttach  = "attach"
+	cmdSkill    = "skill"
+	cmdAgent    = "agent"
+	cmdCompact  = "compact"
+	cmdModels   = "models"
+	cmdModel    = "model"
+	cmdLoop     = "loop"
+	cmdYolo     = "yolo"
+	cmdGoal     = "goal"
+	cmdResume   = "resume"
+	cmdLogin    = "login"
+	cmdLogout   = "logout"
+	cmdAttach   = "attach"
+	cmdSettings = "settings"
 
 	// /attach sub-verbs
 	cmdAttachClear = "clear"
@@ -50,6 +51,11 @@ const (
 
 	// /resume flags
 	flagResumeAll = "--all"
+
+	// /settings value words that remove the key from the config file, so
+	// its default applies again.
+	settingDefault = "default"
+	settingUnset   = "unset"
 )
 
 const (
@@ -71,6 +77,7 @@ const (
 	KindResume                // resume a recorded session (ResumeID) or open the picker
 	KindLogin                 // log in to a provider (Provider empty = list)
 	KindLogout                // log out of a provider (Provider empty = list)
+	KindSettings              // list, show, set or unset a config key (SettingKey etc.)
 )
 
 // AttachOp enumerates the /attach sub-operations.
@@ -108,6 +115,15 @@ type Action struct {
 
 	// Login/logout actions:
 	Provider string // KindLogin/KindLogout: provider ID; empty = list
+
+	// Settings actions (KindSettings). An empty SettingKey lists every key; a
+	// key alone shows it; a key with a value sets it. The value stays raw text
+	// here: typing and validation need the key's type, which lives in config,
+	// and slash has no business knowing the config schema.
+	SettingKey      string
+	SettingValue    string // raw, possibly containing spaces
+	SettingHasValue bool   // a value was given (distinguishes an empty string)
+	SettingUnset    bool   // the value was "default" or "unset": remove the key
 }
 
 // Expand renders a command's prompt template with the given args.
@@ -189,6 +205,8 @@ func Resolve(input string, cmds []types.CommandConfig, skills []types.Skill, age
 		return Action{Kind: KindLogin, Provider: strings.TrimSpace(rest)}
 	case cmdLogout:
 		return Action{Kind: KindLogout, Provider: strings.TrimSpace(rest)}
+	case cmdSettings:
+		return resolveSettings(rest)
 	case cmdAttach:
 		rest = strings.TrimSpace(rest)
 		switch {
@@ -288,6 +306,28 @@ func resolveResume(rest string) Action {
 		}
 	}
 	return Action{Kind: KindResume, ResumeAll: all, ResumeID: id}
+}
+
+// resolveSettings maps the /settings forms: "/settings" lists, "/settings
+// <key>" shows one key, "/settings <key> <value>" sets it, and a value of
+// "default" or "unset" removes the key from the file. Everything after the key
+// is the value, inner spaces kept, so a string setting can hold a phrase.
+//
+// The key is not checked here. Whether it exists, and whether the value fits
+// its type, is config's knowledge; the TUI asks it and reports the answer.
+func resolveSettings(rest string) Action {
+	key, value := splitVerb(rest)
+	a := Action{Kind: KindSettings, SettingKey: key}
+	if value == "" {
+		return a
+	}
+	switch strings.ToLower(value) {
+	case settingDefault, settingUnset:
+		a.SettingUnset = true
+	default:
+		a.SettingValue, a.SettingHasValue = value, true
+	}
+	return a
 }
 
 // parseAtPaths splits a send line into literal text and @path attachments. A

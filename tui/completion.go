@@ -18,6 +18,10 @@ const (
 	compCmd     compCategory = "cmd"
 	compSkill   compCategory = "skill"
 	compAgent   compCategory = "agent"
+	// compSetting and compValue are argument completions for /settings: a
+	// config key, then one of that key's known values.
+	compSetting compCategory = "setting"
+	compValue   compCategory = "value"
 )
 
 // compItem is one entry in the unified `/` completion list.
@@ -46,6 +50,7 @@ func buildCompItems(cmds []types.CommandConfig, skills []types.Skill, agents []t
 		compItem{Cat: compBuiltin, Name: theme.CompResumeName, Desc: theme.CompResumeDesc, Insert: "/" + theme.CompResumeName + " "},
 		compItem{Cat: compBuiltin, Name: theme.CompLoginName, Desc: theme.CompLoginDesc, Insert: "/" + theme.CompLoginName + " "},
 		compItem{Cat: compBuiltin, Name: theme.CompLogoutName, Desc: theme.CompLogoutDesc, Insert: "/" + theme.CompLogoutName + " "},
+		compItem{Cat: compBuiltin, Name: theme.CompSettingsName, Desc: theme.CompSettingsDesc, Insert: "/" + theme.CompSettingsName + " "},
 	)
 	for _, c := range cmds {
 		items = append(items, compItem{Cat: compCmd, Name: c.Name, Desc: c.Description, Insert: "/" + c.Name + " "})
@@ -83,6 +88,14 @@ type compState struct {
 	active  bool
 	matches []compItem
 	sel     int
+	// scope names what the popup is completing ("" for the verb, or the
+	// argument context from settingArgItems). A change of scope resets the
+	// selection, so accepting a key does not land the highlight on whichever
+	// value happens to share the key's row index.
+	scope string
+	// settingsCfg is the running config the /settings argument completions
+	// describe; see setSettingsConfig.
+	settingsCfg types.Config
 }
 
 // setRegistries seeds the completion source from the three registries.
@@ -90,18 +103,41 @@ func (c *compState) setRegistries(cmds []types.CommandConfig, skills []types.Ski
 	c.all = buildCompItems(cmds, skills, agents)
 }
 
+// setSettingsConfig records the config whose values the /settings key
+// completions show beside each key. It is a snapshot, refreshed whenever
+// /settings changes something, because compState lives inside the value-typed
+// Model and cannot hold a pointer back to it.
+func (c *compState) setSettingsConfig(cfg types.Config) {
+	c.settingsCfg = cfg
+}
+
 // sync recomputes active/matches from the current input. The popup is active
 // while the user is still typing the verb: input starts with '/' and contains
-// no space yet. Once a space is typed (args begin) it deactivates.
+// no space yet. Once a space is typed (args begin) it deactivates, except for
+// the verbs that complete their arguments (only /settings, via
+// settingArgItems), where it switches to that argument's list instead.
 func (c *compState) sync(input string) {
+	if items, query, scope, ok := settingArgItems(input, c.settingsCfg); ok {
+		c.show(items, query, scope)
+		return
+	}
 	if !strings.HasPrefix(input, "/") || strings.ContainsAny(input, " \t") {
 		c.active = false
 		c.matches = nil
 		c.sel = 0
+		c.scope = ""
 		return
 	}
+	c.show(c.all, input[1:], "")
+}
+
+// show opens the popup on the items matching query within scope.
+func (c *compState) show(items []compItem, query, scope string) {
+	if scope != c.scope {
+		c.scope, c.sel = scope, 0
+	}
 	c.active = true
-	c.matches = filterComp(c.all, input[1:])
+	c.matches = filterComp(items, query)
 	if len(c.matches) == 0 {
 		c.active = false
 	}
@@ -158,7 +194,15 @@ func (c *compState) accept() (string, bool) {
 // skill/agent name too, wrongly reporting nothing left to complete and
 // causing KeyEnter to submit "/explore" as a verb instead of accepting the
 // "/agent explore " completion.
+//
+// An argument list with nothing typed for the argument yet ("/settings ",
+// "/settings ui.hide_hud ") also counts as exact: the line is already a
+// complete command (list the settings, show that key), and Enter there means
+// "run it", not "take the first row". Tab still picks the highlighted row.
 func (c *compState) exact(input string) bool {
+	if c.active && c.scope != "" && strings.HasSuffix(input, " ") {
+		return true
+	}
 	it, ok := c.current()
 	if !ok {
 		return false
@@ -179,26 +223,49 @@ func (c *compState) ghost(input string) string {
 	return ""
 }
 
+// compMaxRows caps how many completion rows the popup draws at once.
+const compMaxRows = 12
+
 // renderCompletion renders the popup: a tagged, selectable list plus a ghost hint.
 func renderCompletion(c compState, input string, width int) string {
 	if !c.active || len(c.matches) == 0 {
 		return ""
 	}
+	// The name column is 16 wide, as it always was for verbs, and grows to fit
+	// the longest match (capped) so dotted setting keys such as
+	// tool_output_pruning.high_water_tokens still line their values up.
+	nameW := 16
+	for _, it := range c.matches {
+		nameW = max(nameW, min(len(it.Name), 40))
+	}
+	// A window of compMaxRows around the selection. /settings alone matches
+	// every config key, several screens' worth, and an unbounded popup would
+	// push the transcript off the top.
+	lo, hi := 0, len(c.matches)
+	if hi > compMaxRows {
+		lo = min(max(c.sel-compMaxRows/2, 0), len(c.matches)-compMaxRows)
+		hi = lo + compMaxRows
+	}
 	var b strings.Builder
-	for i, it := range c.matches {
+	for i := lo; i < hi; i++ {
+		it := c.matches[i]
 		tag := theme.Meta.Render(fmt.Sprintf("[%s]", it.Cat))
 		selected := i == c.sel
 		nameStyle := theme.Help
 		if selected {
 			nameStyle = theme.Prompt
 		}
-		line := fmt.Sprintf("%s %s %s", tag, nameStyle.Render(fmt.Sprintf("%-16s", it.Name)), theme.Meta.Render(it.Desc))
+		line := fmt.Sprintf("%s %s %s", tag, nameStyle.Render(fmt.Sprintf("%-*s", nameW, it.Name)), theme.Meta.Render(it.Desc))
 		if selected {
 			line = theme.Prompt.Render(theme.PromptGlyph) + " " + line
 		} else {
 			line = "  " + line
 		}
 		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	if hi-lo < len(c.matches) {
+		b.WriteString(theme.Meta.Render(fmt.Sprintf("  %d/%d · type to narrow", c.sel+1, len(c.matches))))
 		b.WriteString("\n")
 	}
 	if g := c.ghost(input); g != "" {

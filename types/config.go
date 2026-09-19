@@ -268,6 +268,24 @@ type Config struct {
 	// (chat.SessionStore.prune's keepID). 0 (unset) means the store's own
 	// default, chat.DefaultMaxSessions (200).
 	SessionRetention int `yaml:"session_retention"`
+	// UI holds terminal-interface preferences. Nothing in it reaches the model;
+	// it only changes what the TUI draws. Settable from inside the TUI with
+	// /settings (see config.Settings), which writes it back to the config file.
+	UI UIConfig `yaml:"ui,omitempty"`
+}
+
+// UIConfig holds TUI display preferences.
+//
+// The booleans are negative-sense for the same reason ToolOutputPruningConfig's
+// are: an unset Go bool is false, so a config file that never mentions the key
+// must get the default, and the default is to show things. A positively-named
+// `show_hud: true` would hide the HUD from everyone whose file predates it.
+type UIConfig struct {
+	// HideHUD hides the footer's system badges: the clock, CPU and memory.
+	// The context and usage badges stay, since they describe this session and
+	// predict compaction rather than describing the machine. Zero value
+	// (false) = badges shown.
+	HideHUD bool `yaml:"hide_hud,omitempty"`
 }
 
 type PromptInjectionProtectionConfig struct {

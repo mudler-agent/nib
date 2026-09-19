@@ -708,6 +708,8 @@ func cliKindName(k slash.Kind) string {
 		return "/goal"
 	case slash.KindResume:
 		return "/resume"
+	case slash.KindSettings:
+		return "/settings"
 	default:
 		return "that command"
 	}

@@ -399,7 +399,7 @@ func (s *Session) compactHistory(ctx context.Context) (before, after int, err er
 
 	before = estimateTokens(msgs)
 
-	head, tail := splitForCompaction(msgs, s.compaction.KeepRecent)
+	head, tail := splitForCompaction(msgs, s.compactionConfig().KeepRecent)
 	headContent := renderMessages(head)
 	if strings.TrimSpace(headContent) == "" {
 		return before, before, nil // nothing to compact
