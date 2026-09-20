@@ -376,6 +376,22 @@ model: gpt-4o-mini
 api_key: your-api-key
 base_url: https://api.openai.com/v1
 
+# Optional: name more model endpoints besides the block above, which is the
+# default. An entry needs base_url or provider; model alone is rejected,
+# since addressing never inherits from the default block above. model
+# itself is optional: leave it out to pick one per session, as "scratch"
+# does below.
+endpoints:
+  home-localai:
+    base_url: http://nas:8080/v1
+    model: qwen3-coder-30b
+  work-vllm:
+    base_url: https://vllm.corp/v1
+    api_key_env: VLLM_KEY      # the key lives in the environment
+    model: llama-3.3-70b
+  scratch:
+    base_url: http://gpu-box:8080/v1   # no model: pick one per session
+
 # Optional and disabled by default: enable provenance tracking, LLM span
 # classification/redaction, and stricter approval checks for external data.
 prompt_injection_protection:
@@ -462,6 +478,59 @@ export MODEL=gpt-4o-mini
 export API_KEY=your-api-key
 export BASE_URL=https://api.openai.com/v1
 ```
+
+### Named endpoints
+
+The top-level `model`, `base_url` and `api_key` keys describe the default
+endpoint. `endpoints:` names more of them:
+
+```yaml
+model: qwen3-coder
+base_url: http://localhost:8080/v1   # the default
+
+endpoints:
+  home-localai:
+    base_url: http://nas:8080/v1
+    model: qwen3-coder-30b
+  work-vllm:
+    base_url: https://vllm.corp/v1
+    api_key_env: VLLM_KEY      # the key lives in the environment
+    model: llama-3.3-70b
+  scratch:
+    base_url: http://gpu-box:8080/v1   # no model: pick one per session
+```
+
+`model` is optional on a named endpoint: leave it out, as `scratch` does
+above, to pick one per session instead. `base_url` or `provider` is not
+optional: an entry that names only a `model` is rejected, since addressing
+never inherits and a bare model name is not an address. A rejected entry is
+dropped and named in the startup log; the rest of the file still loads.
+Endpoint names cannot contain whitespace or `@`, and must be unique.
+
+Switch with `/endpoint`, which opens a picker listing the default, every
+named endpoint, then the provider registry (the same list `/login`
+authenticates against). `/endpoint <name>` switches directly; a named
+endpoint's ID carries its `@`, so this is `/endpoint @work-vllm`.
+`/endpoint config` returns to the top-level default. `/models <name>` (for
+example `/models @work-vllm`) lists another endpoint's models without
+switching to it; bare `/models` still lists the current endpoint.
+
+Addressing never inherits from the default block: `provider`, `base_url`,
+`api_key`/`api_key_env` and `model` come from the entry alone, so a named
+endpoint can never point somewhere the default block did not say.
+`metadata` and `reasoning_effort` do inherit from the default block when an
+entry leaves them unset.
+
+Your last pick sticks. nib records the active endpoint and model in
+`provider.json`, next to `credentials.json`, and starts there next
+session. This applies even to a plain model change on the default
+endpoint, not only to switching endpoints. `/model reset` drops the saved
+model for the current endpoint, restoring its own `model:` (or the
+default's); on an endpoint with no `model:` of its own, `/model reset`
+refuses and tells you to pick one with `/model` instead. While a saved pick
+or a named endpoint is active, `/settings model` (and `provider`/`base_url`)
+reports the value it would write as not in use, and names the command that
+undoes it.
 
 To skip every approval prompt for a run ("yolo" mode), pass `--yolo` or set
 `NIB_YOLO=1` — both force `approval_mode: auto` regardless of what the config
