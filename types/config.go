@@ -145,7 +145,13 @@ type Config struct {
 	Provider string `yaml:"provider,omitempty"`
 	Model    string `yaml:"model"`
 	APIKey   string `yaml:"api_key"`
-	BaseURL  string `yaml:"base_url"`
+	// APIKeyEnv names an environment variable holding the top-level key, the
+	// same indirection ModelProviderConfig.APIKeyEnv offers named endpoints
+	// and the classifier — so a config file can describe the default
+	// endpoint without carrying its secret. APIKey wins when both are set;
+	// see ResolvedMainModel.
+	APIKeyEnv string `yaml:"api_key_env,omitempty"`
+	BaseURL   string `yaml:"base_url"`
 	// Endpoints are the named endpoints config.yaml offers besides the
 	// top-level default. See types/endpoint.go.
 	Endpoints Endpoints `yaml:"endpoints,omitempty"`
@@ -337,19 +343,27 @@ func (c ModelProviderConfig) ResolvedAPIKey() string {
 
 // ResolvedMainModel turns the top-level config into a provider config. An empty
 // provider preserves existing behavior by selecting OpenAI compatibility.
+//
+// The returned APIKey is already resolved (ResolvedAPIKey: the inline key,
+// else $APIKeyEnv) and APIKeyEnv is cleared, so every caller of this method —
+// not just endpoint/set.go's named-endpoint path — honors api_key_env
+// instead of silently ignoring it.
 func (c Config) ResolvedMainModel() ModelProviderConfig {
 	provider := c.Provider
 	if provider == "" {
 		provider = "openai"
 	}
-	return ModelProviderConfig{
+	m := ModelProviderConfig{
 		Provider:        provider,
 		Model:           c.Model,
 		APIKey:          c.APIKey,
+		APIKeyEnv:       c.APIKeyEnv,
 		BaseURL:         c.BaseURL,
 		Metadata:        c.Metadata,
 		ReasoningEffort: c.ReasoningEffort,
 	}
+	m.APIKey, m.APIKeyEnv = m.ResolvedAPIKey(), ""
+	return m
 }
 
 // ResolvedClassifierModel returns a separately configured classifier, or the
@@ -366,8 +380,16 @@ func (c Config) ResolvedClassifierModel() ModelProviderConfig {
 		if override.Model != "" {
 			base.Model = override.Model
 		}
-		if override.APIKey != "" {
-			base.APIKey = override.APIKey
+		switch {
+		case override.APIKey != "":
+			// Inline wins outright, over both the classifier's own env
+			// var and whatever the main block resolved to.
+			base.APIKey, base.APIKeyEnv = override.APIKey, ""
+		case override.APIKeyEnv != "":
+			// The classifier names its own env var: it must win over an
+			// already-resolved main key, not be shadowed by it, so clear
+			// APIKey here and let the resolve below fill it from the env.
+			base.APIKey, base.APIKeyEnv = "", override.APIKeyEnv
 		}
 		if override.BaseURL != "" {
 			base.BaseURL = override.BaseURL
@@ -384,6 +406,7 @@ func (c Config) ResolvedClassifierModel() ModelProviderConfig {
 		if len(override.Args) != 0 {
 			base.Args = override.Args
 		}
+		base.APIKey, base.APIKeyEnv = base.ResolvedAPIKey(), ""
 		return base
 	}
 	if c.CodexAppServer.Enabled {
