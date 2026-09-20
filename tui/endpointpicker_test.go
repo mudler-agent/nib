@@ -118,6 +118,46 @@ func TestLoginPickerExcludesDefaultAndNamedEndpoints(t *testing.T) {
 	}
 }
 
+// Finding 5: `/login @home` must not switch. e.LoginKind's zero value equals
+// provider.LoginNone for a config.yaml entry (whose Def is the zero
+// Definition), so without a Kind gate the typed `/login <id>` path would
+// bypass the very split TestLoginPickerExcludesDefaultAndNamedEndpoints
+// pins for the picker's list, and open a model picker for @home — switching
+// it right there on Enter.
+func TestLoginOnANamedEndpointRedirectsToEndpointCommand(t *testing.T) {
+	m := newEndpointTestModel(t)
+	before := m.session.EndpointID()
+	if cmd := m.dispatchResolved("/login @home"); cmd != nil {
+		t.Fatal("/login <id> must not start a turn")
+	}
+	if m.session.EndpointID() != before {
+		t.Fatalf("EndpointID = %q, want it left alone at %q", m.session.EndpointID(), before)
+	}
+	if m.modelPicker.active {
+		t.Fatal("/login @home must not open the model picker")
+	}
+	msg := lastMessage(t, m)
+	if msg.Role != "error" {
+		t.Fatalf("role = %q, want an error", msg.Role)
+	}
+	if !strings.Contains(msg.Content, "@home") || !strings.Contains(msg.Content, "/endpoint") {
+		t.Fatalf("message = %q, want it to name @home and redirect to /endpoint", msg.Content)
+	}
+}
+
+// The same redirect applies to /login config: config.yaml's own default
+// endpoint switches through /endpoint too, not /login.
+func TestLoginOnTheDefaultEndpointRedirectsToEndpointCommand(t *testing.T) {
+	m := newEndpointTestModel(t)
+	if cmd := m.dispatchResolved("/login config"); cmd != nil {
+		t.Fatal("/login <id> must not start a turn")
+	}
+	msg := lastMessage(t, m)
+	if msg.Role != "error" || !strings.Contains(msg.Content, "/endpoint") {
+		t.Fatalf("message = %+v, want an error redirecting to /endpoint", msg)
+	}
+}
+
 func TestEndpointUnknownIDReportsError(t *testing.T) {
 	m := newEndpointTestModel(t)
 	if cmd := m.dispatchResolved("/endpoint @nope"); cmd != nil {

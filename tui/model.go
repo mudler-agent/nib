@@ -27,6 +27,7 @@ import (
 	"github.com/mudler/nib/attachments"
 	"github.com/mudler/nib/attachstage"
 	"github.com/mudler/nib/chat"
+	"github.com/mudler/nib/endpoint"
 	"github.com/mudler/nib/llmprovider"
 	"github.com/mudler/nib/loop"
 	wizmcp "github.com/mudler/nib/mcp"
@@ -2050,6 +2051,17 @@ func (m *Model) dispatchResolved(input string) tea.Cmd {
 		e, ok := m.providerEntry(action.Provider)
 		if !ok {
 			m.appendMessage(ChatMessage{Role: "error", Content: fmt.Sprintf("unknown provider %q · /login lists them", action.Provider)})
+			return nil
+		}
+		if e.Kind != endpoint.KindProvider {
+			// A config.yaml default or named entry: /login authenticates
+			// registry providers only now that /endpoint lists (and
+			// switches to) everything, including these. Without this gate,
+			// e.LoginKind's zero value equals provider.LoginNone for a
+			// yaml entry (whose Def is the zero Definition), so useProvider
+			// would happily open a model picker for it and switch — the
+			// exact bypass /endpoint's split was meant to close.
+			m.appendMessage(ChatMessage{Role: "error", Content: fmt.Sprintf(theme.LoginNotAProvider, e.ID, e.ID)})
 			return nil
 		}
 		return m.useProvider(e, true)

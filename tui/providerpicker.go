@@ -242,15 +242,14 @@ func (m *Model) providerEntry(id string) (chat.ProviderEntry, bool) {
 // authenticate goes straight to model selection; anything else logs in first.
 // force (an explicit `/login <id>`) logs in again even when a key exists, which
 // is how a rotated key gets replaced.
+//
+// Every caller now hands it a registry entry only (KindProvider): the /login
+// picker's list is filtered to the registry, useEndpoint routes a
+// KindProvider row here and everything else itself, and the KindLogin
+// dispatch in tui/model.go rejects a non-KindProvider `/login <id>` before
+// reaching this function. config.yaml's own default and named entries switch
+// through /endpoint (useEndpoint) instead.
 func (m *Model) useProvider(e chat.ProviderEntry, force bool) tea.Cmd {
-	if e.ID == chat.ConfigProviderID {
-		if err := m.session.SwitchProvider(e.ID, ""); err != nil {
-			m.appendMessage(ChatMessage{Role: "error", Content: err.Error()})
-			return nil
-		}
-		m.appendMessage(ChatMessage{Role: "agent", Content: "provider: config.yaml · model: " + m.session.Model() + " · " + theme.ProviderSavedDefault})
-		return nil
-	}
 	if e.LoginKind == provider.LoginNone || (e.Ready && !force) {
 		return m.openProviderModelPicker(e)
 	}
