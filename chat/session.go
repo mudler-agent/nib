@@ -196,6 +196,12 @@ type Session struct {
 	// false, the user's explicit value is preserved across model switches.
 	compactionAutoDetected bool
 
+	// limitsFor is the model whose context window and output cap have already
+	// been asked of the endpoint; guarded by modelMu. Empty means the probes
+	// are still owed, which is the state a model switch returns it to. See
+	// modellimits.go.
+	limitsFor string
+
 	// prunedMu guards the tool-output pruning state below. The manipulator reads
 	// it from inside cogito's loop, and nothing here should assume which
 	// goroutine that is; Reload writes the policy from the turn goroutine.
@@ -538,22 +544,14 @@ func NewSession(ctx context.Context, cfg types.Config, callbacks Callbacks, tran
 	// An endpoint picked in an earlier session is the default.
 	s.restoreStartupEndpoint()
 
-	// Auto-detect the context window when the user did not set one explicitly.
-	// A zero MaxContextTokens means "unset" (config.go no longer defaults it);
-	// the probe and static table fill it in, with the 128k constant as the
-	// final fallback. Best-effort: on failure the 128k default is applied.
+	// A zero MaxContextTokens means "unset" (config.go no longer defaults it).
+	// The default applies immediately so compaction and the gauge always have
+	// a figure; the endpoint is asked for the model's real window at the start
+	// of the first turn, in ensureModelLimits, rather than here. Building a
+	// session makes no request, so nib starts on a machine with no network.
 	if s.compaction.MaxContextTokens == 0 {
 		s.compactionAutoDetected = true
-		// Probe the endpoint the client really talks to: a /login provider's
-		// own URL and stored key, not config.yaml's.
-		baseURL, apiKey, _ := llmprovider.ModelsEndpoint(s.resolvedSessionProvider(), s.credStore)
-		probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
-		if v := detectContextSize(probeCtx, baseURL, apiKey, s.Model()); v > 0 {
-			s.compaction.MaxContextTokens = v
-		} else {
-			s.compaction.MaxContextTokens = defaultContextTokens
-		}
-		cancel()
+		s.compaction.MaxContextTokens = defaultContextTokens
 	}
 
 	return s, nil
@@ -1237,6 +1235,10 @@ func (s *Session) SendMessage(text string, parts ...ContentPart) (string, error)
 	}
 	turnCtx := s.beginTurn()
 	s.applyPendingReload()
+	// The endpoint is asked for this model's context window and output cap
+	// here, on the first turn that uses it, rather than while the session or
+	// the client was being built.
+	s.ensureModelLimits(turnCtx)
 	s.allowAllTurn = false
 	// The overflow retry is capped per TURN, not per session: a later turn that
 	// overflows deserves its own recovery attempt.
@@ -2142,20 +2144,12 @@ func (s *Session) applyProvider(provider types.ModelProviderConfig, id string) e
 	// prefers a redundant "preparing" label over a silent minute.
 	s.prefixWarm.Store(false)
 
-	// Re-detect the context window for the new model, but only when the
-	// current value was auto-detected. An explicit user override is preserved.
-	if s.compactionAutoDetected {
-		// The probe needs the endpoint the client really talks to, which for a
-		// /login provider is its default URL and stored key, not the config's.
-		baseURL, apiKey, _ := llmprovider.ModelsEndpoint(provider, s.credStore)
-		probeCtx, cancel := context.WithTimeout(s.ctx, probeTimeout)
-		if v := detectContextSize(probeCtx, baseURL, apiKey, name); v > 0 {
-			s.modelMu.Lock()
-			s.compaction.MaxContextTokens = v
-			s.modelMu.Unlock()
-		}
-		cancel()
-	}
+	// The new model's context window and output cap are asked for at the start
+	// of the next turn (ensureModelLimits), not here: switching model must not
+	// block on the network, and a switch made offline still has to work.
+	s.modelMu.Lock()
+	s.limitsFor = ""
+	s.modelMu.Unlock()
 	return nil
 }
 
