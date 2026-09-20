@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -251,8 +252,11 @@ func TestModelPickerNavigationAndEnterSwitch(t *testing.T) {
 	if m.modelPicker.active || m.session.Model() != "model-b" {
 		t.Fatalf("Enter picker=%+v model=%q, want closed on model-b", m.modelPicker, m.session.Model())
 	}
-	if msg := lastMessage(t, m); msg.Role != "agent" || msg.Content != "model: model-b" {
-		t.Fatalf("switch confirmation = %+v", msg)
+	// The pick is on the config.yaml default endpoint and model-a is what the
+	// file names, so the confirmation also says the pick outlives the session.
+	wantSwitch := "model: model-b · " + fmt.Sprintf(theme.ModelOverridesConfigNotice, "model-a")
+	if msg := lastMessage(t, m); msg.Role != "agent" || msg.Content != wantSwitch {
+		t.Fatalf("switch confirmation = %+v, want %q", msg, wantSwitch)
 	}
 	if requests != 1 {
 		t.Fatalf("model endpoint requests = %d, want one load and no switch validation", requests)
