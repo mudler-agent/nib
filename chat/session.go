@@ -2412,7 +2412,13 @@ func (s *Session) Logout(providerID string) (string, error) {
 	// keep a credential-less endpoint as the startup default, and the next
 	// session would silently change model instead.
 	if err := s.SwitchProvider(endpoint.DefaultID, ""); err != nil {
-		return notice, nil
+		// The return switch itself failed (e.g. config.yaml names no model),
+		// so the session is stranded ON def with its credential just deleted.
+		// Say so rather than the plain success notice: swallowing this left
+		// the user believing they were safely back on config.yaml while
+		// /login pointed at a command (/login) that no longer switches
+		// endpoints at all.
+		return notice + fmt.Sprintf(" · still on %s with no login now (%v) · pick another with /endpoint", def.Name, err), nil
 	}
 	return notice + " · back on " + endpoint.DefaultName + " · model: " + s.Model(), nil
 }

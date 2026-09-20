@@ -93,6 +93,26 @@ func (s *Session) ConfigModel() string {
 	return s.configProvider.Model
 }
 
+// ActiveEndpointConfigModel is the model the ACTIVE endpoint names for
+// itself in config.yaml: ConfigModel's top-level model while the default
+// endpoint (or a /login provider, which has no yaml model of its own) is
+// active, or a named endpoint's own `model:` key while one of those is
+// active. Unlike ConfigModel, which is hard-wired to the top-level block no
+// matter which endpoint is running, this follows EndpointID — so a UI
+// comparing the running model against "what config.yaml says" cites the
+// right yaml value on a named endpoint instead of an unrelated top-level
+// one. See tui/boot.go's bootModel and tui/settings.go's
+// endpointOverrideNotice.
+func (s *Session) ActiveEndpointConfigModel() string {
+	id := s.EndpointID()
+	if e, ok := s.endpoints.Lookup(id); ok && e.Kind == endpoint.KindNamed {
+		if p, err := s.endpoints.Config(id); err == nil {
+			return p.Model
+		}
+	}
+	return s.ConfigModel()
+}
+
 // Provider returns the LLM transport the session is currently talking
 // through ("openai", "codex", ...). Safe to call from another goroutine
 // while a turn is running.
@@ -202,7 +222,16 @@ func (s *Session) SwitchProvider(id, model string) error {
 	if err := s.applyProvider(p, id); err != nil {
 		return err
 	}
-	return endpoint.WriteSaved(s.savedPath, endpoint.Saved{ID: id, Model: p.Model})
+	// Persist the model the CALLER asked for, not p.Model (which SwitchProvider
+	// has already resolved from the endpoint above). Every switch via
+	// /endpoint, the picker, or /logout's return path passes model == "": a
+	// bare switch must record NO model, so a later edit to config.yaml (or to
+	// a named endpoint's own model:) stays authoritative on the next start
+	// instead of being frozen out by what happened to be running right now.
+	// Startup already falls back to the entry's own model when Saved.Model is
+	// empty (endpoint.TestStartupSavedWithoutModelUsesTheEntryModel), so a
+	// bare switch stays correct.
+	return endpoint.WriteSaved(s.savedPath, endpoint.Saved{ID: id, Model: model})
 }
 
 // ProviderStateFile holds the endpoint picked via the picker or /login, next

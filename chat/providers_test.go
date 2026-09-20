@@ -11,6 +11,7 @@ import (
 	"github.com/mudler/nib/auth"
 	"github.com/mudler/nib/endpoint"
 	"github.com/mudler/nib/llmprovider"
+	"github.com/mudler/nib/provider"
 	"github.com/mudler/nib/types"
 )
 
@@ -151,6 +152,60 @@ func TestSwitchToANamedEndpoint(t *testing.T) {
 	}
 	if got := s.Model(); got != "llama" {
 		t.Fatalf("Model = %q, want the endpoint's model", got)
+	}
+}
+
+// A bare switch (empty model — what /endpoint, the picker, and /logout's
+// return path always pass) must record NO model in provider.json, so an edit
+// to config.yaml's model between sessions wins on the next start. Before this
+// fix, SwitchProvider persisted the model it had just resolved FROM the
+// endpoint, which froze that model into provider.json and made a later
+// config.yaml edit inert — exactly the "write the file, nothing happens" bug
+// named endpoints exist to eliminate.
+func TestBareSwitchToTheDefaultEndpointLeavesConfigYAMLAuthoritative(t *testing.T) {
+	cfg := types.Config{BaseDir: t.TempDir(), Model: "old-model", BaseURL: "http://localhost:8080/v1"}
+	first := newTestSessionWithConfig(t, cfg)
+	if err := first.SwitchProvider(ConfigProviderID, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	edited := cfg
+	edited.Model = "new-model"
+	second := newTestSessionWithConfig(t, edited)
+	second.restoreStartupEndpoint()
+	if got := second.Model(); got != "new-model" {
+		t.Fatalf("Model = %q, want the edited config.yaml model (new-model) to win, not the model frozen at switch time", got)
+	}
+}
+
+// The named-endpoint sibling of the test above: a bare `/endpoint @work`
+// must not freeze @work's model either.
+func TestBareSwitchToANamedEndpointLeavesConfigYAMLAuthoritative(t *testing.T) {
+	cfg := types.Config{
+		BaseDir: t.TempDir(),
+		Model:   "default-model", BaseURL: "http://localhost:8080/v1",
+		Endpoints: types.Endpoints{{
+			Name:                "work",
+			ModelProviderConfig: types.ModelProviderConfig{BaseURL: "https://vllm.corp/v1", Model: "old-work-model"},
+		}},
+	}
+	first := newTestSessionWithConfig(t, cfg)
+	if err := first.SwitchProvider("@work", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	edited := cfg
+	edited.Endpoints = types.Endpoints{{
+		Name:                "work",
+		ModelProviderConfig: types.ModelProviderConfig{BaseURL: "https://vllm.corp/v1", Model: "new-work-model"},
+	}}
+	second := newTestSessionWithConfig(t, edited)
+	second.restoreStartupEndpoint()
+	if got := second.EndpointID(); got != "@work" {
+		t.Fatalf("EndpointID = %q, want @work restored", got)
+	}
+	if got := second.Model(); got != "new-work-model" {
+		t.Fatalf("Model = %q, want the edited endpoint model (new-work-model) to win, not the model frozen at switch time", got)
 	}
 }
 
@@ -297,12 +352,15 @@ func TestSwitchProviderPersistsTheDefault(t *testing.T) {
 	t.Run("recordsTheDefaultInstead", func(t *testing.T) {
 		// Every endpoint's pick is saved uniformly now, including the
 		// config.yaml default: switching back to it no longer removes
-		// provider.json, it records {"id":"config"}. SwitchProvider resolves
-		// the default's own model before writing (model is not left blank
-		// here), but restoreStartupEndpoint honors it identically to a
-		// blank model, since the default entry names the same model either
-		// way — that equivalence, not the exact bytes, is what the escape
-		// hatch relies on.
+		// provider.json, it records {"id":"config"}. The call above passes
+		// model == "" (a bare switch, the shape /endpoint, the picker and
+		// /logout's return path all use), and SwitchProvider records NO
+		// model for a bare switch — never the model it happened to resolve
+		// from the endpoint — precisely so config.yaml stays authoritative:
+		// an edit to config.yaml's model between sessions must win on the
+		// next start rather than being frozen out by whatever was running
+		// when the switch happened (see TestBareSwitchToTheDefaultEndpoint
+		// LeavesConfigYAMLAuthoritative and its named-endpoint sibling).
 		if _, err := os.Stat(next.savedPath); err != nil {
 			t.Fatalf("provider.json should still exist after switching back, stat err=%v", err)
 		}
@@ -475,6 +533,49 @@ func TestLogoutOfTheActiveProviderReturnsToTheDefault(t *testing.T) {
 	}
 	if !strings.Contains(notice, "config.yaml") {
 		t.Fatalf("notice = %q, want it to name the endpoint it fell back to", notice)
+	}
+}
+
+// Finding 4: when the credential-deleting logout's return switch to
+// config.yaml itself fails (here: config.yaml names no model), the session
+// is left stranded ON the just-logged-out-of provider with no login. The
+// notice must say so — not the plain "Logged out of X" that leaves the user
+// believing they are safely back on config.yaml.
+func TestLogoutStrandedWhenTheReturnSwitchFails(t *testing.T) {
+	s := newTestSessionWithConfig(t, types.Config{BaseURL: "http://localhost:8080/v1"}) // no model: the return switch will fail
+	if err := s.credStore.Save(auth.Credential{
+		ProviderID: "anthropic", Kind: auth.CredentialAPIKey, APIKey: "k",
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := s.SwitchProvider("anthropic", "claude-opus-5"); err != nil {
+		t.Fatalf("SwitchProvider: %v", err)
+	}
+	def, ok := provider.Get("anthropic")
+	if !ok {
+		t.Fatal("anthropic is not registered")
+	}
+
+	notice, err := s.Logout("anthropic")
+	if err != nil {
+		t.Fatalf("Logout: %v", err)
+	}
+	// The logout itself succeeded: the credential is gone.
+	if _, exists, _ := s.credStore.Get("anthropic"); exists {
+		t.Fatal("credential was not deleted")
+	}
+	// The return switch failed, so the session is still on anthropic.
+	if s.EndpointID() != "anthropic" {
+		t.Fatalf("EndpointID = %q, want the session left stranded on anthropic", s.EndpointID())
+	}
+	if !strings.Contains(notice, "Logged out of "+def.Name) {
+		t.Fatalf("notice = %q, want the logout itself still reported as successful", notice)
+	}
+	if !strings.Contains(notice, "still on "+def.Name) {
+		t.Fatalf("notice = %q, want it to name the stranded state", notice)
+	}
+	if !strings.Contains(notice, "/endpoint") {
+		t.Fatalf("notice = %q, want it to point at /endpoint to pick another", notice)
 	}
 }
 
