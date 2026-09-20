@@ -99,6 +99,13 @@ func (m Model) endpointOverrides(key string) bool {
 // escape hatch.
 func (m Model) endpointOverrideNotice(key string) string {
 	if key == "model" && m.session.EndpointID() == chat.ConfigProviderID {
+		if m.session.ConfigModel() == "" {
+			// The default endpoint names no model of its own: ResetModel
+			// would refuse ("names no model of its own: pick one with
+			// /model"), so advising /model reset here would point at a dead
+			// end.
+			return fmt.Sprintf(theme.SettingsModelOverrideNoReset, m.session.Model())
+		}
 		return fmt.Sprintf(theme.SettingsModelOverride, m.session.Model())
 	}
 	return fmt.Sprintf(theme.SettingsEndpointOverride, m.session.ActiveProviderName())

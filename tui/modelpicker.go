@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -217,13 +218,29 @@ func (m Model) buildModelPickerDialog() render.Dialog {
 	return d
 }
 
-// modelSwitchNotice confirms a /model pick. On a /login provider SetModel also
-// saved the model to provider.json, so the notice names the provider and says
-// it is the new default: the pick outlives the session, and the user should
-// not have to discover that from the next start's header.
+// modelSwitchNotice confirms a /model pick. On a /login provider or a named
+// endpoint, SetModel also saved the model to provider.json, so the notice
+// names the endpoint and says it is the new default: the pick outlives the
+// session, and the user should not have to discover that from the next
+// start's header.
+//
+// On config.yaml's own DEFAULT endpoint, SavesModelAsDefault is false (see
+// its doc), but SetModel still persists the pick there too, uniformly across
+// every endpoint. When that pick differs from what config.yaml declares, it
+// silently outranks config.yaml on the next start exactly like a /login
+// pick would — so this appends the same kind of note the boot log already
+// gives that case (tui/boot.go's bootModel), instead of leaving the user to
+// find out only then.
 func (m Model) modelSwitchNotice(model string) string {
-	if m.session == nil || !m.session.SavesModelAsDefault() {
+	if m.session == nil {
 		return "model: " + model
+	}
+	if !m.session.SavesModelAsDefault() {
+		notice := "model: " + model
+		if cfgModel := m.session.ConfigModel(); cfgModel != "" && cfgModel != model {
+			notice += " · " + fmt.Sprintf(theme.ModelOverridesConfigNotice, cfgModel)
+		}
+		return notice
 	}
 	return "provider: " + m.session.ActiveProviderName() + " · model: " + model + " · " + theme.ProviderSavedDefault
 }

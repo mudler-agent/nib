@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -358,6 +359,53 @@ func TestSettingModelOverriddenOnTheDefaultEndpointSaysNotInUse(t *testing.T) {
 	m.dispatchResolved("/settings")
 	if list := lastMessage(t, m).Content; !strings.Contains(list, "overridden") {
 		t.Fatalf("listing does not mark the key overridden:\n%s", list)
+	}
+}
+
+// TestSettingModelOverrideOnAModelLessDefaultEndpointDoesNotAdviseReset is
+// Finding 3: config.yaml's default endpoint here names no model of its own,
+// so /model reset (Session.ResetModel) would refuse with "names no model of
+// its own: pick one with /model" — the override notice must not point the
+// user at that dead end.
+func TestSettingModelOverrideOnAModelLessDefaultEndpointDoesNotAdviseReset(t *testing.T) {
+	cfg := types.Config{
+		BaseURL:    "http://127.0.0.1:1/v1",
+		BaseDir:    t.TempDir(),
+		Compaction: types.CompactionConfig{MaxContextTokens: 128000},
+	}
+	s, err := chat.NewSession(context.Background(), cfg, chat.Callbacks{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+	if err := s.SetModel("saved-pick"); err != nil {
+		t.Fatalf("SetModel: %v", err)
+	}
+	if got := s.EndpointID(); got != chat.ConfigProviderID {
+		t.Fatalf("EndpointID = %q, want the default endpoint", got)
+	}
+	if got := s.ConfigModel(); got != "" {
+		t.Fatalf("test setup: ConfigModel() = %q, want empty (a model-less default endpoint)", got)
+	}
+
+	m := newQueueTestModel()
+	m.ctx = context.Background()
+	m.cfg = cfg
+	m.session = s
+
+	m.dispatchResolved("/settings model yet-another")
+	msg := lastMessage(t, m)
+	if msg.Role == "error" {
+		t.Fatalf("set failed: %s", msg.Content)
+	}
+	if !strings.Contains(msg.Content, "not in use") {
+		t.Fatalf("no override notice:\n%s", msg.Content)
+	}
+	if strings.Contains(msg.Content, "/model reset") {
+		t.Fatalf("notice advises /model reset, which would fail on a model-less default endpoint:\n%s", msg.Content)
+	}
+	if !strings.Contains(msg.Content, "/model") {
+		t.Fatalf("notice does not point at any escape hatch:\n%s", msg.Content)
 	}
 }
 

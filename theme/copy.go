@@ -62,6 +62,16 @@ const (
 	// model applies again.
 	ModelResetNotice = "reset to the endpoint's own model"
 
+	// ModelOverridesConfigNotice follows "model: <name>" in /model's success
+	// notice on config.yaml's DEFAULT endpoint, when the pick differs from
+	// what config.yaml itself declares (%s). SetModel persists a pick
+	// uniformly on every endpoint, including the default one, so the pick
+	// does outlive the session and shadow config.yaml on the next start —
+	// this says so now, instead of leaving the user to discover it only at
+	// the next boot's note. Only shown when /model reset would actually
+	// undo it (see SettingsModelOverrideNoReset for the case it would not).
+	ModelOverridesConfigNotice = "overrides config.yaml's %s until /model reset"
+
 	// BootModelOverride is the dim note on the boot log's model line when the
 	// running model diverges from config.yaml's own (a %s for config.yaml's
 	// model): both are configured, and only one is used, so the log says
@@ -104,6 +114,13 @@ const (
 	// EndpointUnknown is `/endpoint <id>`'s refusal for an ID that matches no
 	// entry (a %s for the typed ID).
 	EndpointUnknown = "unknown endpoint %q · /endpoint lists them"
+	// LoginNotAProvider is `/login <id>`'s refusal when id names config.yaml's
+	// default endpoint or one of its named endpoints rather than a registry
+	// provider: /login only authenticates and switches registry providers now
+	// that /endpoint lists (and switches to) everything, so a config.yaml
+	// entry is pointed at /endpoint instead of being silently accepted (both
+	// %s are the typed ID).
+	LoginNotAProvider = "%s is a config.yaml endpoint, not a login provider · use /endpoint %s instead"
 
 	CLIWelcome = "a calm assistant for your terminal."
 	CLIExit    = "ctrl+c or 'exit' to leave · 'help' for commands"

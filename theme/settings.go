@@ -43,6 +43,12 @@ const (
 	// default) still shadows the model the file names. %s is the model
 	// actually running. /model reset drops that saved pick.
 	SettingsModelOverride = " · not in use: this session is running the saved model %s · /model reset to use config.yaml's"
+	// SettingsModelOverrideNoReset is SettingsModelOverride's counterpart for
+	// a model-less default endpoint: config.yaml's own endpoint names no
+	// model of its own, so /model reset would only fail (ResetModel refuses
+	// when there is nothing to fall back to). %s is the model actually
+	// running; the escape hatch is picking a different one, not resetting.
+	SettingsModelOverrideNoReset = " · not in use: this session is running the saved model %s · config.yaml's default endpoint names no model of its own; pick one with /model"
 
 	// SettingsSourceOverridden marks a provider-owned key in the listing and
 	// detail view whose file value the running session is not using.

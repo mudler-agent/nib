@@ -177,6 +177,32 @@ func TestModelPickerConfirmsTheSavedDefault(t *testing.T) {
 	}
 }
 
+// Finding 7: picking a model on config.yaml's own default endpoint DOES
+// persist and DOES override config.yaml on the next start (SetModel saves
+// uniformly across every endpoint), but SavesModelAsDefault is false there
+// (config.yaml already documents its own model), so the notice used to say
+// only "model: X" with no hint that the pick just shadowed config.yaml. The
+// user should not have to find that out from the next boot's note.
+func TestModelPickerNotesTheOverrideOnTheDefaultEndpoint(t *testing.T) {
+	m := newModelSwitchTestModel(t, "model-a", "model-b")
+	m.modelPicker.open(1)
+	m.modelPicker.setModels([]string{"model-a", "model-b"}, "model-a")
+	m.modelPicker.move(1) // select model-b, away from config.yaml's model-a
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+	msg := lastMessage(t, m)
+	if !strings.HasPrefix(msg.Content, "model: model-b") {
+		t.Fatalf("confirmation = %q, want it to lead with model: model-b", msg.Content)
+	}
+	if !strings.Contains(msg.Content, "config.yaml") || !strings.Contains(msg.Content, "model-a") {
+		t.Fatalf("confirmation = %q, want it to name config.yaml's overridden model-a", msg.Content)
+	}
+	if !strings.Contains(msg.Content, "/model reset") {
+		t.Fatalf("confirmation = %q, want it to point at /model reset", msg.Content)
+	}
+}
+
 // writeSavedPick seeds provider.json under base's plugin state directory, the
 // same file endpoint.WriteSaved/LoadSaved read, so a session built with
 // BaseDir: base starts on sv as if a previous run had picked it.
@@ -320,6 +346,61 @@ func TestBootLogNotesADefaultEndpointModelOverride(t *testing.T) {
 	}
 	if !strings.HasPrefix(got, "saved-model") {
 		t.Fatalf("bootModel() = %q, want it to lead with the running model saved-model", got)
+	}
+}
+
+// A named endpoint's own model: key, not the unrelated top-level one, is
+// what the boot note must cite. ConfigModel() is hard-wired to the top-level
+// block (default-model here); @work's own declared model is work-model, and
+// that is the value a saved pick on @work overrides.
+func TestBootLogNotesANamedEndpointModelOverride(t *testing.T) {
+	base := t.TempDir()
+	cfg := types.Config{
+		Model:      "default-model",
+		BaseURL:    "http://127.0.0.1:1/v1",
+		BaseDir:    base,
+		Compaction: types.CompactionConfig{MaxContextTokens: 128000},
+		Endpoints: types.Endpoints{{
+			Name:                "work",
+			ModelProviderConfig: types.ModelProviderConfig{BaseURL: "https://vllm.corp/v1", Model: "work-model"},
+		}},
+	}
+	first, err := chat.NewSession(context.Background(), cfg, chat.Callbacks{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	if err := first.SwitchProvider("@work", "work-model-pinned"); err != nil {
+		t.Fatalf("SwitchProvider: %v", err)
+	}
+	first.Close()
+
+	s, err := chat.NewSession(context.Background(), cfg, chat.Callbacks{})
+	if err != nil {
+		t.Fatalf("NewSession (restart): %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+
+	if got := s.EndpointID(); got != "@work" {
+		t.Fatalf("EndpointID = %q, want the restarted session on @work", got)
+	}
+	if s.ConfigModel() != "default-model" {
+		t.Fatalf("test setup: ConfigModel() = %q, want the unrelated top-level model default-model", s.ConfigModel())
+	}
+
+	m := newQueueTestModel()
+	m.ctx = context.Background()
+	m.cfg = cfg
+	m.session = s
+
+	got := m.bootModel()
+	if !strings.Contains(got, "config.yaml: work-model") || !strings.Contains(got, "overridden by a saved pick") {
+		t.Fatalf("bootModel() = %q, want a note naming @work's own model (work-model), not the top-level one", got)
+	}
+	if strings.Contains(got, "default-model") {
+		t.Fatalf("bootModel() = %q, must not cite the unrelated top-level model", got)
+	}
+	if !strings.HasPrefix(got, "work-model-pinned") {
+		t.Fatalf("bootModel() = %q, want it to lead with the running model work-model-pinned", got)
 	}
 }
 

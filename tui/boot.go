@@ -146,14 +146,18 @@ func (m *Model) bootProvider() string {
 // instead of leaving the user to guess why the header disagrees with
 // config.yaml.
 //
-// The note is gated on actual divergence — Model() != ConfigModel() — not on
-// which endpoint is active. A /login pick or a named endpoint is the usual
-// way the two diverge, but SetModel now persists a pick uniformly on every
-// endpoint, including config.yaml's own default: a saved pick can shadow
-// config.yaml's model while the session never left the default endpoint at
-// all, and gating on endpoint identity would hide exactly that case. See
-// endpointOverrides in tui/settings.go for the same correction applied to
-// /settings.
+// The note is gated on actual divergence — Model() != ActiveEndpointConfigModel()
+// — not on which endpoint is active. A /login pick or a named endpoint is the
+// usual way the two diverge, but SetModel now persists a pick uniformly on
+// every endpoint, including config.yaml's own default: a saved pick can
+// shadow config.yaml's model while the session never left the default
+// endpoint at all, and gating on endpoint identity would hide exactly that
+// case. See endpointOverrides in tui/settings.go for the same correction
+// applied to /settings.
+//
+// ActiveEndpointConfigModel (rather than ConfigModel) is what makes this
+// correct on a named endpoint too: ConfigModel is hard-wired to config.yaml's
+// TOP-LEVEL model, which a named endpoint's own model: key never touches.
 func (m *Model) bootModel() string {
 	if m.session == nil {
 		if m.cfg.Model != "" {
@@ -162,7 +166,7 @@ func (m *Model) bootModel() string {
 		return "default"
 	}
 	model := m.session.Model()
-	cfgModel := m.session.ConfigModel()
+	cfgModel := m.session.ActiveEndpointConfigModel()
 	overridden := model != "" && cfgModel != "" && model != cfgModel
 	if model == "" {
 		model = "default"
