@@ -29,6 +29,7 @@ import (
 	"github.com/mudler/nib/attachstage"
 	"github.com/mudler/nib/chat"
 	"github.com/mudler/nib/endpoint"
+	"github.com/mudler/nib/internal/textdiff"
 	"github.com/mudler/nib/llmprovider"
 	"github.com/mudler/nib/loop"
 	wizmcp "github.com/mudler/nib/mcp"
@@ -49,6 +50,11 @@ type ChatMessage struct {
 	// successful turn, or a parked reply) so a recovered run doesn't carry
 	// the old error for the rest of the session.
 	Transient bool
+	// Meta, Status and Diff decorate a tool entry's header and body; see
+	// render.Message. Set by toolMessage.
+	Meta   string
+	Status render.ToolStatus
+	Diff   *textdiff.Diff
 }
 
 type sessionStore interface {
@@ -56,6 +62,11 @@ type sessionStore interface {
 	Load(string) (chat.SessionRecord, error)
 	List(string) ([]chat.SessionRecord, error)
 	Delete(string) error
+}
+
+// bodyless reports whether a tool entry renders as its header line alone.
+func (c ChatMessage) bodyless() bool {
+	return c.Diff == nil && strings.TrimSpace(c.Content) == ""
 }
 
 // appendMessage appends one or more entries to the transcript. Beyond that it
@@ -1956,10 +1967,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		res := chat.ToolResult(msg)
 		if res.AgentID == "" {
 			// Root agent: stream the result inline with its (previewed) body.
-			if preview := chat.PreviewResult(res.Name, res.Result, toolResultPreviewLines); preview != "" {
-				m.appendMessage(ChatMessage{Role: "tool", Name: res.Name, Arguments: res.Arguments, Content: preview})
-				m.updateViewport()
-			}
+			m.appendMessage(toolMessage(res))
+			m.updateViewport()
 		} else {
 			// Sub-agent: append a compact, body-less line to its inline thread.
 			// The output body lives in the Ctrl+O log viewer.
@@ -3044,7 +3053,7 @@ func toolLabel(name, arguments string) string {
 func (m Model) currentDialogs() []render.Dialog {
 	var dialogs []render.Dialog
 	if m.awaitingApproval && m.pendingTool != nil {
-		rows, unstructured := approvalRows(*m.pendingTool)
+		content := buildApprovalContent(*m.pendingTool)
 		var options []render.DialogOption
 		if m.approvalEditing {
 			options = []render.DialogOption{{Text: theme.ApproveEditHint, Emphasis: true}}
@@ -3060,9 +3069,11 @@ func (m Model) currentDialogs() []render.Dialog {
 		}
 		dialogs = append(dialogs, render.Dialog{
 			Kind:             render.DialogApproval,
-			Title:            toolApprovalLabel(*m.pendingTool),
-			Rows:             rows,
-			RowsUnstructured: unstructured,
+			Title:            content.title,
+			Meta:             content.meta,
+			Rows:             content.rows,
+			RowsUnstructured: content.unstructured,
+			Diff:             content.diff,
 			Hint:             m.pendingTool.Reasoning,
 			Options:          options,
 		})
@@ -3333,6 +3344,13 @@ func (m *Model) updateViewport() {
 				Content: msg.Content,
 				Label:   toolLabel(msg.Name, msg.Arguments),
 				AgentID: msg.AgentID,
+				Meta:    msg.Meta,
+				Status:  msg.Status,
+				Diff:    msg.Diff,
+				// A one-line tool block (a collapsed read, a bare write) hugs
+				// the tool block after it, so a run of them reads as a list
+				// rather than a column of blank-separated lines.
+				HugNext: msg.bodyless() && i+1 < len(m.messages) && m.messages[i+1].Role == "tool",
 			}, prevRole, contentWidth))
 			prevRole = render.RoleTool
 		case "error":

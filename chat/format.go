@@ -12,7 +12,9 @@ import (
 // maxLines lines, appending a "… N more lines" note when it had to cut.
 // Returns "" for empty/whitespace input. maxLines <= 0 means no line limit.
 func PreviewResult(name, s string, maxLines int) string {
-	s = strings.TrimRight(strings.TrimSpace(FormatToolResult(name, strings.TrimSpace(s))), "\n")
+	// Trim surrounding blank lines but not the first line's own indentation:
+	// a read's "   1| package main" must stay aligned with the lines below it.
+	s = strings.TrimRight(strings.TrimLeft(FormatToolResult(name, strings.TrimSpace(s)), "\n"), " \t\n")
 	if s == "" {
 		return ""
 	}

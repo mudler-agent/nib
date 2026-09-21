@@ -207,6 +207,9 @@ func (Base) Dialog(d Dialog, w int) string {
 		gutter := theme.Gutter.Render(theme.ApprovalGutter) + " "
 		var b strings.Builder
 		b.WriteString(gutter + theme.ApproveKey.Render(d.Title))
+		if d.Meta != "" {
+			b.WriteString("  " + theme.Meta.Render(d.Meta))
+		}
 		b.WriteString("\n")
 
 		if d.RowsUnstructured {
@@ -228,6 +231,12 @@ func (Base) Dialog(d Dialog, w int) string {
 				key := row[0] + strings.Repeat(" ", max(0, maxKey-lipgloss.Width(row[0])))
 				val := TruncateLine(row[1], w-8-maxKey)
 				b.WriteString(gutter + "  " + theme.Meta.Render(key) + "  " + theme.Help.Render(val) + "\n")
+			}
+		}
+
+		if d.Diff != nil && len(d.Diff.Lines) > 0 {
+			for _, row := range DiffRows(*d.Diff, w-lipgloss.Width(gutter), ApprovalDiffRows) {
+				b.WriteString(gutter + row + "\n")
 			}
 		}
 
@@ -326,8 +335,10 @@ func (Base) Header(v ViewState) string {
 		segs = append(segs, seg{text: fmt.Sprintf("%s %s", theme.Meta.Render(strconv.Itoa(v.HeaderStats.Skills)), theme.Help.Render("skills")), priority: 40})
 	}
 
-	// Right side: cwd.
-	cwd := theme.Meta.Render(v.Cwd)
+	// Right side: cwd, cut from the left when it would take more than two
+	// fifths of the line — the trailing directories are the ones that say
+	// where you are.
+	cwd := theme.Meta.Render(truncateLeft(v.Cwd, max(v.Width*2/5, 12)))
 
 	// Fit segments between left and cwd, dropping lowest-priority first.
 	availWidth := v.Width - lipgloss.Width(left) - lipgloss.Width(cwd) - 2 // 2 for gaps
@@ -450,4 +461,17 @@ func (Base) Footer(v ViewState, w int) string {
 // screen. Measuring the real output is the only way the two cannot drift.
 func (b Base) FooterHeight(v ViewState, w int) int {
 	return lipgloss.Height(b.Footer(v, w))
+}
+
+// truncateLeft shortens s to at most w cells by dropping leading runes and
+// marking the cut with a leading ellipsis.
+func truncateLeft(s string, w int) string {
+	if lipgloss.Width(s) <= w {
+		return s
+	}
+	r := []rune(s)
+	for len(r) > 0 && lipgloss.Width(string(r))+1 > w {
+		r = r[1:]
+	}
+	return "…" + string(r)
 }

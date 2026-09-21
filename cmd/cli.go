@@ -16,9 +16,11 @@ import (
 	"github.com/mudler/nib/attachments"
 	"github.com/mudler/nib/attachstage"
 	"github.com/mudler/nib/chat"
+	"github.com/mudler/nib/internal/textdiff"
 	wizmcp "github.com/mudler/nib/mcp"
 	"github.com/mudler/nib/slash"
 	"github.com/mudler/nib/theme"
+	"github.com/mudler/nib/tui/render"
 	"github.com/mudler/nib/types"
 )
 
@@ -266,8 +268,22 @@ func RunCLI(ctx context.Context, cfg types.Config, streams Streams, shellJobs *w
 			g := theme.Gutter.Render(theme.ApprovalGutter) + " "
 			fmt.Fprintln(out)
 			fmt.Fprintln(out, g+theme.ApproveKey.Render(req.Name+" wants to run"))
-			for _, line := range strings.Split(chat.FormatToolCall(req.Name, req.Arguments), "\n") {
-				fmt.Fprintln(out, g+theme.Help.Render(line))
+			summary := chat.FormatToolCall(req.Name, req.Arguments)
+			var diff textdiff.Diff
+			if req.Change != nil {
+				diff = req.Change.Diff()
+			}
+			if !diff.Empty() {
+				// The diff replaces the summary's "old -> new" continuation.
+				first, _, _ := strings.Cut(summary, "\n")
+				fmt.Fprintln(out, g+theme.Help.Render(first)+"  "+theme.Meta.Render(render.DiffStat(diff)))
+				for _, row := range render.DiffRows(diff, cliDiffWidth, render.ApprovalDiffRows) {
+					fmt.Fprintln(out, g+row)
+				}
+			} else {
+				for _, line := range strings.Split(summary, "\n") {
+					fmt.Fprintln(out, g+theme.Help.Render(line))
+				}
 			}
 			if req.Reasoning != "" {
 				fmt.Fprintln(out, g+theme.Reasoning.Render(req.Reasoning))
@@ -718,3 +734,7 @@ func cliKindName(k slash.Kind) string {
 func help(out io.Writer) {
 	fmt.Fprintln(out, theme.Help.Render(theme.CLIHelp))
 }
+
+// cliDiffWidth is how wide the line-mode CLI draws an approval diff. The CLI
+// writes to a stream, not a sized screen, so it uses a fixed conventional width.
+const cliDiffWidth = 80

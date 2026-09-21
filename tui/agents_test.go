@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/mudler/nib/chat"
+	"github.com/mudler/nib/theme"
 	"github.com/mudler/nib/tui/render"
 )
 
@@ -119,12 +120,61 @@ func TestJobsFooterRowCounts(t *testing.T) {
 }
 
 func TestToolLabelWithAgent(t *testing.T) {
-	got := toolApprovalLabel(chat.ToolCallRequest{Name: "echo", AgentID: "a1"})
-	if !strings.Contains(got, "a1") || !strings.Contains(got, "echo wants to run") {
+	got := buildApprovalContent(chat.ToolCallRequest{Name: "echo", AgentID: "a1"}).title
+	if !strings.Contains(got, "a1") || !strings.HasSuffix(got, "echo") {
 		t.Fatalf("expected agent-labeled approval header, got %q", got)
 	}
-	root := toolApprovalLabel(chat.ToolCallRequest{Name: "echo"})
-	if root != "echo wants to run" {
+	root := buildApprovalContent(chat.ToolCallRequest{Name: "echo"}).title
+	if root != "echo" {
 		t.Fatalf("expected plain header, got %q", root)
+	}
+}
+
+// TestApprovalContentShowsChangeAsDiff: an edit approval with a predicted
+// change is titled by its one-line summary, carries the diff and its stat, and
+// drops the old -> new summary line the diff replaces.
+func TestApprovalContentShowsChangeAsDiff(t *testing.T) {
+	req := chat.ToolCallRequest{
+		Name:      "edit",
+		Arguments: `{"path":"main.go","old":"a","new":"b"}`,
+		Change:    &chat.FileChange{Path: "main.go", Before: "x\na\ny\n", After: "x\nb\ny\n"},
+	}
+	c := buildApprovalContent(req)
+	if c.title != "edit main.go" {
+		t.Fatalf("title = %q, want %q", c.title, "edit main.go")
+	}
+	if c.diff == nil || c.diff.Added != 1 || c.diff.Removed != 1 {
+		t.Fatalf("diff = %+v, want +1 -1", c.diff)
+	}
+	if c.meta != "+1 -1" {
+		t.Fatalf("meta = %q, want %q", c.meta, "+1 -1")
+	}
+	if len(c.rows) != 0 {
+		t.Fatalf("rows = %v, want none (the diff replaces the summary)", c.rows)
+	}
+}
+
+// TestApprovalContentNewFile: a write that creates its file says so.
+func TestApprovalContentNewFile(t *testing.T) {
+	c := buildApprovalContent(chat.ToolCallRequest{
+		Name:      "write",
+		Arguments: `{"path":"hello.go","content":"package main\n"}`,
+		Change:    &chat.FileChange{Path: "hello.go", After: "package main\n", Created: true},
+	})
+	if !strings.HasPrefix(c.meta, theme.DiffNewFile) || !strings.HasSuffix(c.meta, "+1") {
+		t.Fatalf("meta = %q, want new file · +1", c.meta)
+	}
+}
+
+// TestApprovalContentMultilineScriptKeepsRest: a multi-line bash script is
+// titled by its first line; the rest follows as one prose row, and the first
+// line is not repeated.
+func TestApprovalContentMultilineScriptKeepsRest(t *testing.T) {
+	c := buildApprovalContent(chat.ToolCallRequest{Name: "bash", Arguments: `{"script":"cd x\nmake"}`})
+	if c.title != "$ cd x" {
+		t.Fatalf("title = %q", c.title)
+	}
+	if !c.unstructured || len(c.rows) != 1 || c.rows[0][1] != "make" {
+		t.Fatalf("rows = %v, want the remaining line", c.rows)
 	}
 }

@@ -54,6 +54,10 @@ type ToolCallRequest struct {
 	// conversation. A non-empty value forces consequential calls through the
 	// approval gate unless session-wide auto-approval is active.
 	ExternalSources []string
+	// Change is the predicted effect of a write or edit call on its file, for
+	// showing the call as a diff before it runs. Nil for other tools and for
+	// files that cannot be diffed.
+	Change *FileChange
 }
 
 // ToolResult is the outcome of a tool execution, surfaced to the UI after the
@@ -63,6 +67,10 @@ type ToolResult struct {
 	Result    string
 	Arguments string // marshaled JSON of the call's arguments, for display
 	AgentID   string // non-empty when the tool was run by a sub-agent
+	// Change is what a successful write or edit did to its file, for showing
+	// the result as a diff. Nil for other tools, failed calls, and files that
+	// cannot be diffed.
+	Change *FileChange
 }
 
 // ToolCallResponse represents the user's decision on a tool call.

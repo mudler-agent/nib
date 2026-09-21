@@ -118,7 +118,7 @@ func (presenter) Message(m render.Message, prev render.Role, w int) string {
 		body = render.Prefixed(messagePrefix(render.RoleAssistant, prev), m.Content)
 
 	case render.RoleAgent:
-		body = render.Prefixed(contentPrefix(render.RoleAgent), render.StyledLines(theme.Subtle, m.Content))
+		body = render.Prefixed(agentPrefix(m.AgentID), render.StyledLines(theme.Subtle, m.Content))
 		if m.HugNext {
 			return body
 		}
@@ -127,20 +127,10 @@ func (presenter) Message(m render.Message, prev render.Role, w int) string {
 		// The label arrives already formatted (Message.Label): turning a tool
 		// name and its raw JSON arguments into a human summary is domain logic
 		// that stays model-side, same as markdown and the ask block.
-		label := m.Label
-		if m.AgentID != "" {
-			label = theme.SubAgent + " " + render.ShortID(m.AgentID) + " · " + label
+		body = render.ToolBlock(m, w)
+		if m.HugNext {
+			return body
 		}
-		indent := contentPrefix(render.RoleTool)
-		var b strings.Builder
-		b.WriteString(theme.Subtle.Render(theme.Sep + " " + label))
-		b.WriteString("\n")
-		wrapped := render.Wrap(m.Content, w-lipgloss.Width(indent))
-		for _, line := range strings.Split(strings.TrimRight(wrapped, "\n"), "\n") {
-			b.WriteString(indent + theme.Help.Render(line))
-			b.WriteString("\n")
-		}
-		body = b.String()
 
 	case render.RoleError:
 		prefix := contentPrefix(render.RoleError)
@@ -170,4 +160,15 @@ func (presenter) Frame(v render.ViewState, header, body, composer, footer string
 	b.WriteString("\n")
 	b.WriteString(footer)
 	return b.String()
+}
+
+// agentPrefix is RoleAgent's prefix for one message: the sub-agent marker for
+// a sub-agent's line, or the notice marker for a housekeeping line nib itself
+// writes (context pruned, compacted, yolo toggled), which has no agent id.
+// Both glyphs are one cell, so ContentWidth's measure of contentPrefix holds.
+func agentPrefix(agentID string) string {
+	if agentID == "" {
+		return theme.Subtle.Render(theme.NoticeGlyph) + " "
+	}
+	return contentPrefix(render.RoleAgent)
 }

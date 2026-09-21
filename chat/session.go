@@ -178,6 +178,10 @@ type Session struct {
 	metadata           map[string]string // global per-request metadata; merged with per-agent overrides
 	reasoningEffort    string            // OpenAI reasoning_effort sent on every request (e.g. "none")
 
+	// changes holds pre-call file snapshots of in-flight write/edit calls,
+	// so their results can be shown as diffs.
+	changes changeTracker
+
 	configurator  *manage.Configurator
 	reloadMu      sync.Mutex
 	pendingReload bool
@@ -1530,12 +1534,17 @@ func (s *Session) SendMessage(text string, parts ...ContentPart) (string, error)
 			if err != nil {
 				return cogito.ToolCallDecision{Approved: false}
 			}
+			change := PreviewFileChange(s.workingDir, tool.Name, string(args))
 			decision := s.decideToolCall(ToolCallRequest{
 				Name:      tool.Name,
 				Arguments: string(args),
 				Reasoning: tool.Reasoning,
 				AgentID:   state.AgentID,
+				Change:    change,
 			})
+			if decision.Approved && state.AgentID == "" && s.callbacks.OnToolResult != nil {
+				s.changes.put(changeKey(tool.ID, tool.Name, string(args)), change)
+			}
 			s.emitSubAgentToolLine(decision.Approved, state.AgentID, tool.Name, string(args))
 			return decision
 		}),
@@ -1554,11 +1563,20 @@ func (s *Session) SendMessage(text string, parts ...ContentPart) (string, error)
 				if b, err := json.Marshal(status.ToolArguments.Arguments); err == nil {
 					argsJSON = string(b)
 				}
+				change := s.changes.take(changeKey(status.ToolArguments.ID, status.Name, argsJSON))
+				if change != nil {
+					if failed, _ := ToolOutcome(status.Result); failed {
+						change = nil
+					} else {
+						change.settle(s.workingDir)
+					}
+				}
 				s.callbacks.OnToolResult(ToolResult{
 					Name:      status.Name,
 					Result:    status.Result,
 					Arguments: argsJSON,
 					AgentID:   s.agentLogs.agentFor(status.ToolArguments.ID),
+					Change:    change,
 				})
 			}
 		}),

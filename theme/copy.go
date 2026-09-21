@@ -9,7 +9,7 @@ const (
 	LabelYouText = "you"
 
 	HelpDefault      = "enter send · ctrl+y use command · G/end newest · ctrl+c twice exit"
-	HelpApproval     = "1 once · 2 always · 3 this turn · 4 this session · n no · e edit · esc deny"
+	HelpApproval     = "pick an option above · esc deny"
 	HelpApprovalEdit = "enter submit · esc cancel"
 	ApproveEditHint  = "describe the change · enter submit · esc cancel"
 
@@ -237,6 +237,18 @@ const (
 	// failed bash/bash_job_output call whose stdout and stderr were both
 	// empty — a %d format string for the exit code.
 	ToolResultNoOutput = "(exit %d, no output)"
+
+	// ToolExitCode is the detail a failed bash call's header carries — a %d
+	// format string for the exit code.
+	ToolExitCode = "exit %d"
+	// ToolLineCount is the one-line summary a read collapses to in the
+	// transcript — a %d format string for the number of lines read.
+	ToolLineCount = "%d lines"
+	// DiffNewFile tags a write that created its file, in the diff summary.
+	DiffNewFile = "new file"
+	// DiffMore is the fold line under a capped diff — a %d format string for
+	// the number of rows not shown.
+	DiffMore = "… %d more lines"
 
 	// UsageEstimatedPrefix marks the session usage badge (tui/model.go's
 	// usageBadge) when its figure is chat.Session.EstimatedUsage's byte/4
