@@ -2147,9 +2147,28 @@ func (s *Session) applyProvider(provider types.ModelProviderConfig, id string) e
 	// The new model's context window and output cap are asked for at the start
 	// of the next turn (ensureModelLimits), not here: switching model must not
 	// block on the network, and a switch made offline still has to work.
+	// Still, clear limitsFor so ensureModelLimits re-runs for the new model,
+	// and give MaxContextTokens a best-effort early refresh (when the probe
+	// cannot resolve the new model and the static table does not know it,
+	// fall back to defaultContextTokens — mirroring NewSession — so the gauge
+	// refreshes on switch rather than showing the previous model's window).
 	s.modelMu.Lock()
 	s.limitsFor = ""
 	s.modelMu.Unlock()
+	if s.compactionAutoDetected {
+		// The probe needs the endpoint the client really talks to, which for a
+		// /login provider is its default URL and stored key, not the config's.
+		baseURL, apiKey, _ := llmprovider.ModelsEndpoint(provider, s.credStore)
+		probeCtx, cancel := context.WithTimeout(s.ctx, probeTimeout)
+		v := detectContextSize(probeCtx, baseURL, apiKey, name)
+		cancel()
+		if v <= 0 {
+			v = defaultContextTokens
+		}
+		s.modelMu.Lock()
+		s.compaction.MaxContextTokens = v
+		s.modelMu.Unlock()
+	}
 	return nil
 }
 

@@ -958,6 +958,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					} else {
 						m.appendMessage(ChatMessage{Role: "agent", Content: m.modelSwitchNotice(choice)})
 					}
+					m.refreshContextTokens()
 					m.modelPicker.close()
 				}
 			case tea.KeySpace:
@@ -2003,6 +2004,7 @@ func (m *Model) dispatchResolved(input string) tea.Cmd {
 		default:
 			m.appendMessage(ChatMessage{Role: "agent", Content: notice})
 		}
+		m.refreshContextTokens()
 		return nil
 	case slash.KindLoopStart:
 		return m.startLoop(action)

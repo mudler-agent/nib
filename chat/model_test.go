@@ -491,3 +491,39 @@ func TestUnservedModelErrorSplitsHeadlineFromListing(t *testing.T) {
 		t.Fatalf("Error() = %q, want %q", unserved.Error(), want)
 	}
 }
+
+// TestSetModelRefreshesContextWindowOnUnknownModel pins the bug where switching
+// to a model the probe cannot resolve and the static table does not know left
+// MaxContextTokens at the previous model's auto-detected window — so the gauge
+// never refreshed on switch and compaction budgeted against a stale value.
+//
+// NewSession falls back to defaultContextTokens when detection fails; applyProvider
+// must do the same, rather than keeping the old value silently.
+func TestSetModelRefreshesContextWindowOnUnknownModel(t *testing.T) {
+	// A closed port: the capabilities probe fails on connection-refused without
+	// a DNS lookup or a round trip, so detectContextSize falls through to the
+	// static table quickly. "gpt-4o" is in the static table (128000); an unknown
+	// model name is not, so detection returns 0 and the fallback applies.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "nope", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	// Seed a detected window DISTINCT from defaultContextTokens (128000), so a
+	// stale keep and a correct fallback are observable. 200000 is o1's static
+	// value — a plausible auto-detected figure for the previous model.
+	s := &Session{
+		ctx:                   context.Background(),
+		llmModel:              "o1",
+		baseURL:               srv.URL + "/v1",
+		compactionAutoDetected: true,
+	}
+	s.compaction.MaxContextTokens = 200000
+
+	// Switch to a model neither the probe nor the static table can resolve.
+	s.SetModel("totally-unknown-model")
+
+	if got := s.MaxContextTokens(); got != defaultContextTokens {
+		t.Fatalf("after switching to an unknown model, MaxContextTokens = %d, want the %d default (the previous model's %d window was kept)", got, defaultContextTokens, 200000)
+	}
+}
