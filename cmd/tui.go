@@ -85,6 +85,13 @@ func RunTUI(ctx context.Context, cfg types.Config, height int, streams Streams, 
 
 	finalModel, runErr := prog.Run()
 
+	// Stop sub-agents and shell jobs, and save the session when an external
+	// signal ended the program without quit(). Before the exit summary, so
+	// the summary is the last line nib prints.
+	if m, ok := finalModel.(tui.Model); ok {
+		m.Shutdown()
+	}
+
 	// Clear the space we used (move to start and clear to end of screen). Only
 	// for the inline widget: with the alt screen, bubbletea already restored
 	// the terminal's original screen and scrollback on exit, so these escapes

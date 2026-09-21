@@ -146,6 +146,7 @@ func TestResolveGoal(t *testing.T) {
 		{"/goal make all tests pass", Action{Kind: KindGoalSet, Text: "make all tests pass"}},
 		{"/goal", Action{Kind: KindGoalShow}},
 		{"/goal clear", Action{Kind: KindGoalClear}},
+		{"/goal resume", Action{Kind: KindGoalResume}},
 		{"/goal   ", Action{Kind: KindGoalShow}},
 	}
 	for _, c := range cases {

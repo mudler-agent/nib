@@ -91,14 +91,17 @@ func TestLogsViewerRendersList(t *testing.T) {
 	}
 }
 
-// TestLogsViewerCtrlCFallsThrough verifies Ctrl+C is not swallowed by the
-// viewer (so it can still interrupt/quit).
-func TestLogsViewerCtrlCFallsThrough(t *testing.T) {
+// TestLogsViewerCtrlCCloses verifies Ctrl+C closes the viewer, as Esc does,
+// instead of falling through to quit.
+func TestLogsViewerCtrlCCloses(t *testing.T) {
 	m := newLogsModel()
 	m.showLogs = true
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	nm := next.(Model)
-	if !nm.quitting {
-		t.Fatal("ctrl+c should fall through to quit while the viewer is open")
+	if nm.quitting {
+		t.Fatal("ctrl+c quit while the viewer was open")
+	}
+	if nm.showLogs {
+		t.Fatal("ctrl+c did not close the viewer")
 	}
 }

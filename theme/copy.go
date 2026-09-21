@@ -8,7 +8,7 @@ const (
 	// the style, in theme.go).
 	LabelYouText = "you"
 
-	HelpDefault      = "enter send · ctrl+y use command · G/end newest · esc exit"
+	HelpDefault      = "enter send · ctrl+y use command · G/end newest · ctrl+c twice exit"
 	HelpApproval     = "1 once · 2 always · 3 this turn · 4 this session · n no · e edit · esc deny"
 	HelpApprovalEdit = "enter submit · esc cancel"
 	ApproveEditHint  = "describe the change · enter submit · esc cancel"
@@ -272,3 +272,16 @@ var EmptyExamples = []string{
 	"undo my last git commit",
 	"find every TODO in this repo",
 }
+
+// Ctrl+C / Esc copy. Ctrl+C does one step per press (see tui.handleCtrlC), and
+// each step says what it did, so no press leaves the user guessing.
+const (
+	StatusInterrupting = "Interrupting…"
+	HintDraftCleared   = "draft cleared · ↑ to restore"
+	HintExitArmed      = "press ctrl+c again to exit"
+	HintQueueHeld      = "queue on hold · enter send it · ↑↓ pick · ^e edit · ^x delete"
+
+	NoticeGoalPaused       = "goal paused · /goal resume to continue, /goal clear to drop it"
+	NoticeQueueHeld        = "%d queued, on hold · press enter on an empty composer to send"
+	NoticeStillRunningHelp = " · ctrl+o logs · /loop stop"
+)
