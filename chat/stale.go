@@ -40,13 +40,18 @@ func (s *agentLogStore) forget(agentID string) {
 }
 
 // stale returns, sorted, the agents idle for longer than after at now whose
-// stall is not reported yet, with how long each has been idle.
-func (s *agentLogStore) stale(now time.Time, after time.Duration) ([]string, map[string]time.Duration) {
+// stall is not reported yet, with how long each has been idle. Idleness
+// counts from quietSince at the earliest: time spent waiting on the backend
+// is not a stall.
+func (s *agentLogStore) stale(now, quietSince time.Time, after time.Duration) ([]string, map[string]time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var ids []string
 	idle := map[string]time.Duration{}
 	for id, t := range s.lastActive {
+		if quietSince.After(t) {
+			t = quietSince
+		}
 		if d := now.Sub(t); d > after && !s.notified[id] {
 			ids = append(ids, id)
 			idle[id] = d
@@ -71,7 +76,7 @@ func (s *Session) notifyStaleAgents(now time.Time) {
 	if s.agentLogs == nil {
 		return
 	}
-	ids, idle := s.agentLogs.stale(now, staleAgentAfter)
+	ids, idle := s.agentLogs.stale(now, s.agentBackoff.quietSince(now), staleAgentAfter)
 	for _, id := range ids {
 		msg := fmt.Sprintf("Sub-agent %s shows no activity for %s. It may be stuck. "+
 			"Inspect it with agent_logs or check_agent, then decide whether to keep waiting "+

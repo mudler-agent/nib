@@ -248,6 +248,10 @@ type Session struct {
 	turnRetryMu    sync.Mutex
 	turnRetryTotal int
 
+	// agentBackoff tells the stall detector when sub-agents wait on the
+	// backend. See agentretry.go.
+	agentBackoff agentBackoff
+
 	tracer *trace.Recorder // non-nil when session tracing is enabled
 
 	// memoryStore persists notes written via the memory tool. Rooted at the
@@ -354,10 +358,9 @@ func (s *Session) newAgentLLM(mainModel, requested string, temperature float32, 
 	agentLLM, err := llmprovider.NewWithTemperatureAndStore(provider, temperature, s.credStore)
 	if err != nil {
 		xlog.Warn("could not create sub-agent LLM; using the current main LLM", "error", err)
-		llm, _ := s.currentLLM()
-		return llm
+		agentLLM, _ = s.currentLLM()
 	}
-	return agentLLM
+	return retryForAgent(agentLLM, &s.agentBackoff)
 }
 
 func (s *Session) resolvedSessionProvider() types.ModelProviderConfig {
@@ -1502,11 +1505,15 @@ func (s *Session) SendMessage(text string, parts ...ContentPart) (string, error)
 	// wrapper, which is the only race-free place to observe it: cogito writes
 	// LastUsage onto a Status the UI goroutine must not read (see liveUsage).
 	// Sub-agent and reviewer clients are deliberately left unwrapped — their
-	// spend is not this conversation's context size.
+	// spend is not this conversation's context size. Sub-agents get their own
+	// retrying client instead (WithAgentLLM below; see agentretry.go):
+	// without it cogito would hand them this tracked one.
+	agentLLM := retryForAgent(llm, &s.agentBackoff)
 	llm = trackUsage(llm, &s.live)
 
 	// Build cogito options from config
 	cogitoOpts := []cogito.Option{
+		cogito.WithAgentLLM(agentLLM),
 		cogito.WithContext(turnCtx),
 		cogito.WithIterations(s.cogitoOptions.Iterations),
 		cogito.WithMaxAttempts(s.cogitoOptions.MaxAttempts),
