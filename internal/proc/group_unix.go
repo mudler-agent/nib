@@ -9,6 +9,7 @@ package proc
 import (
 	"os/exec"
 	"syscall"
+	"time"
 )
 
 // Group makes cmd run in its own process group and cancel by killing that whole
@@ -27,9 +28,9 @@ import (
 //
 // Two behavior notes for callers. The command no longer shares nib's process
 // group, so a terminal-generated SIGINT no longer reaches it directly;
-// cancellation still does, through the context. And the group is terminated
-// with SIGKILL, so a command that would previously have received a graceful
-// SIGINT gets no chance to clean up.
+// cancellation still does, through the context. And cancellation sends the
+// group SIGTERM, then SIGKILL after KillGrace: a command gets a chance to clean
+// up, and one that ignores SIGTERM is still stopped.
 //
 // Group does not set cmd.WaitDelay. A command that daemonizes with setsid()
 // escapes the group and can still hold the pipes open, so callers that must not
@@ -53,7 +54,17 @@ func Group(cmd *exec.Cmd) {
 		// and the terminal's foreground group". Checking the pgid makes both
 		// impossible instead of merely unlikely.
 		if pgid, err := syscall.Getpgid(pid); err == nil && pgid == pid {
-			if err := syscall.Kill(-pid, syscall.SIGKILL); err == nil {
+			if err := syscall.Kill(-pid, syscall.SIGTERM); err == nil {
+				// The SIGKILL is not guarded by the leader check above,
+				// because the leader (the shell) is usually what SIGTERM
+				// stopped, and the members left are the ones that ignore it.
+				// It is still safe: POSIX does not reuse a process group id
+				// while any member of the group is alive, so -pid can name
+				// only this group or, after it ended, no group. The one
+				// remaining risk is the pid being recycled as a new group
+				// leader within KillGrace, which needs the whole pid space to
+				// wrap in one second.
+				time.AfterFunc(KillGrace, func() { _ = syscall.Kill(-pid, syscall.SIGKILL) })
 				return nil
 			}
 		}
