@@ -241,25 +241,29 @@ func TestToolGuidanceWithoutFileToolsOmitsTheParagraph(t *testing.T) {
 	}
 }
 
-// index shipped with guidance that the read paragraph right after it undid:
-// "read a file once, in full" told the model never to take the outline-first
-// path, and traces showed index was never called. The guidance must present
-// index as the step that decides whether a file is worth reading at all, and
-// the read paragraph must leave room for reading only the part the outline
-// pointed at.
-func TestToolGuidanceStepsThroughIndexBeforeRead(t *testing.T) {
+// index guidance swung from never used to always first: "index it first" on
+// every unseen source file made the model index instead of read, even for a
+// short file it needed whole. The guidance must keep index for large files,
+// tell the model to read an ordinary file directly, and still come before the
+// read paragraph it qualifies.
+func TestToolGuidanceKeepsIndexForLargeFiles(t *testing.T) {
 	got := (&Config{Prompt: "BASE"}).GetPrompt()
 
 	for _, want := range []string{
-		"index it first",
-		"decide whether it is worth reading at all",
+		"large source file",
+		"read it directly",
 		"read only the lines",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("index guidance missing %q:\n%s", want, got)
 		}
 	}
-	if strings.Index(got, "index it first") > strings.Index(got, "whole file by default") {
+	for _, unwanted := range []string{"index it first", "you have not seen"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("index guidance still makes index the first step (%q):\n%s", unwanted, got)
+		}
+	}
+	if strings.Index(got, "large source file") > strings.Index(got, "whole file by default") {
 		t.Fatalf("index guidance must come before the read paragraph it qualifies:\n%s", got)
 	}
 }

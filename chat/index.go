@@ -32,8 +32,8 @@ func indexToolDefinition(resolvePath func(string) string) cogito.ToolDefinitionI
 		"index",
 		"Return a compact outline of a source file: imports, type definitions, function signatures, "+
 			"and structure, each with its line range in []. It costs a fraction of reading the full file.\n\n"+
-			"Use it FIRST on a source file you have not seen, to decide whether the file is worth reading at all, "+
-			"and if it is, which lines to read with offset/limit.\n"+
+			"Use it on a large source file to find which lines to read with offset/limit. "+
+			"For a file of ordinary size, read it instead.\n"+
 			"Supported files: "+strings.Join(codeindex.SupportedExtensions(), " ")+". "+
 			"Other file types return an error; read those instead.",
 	)

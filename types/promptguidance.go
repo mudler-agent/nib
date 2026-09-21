@@ -90,12 +90,13 @@ func toolGuidance(builtinTools []string) string {
 		paragraphs = append(paragraphs, p)
 	}
 
-	// index comes before read because it gates it: the outline is how the
-	// model decides whether a file deserves a read at all. The read paragraph
+	// index comes before read because it qualifies it. The read paragraph
 	// used to say "read a file once, in full" with no exception, and since it
-	// came last and spoke more firmly, the model never called index.
+	// came last and spoke more firmly, the model never called index. Telling
+	// it to index every unseen file overcorrected: it indexed instead of
+	// reading. index is for large files, where it saves a full read.
 	if index {
-		paragraphs = append(paragraphs, "index returns a compact outline of a source file — imports, types, functions, and their line ranges — for a fraction of what reading it costs. Before reading a source file you have not seen, index it first and use the outline to decide whether it is worth reading at all: when you are looking for where something lives, index the candidate files and read only the ones that matter. When a file is relevant, the outline also tells you which lines hold the part you need.")
+		paragraphs = append(paragraphs, "index returns a compact outline of a source file — imports, types, functions, and their line ranges — for a fraction of what reading it costs. Use it on a large source file when you need only part of it: the outline tells you which lines to read. When you need a file of ordinary size, read it directly, without an index call.")
 	}
 
 	if read {
