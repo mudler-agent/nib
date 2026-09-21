@@ -78,6 +78,13 @@ func approvalConfig(baseURL string) types.Config {
 func runApprovalSession(t *testing.T, cfg types.Config, in io.Reader) (error, string) {
 	t.Helper()
 	xlog.SetLogger(xlog.NewLogger(xlog.LogLevel("error"), ""))
+	// Without an isolated root the session restores whatever endpoint the
+	// developer last picked, so these tests talk to a real provider instead of
+	// the fake server above, and their result depends on what that model felt
+	// like answering.
+	if cfg.BaseDir == "" {
+		cfg.BaseDir = t.TempDir()
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -170,8 +171,17 @@ func TestSettingsListAndShow(t *testing.T) {
 			t.Fatalf("listing lacks %q:\n%s", want, list)
 		}
 	}
-	if strings.Contains(list, "api_key") {
-		t.Fatalf("listing shows a secret key:\n%s", list)
+	// A precise check on the key column, not a substring scan of the whole
+	// block: config.reflectSettings legitimately lists
+	// prompt_injection_protection.classifier.api_key_env (the NAME of an
+	// env var, never a secret value — config.isSecretKey only strips the
+	// leaf "api_key" itself), and a bare substring scan for "api_key" would
+	// trip on that row too. Match the key column exactly instead.
+	for _, line := range strings.Split(list, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 0 && (fields[0] == "api_key" || strings.HasSuffix(fields[0], ".api_key")) {
+			t.Fatalf("listing shows the secret key api_key:\n%s", list)
+		}
 	}
 
 	m.dispatchResolved("/settings compaction.threshold")
@@ -264,5 +274,211 @@ func TestSettingsCompletionExactValueSubmits(t *testing.T) {
 	c.sync("/settings ui.hi")
 	if c.exact("/settings ui.hi") {
 		t.Fatal("a partial key must not count as exact")
+	}
+}
+
+// TestSettingModelOverriddenByNamedEndpointSaysNotInUse covers the case the
+// brief's own rule (gate on EndpointID() != chat.ConfigProviderID) got
+// right: the session is on a named config.yaml endpoint, so config.yaml's
+// own model is not what runs.
+func TestSettingModelOverriddenByNamedEndpointSaysNotInUse(t *testing.T) {
+	m := newEndpointTestModel(t)
+	if cmd := m.dispatchResolved("/endpoint @home"); cmd != nil {
+		t.Fatal("/endpoint <id> must not start a turn")
+	}
+	if got := m.session.EndpointID(); got != "@home" {
+		t.Fatalf("EndpointID = %q, want @home", got)
+	}
+
+	m.dispatchResolved("/settings model something-else")
+	msg := lastMessage(t, m)
+	if msg.Role == "error" {
+		t.Fatalf("set failed: %s", msg.Content)
+	}
+	if !strings.Contains(msg.Content, "not in use") || !strings.Contains(msg.Content, "/endpoint config") {
+		t.Fatalf("no override notice naming the way back:\n%s", msg.Content)
+	}
+	if strings.Contains(msg.Content, "applies on next start") {
+		t.Fatalf("still claims it applies next start:\n%s", msg.Content)
+	}
+	if _, pending := m.pendingSettings["model"]; pending {
+		t.Fatalf("an overridden key must not be recorded as pending: %+v", m.pendingSettings)
+	}
+
+	m.dispatchResolved("/settings")
+	if list := lastMessage(t, m).Content; !strings.Contains(list, "overridden") {
+		t.Fatalf("listing does not mark the key overridden:\n%s", list)
+	}
+}
+
+// TestSettingModelOverriddenOnTheDefaultEndpointSaysNotInUse is the case the
+// brief's rule (gate on endpoint identity) would have gotten WRONG: SetModel
+// persists a model pick on every endpoint uniformly, including config.yaml's
+// own default one, so a session can be sitting ON the default endpoint
+// (EndpointID() == chat.ConfigProviderID) and still be running a saved
+// model that shadows config.yaml's. /settings must still say the write to
+// "model" is inert, or it reintroduces the silent-no-op bug this command
+// exists to kill.
+func TestSettingModelOverriddenOnTheDefaultEndpointSaysNotInUse(t *testing.T) {
+	m := newModelSwitchTestModel(t, "default-model", "something-else")
+
+	// Pick a different model without switching endpoints at all: the saved
+	// pick now overrides config.yaml's "default-model" while the session
+	// stays on config.yaml's own endpoint.
+	if cmd := m.dispatchResolved("/model something-else"); cmd != nil {
+		t.Fatal("/model <name> must not start a turn")
+	}
+	if msg := lastMessage(t, m); msg.Role == "error" {
+		t.Fatalf("/model something-else failed: %s", msg.Content)
+	}
+	if got := m.session.EndpointID(); got != chat.ConfigProviderID {
+		t.Fatalf("EndpointID = %q, want the default endpoint (%q) — this is the case that matters", got, chat.ConfigProviderID)
+	}
+	if got := m.session.Model(); got != "something-else" {
+		t.Fatalf("Model() = %q, want the saved pick something-else", got)
+	}
+	if got := m.session.ConfigModel(); got != "default-model" {
+		t.Fatalf("ConfigModel() = %q, want config.yaml's own default-model", got)
+	}
+
+	m.dispatchResolved("/settings model yet-another")
+	msg := lastMessage(t, m)
+	if msg.Role == "error" {
+		t.Fatalf("set failed: %s", msg.Content)
+	}
+	if !strings.Contains(msg.Content, "not in use") || !strings.Contains(msg.Content, "/model reset") {
+		t.Fatalf("no override notice naming the way back:\n%s", msg.Content)
+	}
+	if strings.Contains(msg.Content, "applies on next start") {
+		t.Fatalf("still claims it applies next start:\n%s", msg.Content)
+	}
+	if _, pending := m.pendingSettings["model"]; pending {
+		t.Fatalf("an overridden key must not be recorded as pending: %+v", m.pendingSettings)
+	}
+
+	m.dispatchResolved("/settings")
+	if list := lastMessage(t, m).Content; !strings.Contains(list, "overridden") {
+		t.Fatalf("listing does not mark the key overridden:\n%s", list)
+	}
+}
+
+// TestSettingModelOverrideOnAModelLessDefaultEndpointDoesNotAdviseReset is
+// Finding 3: config.yaml's default endpoint here names no model of its own,
+// so /model reset (Session.ResetModel) would refuse with "names no model of
+// its own: pick one with /model" — the override notice must not point the
+// user at that dead end.
+func TestSettingModelOverrideOnAModelLessDefaultEndpointDoesNotAdviseReset(t *testing.T) {
+	cfg := types.Config{
+		BaseURL:    "http://127.0.0.1:1/v1",
+		BaseDir:    t.TempDir(),
+		Compaction: types.CompactionConfig{MaxContextTokens: 128000},
+	}
+	s, err := chat.NewSession(context.Background(), cfg, chat.Callbacks{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+	if err := s.SetModel("saved-pick"); err != nil {
+		t.Fatalf("SetModel: %v", err)
+	}
+	if got := s.EndpointID(); got != chat.ConfigProviderID {
+		t.Fatalf("EndpointID = %q, want the default endpoint", got)
+	}
+	if got := s.ConfigModel(); got != "" {
+		t.Fatalf("test setup: ConfigModel() = %q, want empty (a model-less default endpoint)", got)
+	}
+
+	m := newQueueTestModel()
+	m.ctx = context.Background()
+	m.cfg = cfg
+	m.session = s
+
+	m.dispatchResolved("/settings model yet-another")
+	msg := lastMessage(t, m)
+	if msg.Role == "error" {
+		t.Fatalf("set failed: %s", msg.Content)
+	}
+	if !strings.Contains(msg.Content, "not in use") {
+		t.Fatalf("no override notice:\n%s", msg.Content)
+	}
+	if strings.Contains(msg.Content, "/model reset") {
+		t.Fatalf("notice advises /model reset, which would fail on a model-less default endpoint:\n%s", msg.Content)
+	}
+	if !strings.Contains(msg.Content, "/model") {
+		t.Fatalf("notice does not point at any escape hatch:\n%s", msg.Content)
+	}
+}
+
+// TestSettingModelWithNoOverrideIsUnchanged is the control: with nothing
+// overriding config.yaml, /settings model behaves exactly as it always has.
+func TestSettingModelWithNoOverrideIsUnchanged(t *testing.T) {
+	m, _ := newSettingsTestModel(t)
+	m.dispatchResolved("/settings model something-else")
+	msg := lastMessage(t, m)
+	if msg.Role == "error" {
+		t.Fatalf("set failed: %s", msg.Content)
+	}
+	if !strings.Contains(msg.Content, "applies on next start") {
+		t.Fatalf("expected the usual next-start notice:\n%s", msg.Content)
+	}
+	if strings.Contains(msg.Content, "not in use") {
+		t.Fatalf("unexpected override notice:\n%s", msg.Content)
+	}
+}
+
+// TestSettingProviderOnANamedEndpointSaysNotInUse is the false-negative case
+// a pure value comparison misses: on a named endpoint, config.yaml's
+// top-level addressing keys are never consulted at all (endpoint.Set builds
+// them from the entry alone), but when NEITHER side names a provider
+// explicitly, both the running provider and config.yaml's declared one
+// default to the same "openai" — so a comparison of values alone would find
+// no divergence and wrongly claim the write "applies on next start" even
+// though it is completely inert.
+func TestSettingProviderOnANamedEndpointSaysNotInUse(t *testing.T) {
+	m := newEndpointTestModel(t)
+	if got := m.cfg.Provider; got != "" {
+		t.Fatalf("fixture must leave config.yaml's top-level provider unset, got %q", got)
+	}
+	if cmd := m.dispatchResolved("/endpoint @home"); cmd != nil {
+		t.Fatal("/endpoint <id> must not start a turn")
+	}
+	if got, want := m.session.Provider(), m.session.ConfigProvider(); got != want {
+		t.Fatalf("fixture no longer reproduces the false-negative setup: running provider %q, config provider %q (want them equal, both defaulting to openai)", got, want)
+	}
+
+	m.dispatchResolved("/settings provider anthropic")
+	msg := lastMessage(t, m)
+	if msg.Role == "error" {
+		t.Fatalf("set failed: %s", msg.Content)
+	}
+	if !strings.Contains(msg.Content, "not in use") || !strings.Contains(msg.Content, "/endpoint config") {
+		t.Fatalf("no override notice naming the way back:\n%s", msg.Content)
+	}
+	if strings.Contains(msg.Content, "applies on next start") {
+		t.Fatalf("still claims it applies next start — this is the bug the reviewer caught:\n%s", msg.Content)
+	}
+	if _, pending := m.pendingSettings["provider"]; pending {
+		t.Fatalf("an overridden key must not be recorded as pending: %+v", m.pendingSettings)
+	}
+}
+
+// TestSettingModelAndBaseURLOnANamedEndpointSayNotInUse rounds out coverage
+// for the other two addressing keys on the same named endpoint: both are
+// entirely supplied by @home, so config.yaml's top-level values for them
+// cannot take effect regardless of what they compare equal or unequal to.
+func TestSettingModelAndBaseURLOnANamedEndpointSayNotInUse(t *testing.T) {
+	m := newEndpointTestModel(t)
+	if cmd := m.dispatchResolved("/endpoint @home"); cmd != nil {
+		t.Fatal("/endpoint <id> must not start a turn")
+	}
+
+	m.dispatchResolved("/settings base_url http://elsewhere/v1")
+	if msg := lastMessage(t, m); msg.Role == "error" || strings.Contains(msg.Content, "applies on next start") || !strings.Contains(msg.Content, "not in use") {
+		t.Fatalf("base_url notice = %+v, want a not-in-use override", msg)
+	}
+
+	m.dispatchResolved("/settings model something-else")
+	if msg := lastMessage(t, m); msg.Role == "error" || strings.Contains(msg.Content, "applies on next start") || !strings.Contains(msg.Content, "not in use") {
+		t.Fatalf("model notice = %+v, want a not-in-use override", msg)
 	}
 }

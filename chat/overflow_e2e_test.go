@@ -29,6 +29,10 @@ func TestOverflowRecoveryOverHTTP(t *testing.T) {
 	var calls atomic.Int32
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isModelProbe(r) {
+			serveEmptyModels(w)
+			return
+		}
 		if calls.Add(1) == 1 {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
@@ -182,6 +186,10 @@ func TestOverflowRetryKeepsTheSystemPrompt(t *testing.T) {
 	log := &requestLog{}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isModelProbe(r) {
+			serveEmptyModels(w)
+			return
+		}
 		body, _ := io.ReadAll(r.Body)
 		n := log.record(body)
 

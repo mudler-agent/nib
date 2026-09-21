@@ -2,29 +2,30 @@ package chat
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/mudler/xlog"
 
 	"github.com/mudler/nib/auth"
+	"github.com/mudler/nib/endpoint"
 	"github.com/mudler/nib/provider"
-	"github.com/mudler/nib/types"
 )
 
-// ConfigProviderID names the provider-picker entry for the endpoint
-// config.yaml describes, as opposed to a registry provider reached via /login.
-const ConfigProviderID = "config"
+// ConfigProviderID is endpoint.DefaultID under its pre-endpoints name, kept
+// so existing call sites and embedders keep compiling.
+const ConfigProviderID = endpoint.DefaultID
 
-// ProviderEntry is one row of the provider picker: a registry provider (or the
-// config.yaml endpoint) with its login state.
+// ConfigProviderName is how the UI names the default endpoint.
+const ConfigProviderName = endpoint.DefaultName
+
+// ProviderEntry is one row of the provider picker: a registry provider, a
+// config.yaml named endpoint, or the config.yaml default endpoint, with its
+// login state.
 type ProviderEntry struct {
 	ID        string
 	Name      string
+	Kind      endpoint.Kind
 	LoginKind provider.LoginKind
 	// Ready means requests can authenticate right now: a stored login, the
 	// provider's environment variable, or no credential needed at all.
@@ -33,39 +34,51 @@ type ProviderEntry struct {
 	Stored bool
 	// Status is a short human description of Ready/Stored.
 	Status string
-	// Current marks the provider the session is talking to.
+	// Current marks the endpoint the session is talking to.
 	Current bool
 	// NeedsBaseURL means logging in must also collect an endpoint.
 	NeedsBaseURL bool
 	// EnvVar is the environment variable that can hold the key instead.
 	EnvVar string
+	// Model is what this entry would run, empty when it must be picked.
+	Model string
 }
 
-// ProviderID returns the provider-picker ID of the provider the session is
-// currently using: ConfigProviderID until a /login provider is selected.
-func (s *Session) ProviderID() string {
+// EndpointID returns the picker ID of the endpoint the session is currently
+// talking to: ConfigProviderID until a named endpoint or /login provider is
+// selected.
+func (s *Session) EndpointID() string {
 	s.modelMu.RLock()
 	defer s.modelMu.RUnlock()
-	return s.providerID
+	return s.endpointID
 }
 
-// ConfigProviderName is how the UI names the config.yaml endpoint: the same
-// label its /login picker row carries, so the header, boot log and pickers
-// all agree on where the model comes from.
-const ConfigProviderName = "config.yaml"
+// ProviderID is EndpointID under its pre-endpoints name.
+func (s *Session) ProviderID() string { return s.EndpointID() }
 
-// ActiveProviderName is the display name of the provider the session is
-// talking to right now: the registry name of a /login provider ("Regolo"), or
-// ConfigProviderName while config.yaml's endpoint is in use.
+// StartupNote is the non-empty explanation when a saved pick could not be
+// honored at startup, for the boot log. Empty otherwise.
+func (s *Session) StartupNote() string { return s.startupNote }
+
+// ConfigErrors are the config.yaml endpoints that were rejected at load.
+func (s *Session) ConfigErrors() []error { return s.configErrs }
+
+// ActiveProviderName is the display name of the endpoint the session is
+// talking to right now: the registry name of a /login provider ("Regolo"),
+// a config.yaml named endpoint ("@work"), or ConfigProviderName while
+// config.yaml's default endpoint is in use.
 //
 // It is the single source of truth for "which provider" in the UI. A saved
-// /login pick overrides config.yaml at startup (restoreDefaultProvider), so a
-// front end that read types.Config.Provider/Model instead would name an
-// endpoint and model that no request goes to.
+// pick overrides config.yaml at startup (restoreStartupEndpoint), so a front
+// end that read types.Config.Provider/Model instead would name an endpoint
+// and model that no request goes to.
 func (s *Session) ActiveProviderName() string {
-	id := s.ProviderID()
+	id := s.EndpointID()
 	if id == "" || id == ConfigProviderID {
 		return ConfigProviderName
+	}
+	if e, ok := s.endpoints.Lookup(id); ok {
+		return e.Name
 	}
 	if def, ok := provider.Get(id); ok && def.Name != "" {
 		return def.Name
@@ -80,106 +93,99 @@ func (s *Session) ConfigModel() string {
 	return s.configProvider.Model
 }
 
-// SavesModelAsDefault reports whether SetModel also records the model as the
-// startup default (provider.json). That only happens on a /login provider:
-// config.yaml owns the model for its own endpoint, and nib never edits it.
-func (s *Session) SavesModelAsDefault() bool {
-	id := s.ProviderID()
-	return s.providerStatePath != "" && id != "" && id != ConfigProviderID
-}
-
-// Providers lists every provider the picker offers: the config.yaml endpoint
-// first, then the registry in its display order.
-func (s *Session) Providers() []ProviderEntry {
-	stored := map[string]auth.Credential{}
-	if creds, err := s.credStore.All(); err == nil {
-		for _, c := range creds {
-			stored[c.ProviderID] = c
+// ActiveEndpointConfigModel is the model the ACTIVE endpoint names for
+// itself in config.yaml: ConfigModel's top-level model while the default
+// endpoint (or a /login provider, which has no yaml model of its own) is
+// active, or a named endpoint's own `model:` key while one of those is
+// active. Unlike ConfigModel, which is hard-wired to the top-level block no
+// matter which endpoint is running, this follows EndpointID — so a UI
+// comparing the running model against "what config.yaml says" cites the
+// right yaml value on a named endpoint instead of an unrelated top-level
+// one. See tui/boot.go's bootModel and tui/settings.go's
+// endpointOverrideNotice.
+func (s *Session) ActiveEndpointConfigModel() string {
+	id := s.EndpointID()
+	if e, ok := s.endpoints.Lookup(id); ok && e.Kind == endpoint.KindNamed {
+		if p, err := s.endpoints.Config(id); err == nil {
+			return p.Model
 		}
 	}
-	current := s.ProviderID()
+	return s.ConfigModel()
+}
 
-	out := []ProviderEntry{{
-		ID:      ConfigProviderID,
-		Name:    ConfigProviderName,
-		Ready:   true,
-		Status:  describeConfigEndpoint(s.configProvider),
-		Current: current == ConfigProviderID,
-	}}
-	for _, d := range provider.All() {
-		e := ProviderEntry{
-			ID:           d.ID,
-			Name:         d.Name,
-			LoginKind:    d.LoginKind,
-			Current:      current == d.ID,
-			NeedsBaseURL: d.NeedsBaseURL(),
-			EnvVar:       d.EnvVar,
-		}
-		c, hasCred := stored[d.ID]
-		switch {
-		case hasCred:
-			e.Ready, e.Stored = true, true
-			e.Status = "logged in · " + c.StatusLine()
-		case d.EnvVar != "" && os.Getenv(d.EnvVar) != "":
-			e.Ready = true
-			e.Status = "key from $" + d.EnvVar
-		case d.LoginKind == provider.LoginNone:
-			// Local servers need nothing; cloud SDK providers (Bedrock,
-			// Vertex) read their own environment at request time.
-			e.Ready = true
-			e.Status = "no login needed"
-		default:
-			e.Status = "not logged in"
-		}
-		out = append(out, e)
+// Provider returns the LLM transport the session is currently talking
+// through ("openai", "codex", ...). Safe to call from another goroutine
+// while a turn is running.
+func (s *Session) Provider() string {
+	s.modelMu.RLock()
+	defer s.modelMu.RUnlock()
+	return s.mainProvider.Provider
+}
+
+// ConfigProvider is the LLM transport config.yaml names for its own
+// endpoint, whichever provider is active. Paired with Provider() the same
+// way ConfigModel() is paired with Model(), so a UI can tell a /settings
+// write to the "provider" key apart from what the session actually runs.
+func (s *Session) ConfigProvider() string {
+	return s.configProvider.Provider
+}
+
+// BaseURL returns the endpoint address the session is currently talking to.
+// Safe to call from another goroutine while a turn is running.
+func (s *Session) BaseURL() string {
+	s.modelMu.RLock()
+	defer s.modelMu.RUnlock()
+	return s.mainProvider.BaseURL
+}
+
+// ConfigBaseURL is the endpoint address config.yaml names for its own
+// endpoint, whichever provider is active. Paired with BaseURL() the same
+// way ConfigModel() is paired with Model().
+func (s *Session) ConfigBaseURL() string {
+	return s.configProvider.BaseURL
+}
+
+// SavesModelAsDefault reports whether a model pick made right now, via
+// SetModel, is worth calling out in the UI as "this outlives the session and
+// overrides config.yaml": true on a /login provider or a named config.yaml
+// endpoint, whose pick lives only in provider.json, so nothing else records
+// it. False on the default endpoint: SetModel still records the pick there
+// too (every entry's pick is saved uniformly now, including the default),
+// but config.yaml already documents its own model, so there is nothing
+// hidden for the notice to point out.
+func (s *Session) SavesModelAsDefault() bool {
+	id := s.EndpointID()
+	return s.savedPath != "" && id != "" && id != ConfigProviderID
+}
+
+// Providers lists every endpoint the pickers offer: the config.yaml default
+// endpoint, its named endpoints, then the registry in its display order.
+func (s *Session) Providers() []ProviderEntry {
+	current := s.EndpointID()
+	var out []ProviderEntry
+	for _, e := range s.endpoints.List() {
+		out = append(out, ProviderEntry{
+			ID:           e.ID,
+			Name:         e.Name,
+			Kind:         e.Kind,
+			LoginKind:    e.Def.LoginKind,
+			Ready:        e.Ready,
+			Stored:       e.Stored,
+			Status:       e.Status,
+			Current:      e.ID == current,
+			NeedsBaseURL: e.NeedsBaseURL,
+			EnvVar:       e.EnvVar,
+			Model:        e.Model,
+		})
 	}
 	return out
-}
-
-func describeConfigEndpoint(p types.ModelProviderConfig) string {
-	where := p.BaseURL
-	if where == "" {
-		where = p.Provider
-	}
-	if p.Model == "" {
-		return where
-	}
-	return p.Model + " @ " + where
-}
-
-// providerConfig builds the connection config for a picker entry without
-// switching to it. Metadata and reasoning effort carry over from the session.
-func (s *Session) providerConfig(id string) (types.ModelProviderConfig, error) {
-	if id == ConfigProviderID {
-		return s.configProvider, nil
-	}
-	def, ok := provider.Get(id)
-	if !ok {
-		return types.ModelProviderConfig{}, fmt.Errorf("unknown provider %q", id)
-	}
-	cur := s.resolvedSessionProvider()
-	p := types.ModelProviderConfig{
-		Provider:        def.ID,
-		Metadata:        cur.Metadata,
-		ReasoningEffort: cur.ReasoningEffort,
-	}
-	// config.yaml may already point at this provider with its own key: keep
-	// it, unless its base_url sends the provider somewhere else entirely.
-	if cfg := s.configProvider; cfg.Provider == def.ID &&
-		(cfg.BaseURL == "" || strings.TrimRight(cfg.BaseURL, "/") == strings.TrimRight(def.BaseURL, "/")) {
-		p.APIKey, p.BaseURL = cfg.APIKey, cfg.BaseURL
-	}
-	if c, ok, err := s.credStore.Get(def.ID); err == nil && ok && c.BaseURL != "" {
-		p.BaseURL = c.BaseURL
-	}
-	return p, nil
 }
 
 // ListProviderModels lists the models the given picker entry serves, so a UI
 // can offer them before switching. llmprovider.ErrNoModelList means the
 // provider has no listing nib can query: ask for a model name instead.
 func (s *Session) ListProviderModels(ctx context.Context, id string) ([]string, error) {
-	p, err := s.providerConfig(id)
+	p, err := s.endpoints.Config(id)
 	if err != nil {
 		return nil, err
 	}
@@ -193,17 +199,17 @@ func (s *Session) ModelChoices(ctx context.Context, id string) ([]string, bool, 
 	if id == "" {
 		return s.modelChoices(ctx, s.resolvedSessionProvider())
 	}
-	p, err := s.providerConfig(id)
+	p, err := s.endpoints.Config(id)
 	if err != nil {
 		return nil, false, err
 	}
 	return s.modelChoices(ctx, p)
 }
 
-// SwitchProvider points the session at a picker entry and model, rebuilding
-// the LLM the way SetModel does. Conversation history is kept.
+// SwitchProvider points the session at an endpoint and model, rebuilding the
+// LLM the way SetModel does. Conversation history is kept.
 func (s *Session) SwitchProvider(id, model string) error {
-	p, err := s.providerConfig(id)
+	p, err := s.endpoints.Config(id)
 	if err != nil {
 		return err
 	}
@@ -216,80 +222,38 @@ func (s *Session) SwitchProvider(id, model string) error {
 	if err := s.applyProvider(p, id); err != nil {
 		return err
 	}
-	s.saveDefaultProvider(id, p.Model)
-	return nil
+	// Persist the model the CALLER asked for, not p.Model (which SwitchProvider
+	// has already resolved from the endpoint above). Every switch via
+	// /endpoint, the picker, or /logout's return path passes model == "": a
+	// bare switch must record NO model, so a later edit to config.yaml (or to
+	// a named endpoint's own model:) stays authoritative on the next start
+	// instead of being frozen out by what happened to be running right now.
+	// Startup already falls back to the entry's own model when Saved.Model is
+	// empty (endpoint.TestStartupSavedWithoutModelUsesTheEntryModel), so a
+	// bare switch stays correct.
+	return endpoint.WriteSaved(s.savedPath, endpoint.Saved{ID: id, Model: model})
 }
 
-// ProviderStateFile holds the provider picked with /login, next to
-// credentials.json, so the next session starts on it. It is nib-managed state
-// rather than a config.yaml edit: config.yaml keeps describing its own
-// endpoint, which the picker's config.yaml entry switches back to (and
-// picking that entry removes this file).
+// ProviderStateFile holds the endpoint picked via the picker or /login, next
+// to credentials.json, so the next session starts on it. It is nib-managed
+// state rather than a config.yaml edit: config.yaml keeps describing its own
+// endpoints, which the picker's config.yaml entry switches back to.
 const ProviderStateFile = "provider.json"
 
-type savedProvider struct {
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
-}
-
-// saveDefaultProvider records id/model as the startup default. Best-effort:
-// the switch itself already happened, so a write failure is only logged.
-func (s *Session) saveDefaultProvider(id, model string) {
-	if s.providerStatePath == "" {
+// restoreStartupEndpoint puts a new session on the endpoint the last one
+// picked. A pick that no longer resolves leaves the session on the default
+// and records why, for the boot log.
+func (s *Session) restoreStartupEndpoint() {
+	e, p, note := s.endpoints.Startup(endpoint.LoadSaved(s.savedPath))
+	s.startupNote = note
+	if e.ID == endpoint.DefaultID && note == "" && p.Model == s.Model() {
+		return // already built from the default, with the same model
+	}
+	if p.Model == "" {
 		return
 	}
-	if id == ConfigProviderID {
-		if err := os.Remove(s.providerStatePath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			xlog.Warn("could not clear the default provider", "error", err)
-		}
-		return
-	}
-	if err := writeSavedProvider(s.providerStatePath, savedProvider{Provider: id, Model: model}); err != nil {
-		xlog.Warn("could not save the default provider", "provider", id, "error", err)
-	}
-}
-
-func writeSavedProvider(path string, v savedProvider) error {
-	data, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
-}
-
-// restoreDefaultProvider switches a new session to the provider saved by a
-// previous /login pick. An unknown provider or a failing client leaves the
-// session on config.yaml's endpoint.
-func (s *Session) restoreDefaultProvider() {
-	if s.providerStatePath == "" {
-		return
-	}
-	data, err := os.ReadFile(s.providerStatePath)
-	if err != nil {
-		return
-	}
-	var v savedProvider
-	if err := json.Unmarshal(data, &v); err != nil || v.Provider == "" || v.Provider == ConfigProviderID {
-		return
-	}
-	p, err := s.providerConfig(v.Provider)
-	if err == nil {
-		p.Model = v.Model
-		if p.Model == "" {
-			err = fmt.Errorf("no model saved")
-		} else {
-			err = s.applyProvider(p, v.Provider)
-		}
-	}
-	if err != nil {
-		xlog.Warn("could not restore the default provider; using config.yaml", "provider", v.Provider, "error", err)
+	if err := s.applyProvider(p, e.ID); err != nil {
+		xlog.Warn("could not start on the saved endpoint; using config.yaml", "endpoint", e.ID, "error", err)
 	}
 }
 

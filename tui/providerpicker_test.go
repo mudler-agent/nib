@@ -55,8 +55,11 @@ func TestLoginOpensProviderPicker(t *testing.T) {
 	if !m.providerPicker.active || len(m.messages) != 0 {
 		t.Fatalf("/login should open the picker, not print: picker=%v messages=%+v", m.providerPicker.active, m.messages)
 	}
-	if e, _ := m.providerPicker.choice(); e.ID != chat.ConfigProviderID || !e.Current {
-		t.Fatalf("initial selection = %+v, want the current config.yaml entry", e)
+	// /login is authentication-only: it never lists config.yaml's default
+	// endpoint (that's /endpoint's job), so nothing in its list can be marked
+	// Current while the session sits on that default.
+	if e, _ := m.providerPicker.choice(); e.ID == chat.ConfigProviderID || e.Current {
+		t.Fatalf("initial selection = %+v, want a registry provider, not config.yaml's default", e)
 	}
 	m, _ = press(t, m, typeText("regolo"))
 	if e, ok := m.providerPicker.choice(); !ok || e.ID != "regolo" {
@@ -118,9 +121,9 @@ func TestLoginAPIKeyInTUIThenPickModel(t *testing.T) {
 	}
 	m, _ = press(t, m, keyEsc)
 
-	// And back to config.yaml.
-	m.dispatchResolved("/login")
-	m, _ = press(t, m, typeText("config"), keyEnter)
+	// And back to config.yaml — via /endpoint, since /login no longer lists
+	// (or switches to) the config.yaml default; it is authentication-only.
+	m.dispatchResolved("/endpoint config")
 	if m.session.ProviderID() != chat.ConfigProviderID || m.session.Model() != "local-a" {
 		t.Fatalf("switching back: provider=%q model=%q", m.session.ProviderID(), m.session.Model())
 	}

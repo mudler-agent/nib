@@ -27,6 +27,7 @@ import (
 	"github.com/mudler/nib/attachments"
 	"github.com/mudler/nib/attachstage"
 	"github.com/mudler/nib/chat"
+	"github.com/mudler/nib/endpoint"
 	"github.com/mudler/nib/llmprovider"
 	"github.com/mudler/nib/loop"
 	wizmcp "github.com/mudler/nib/mcp"
@@ -952,8 +953,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						} else {
 							m.appendMessage(ChatMessage{Role: "agent", Content: "provider: " + target.Name + " · model: " + choice + " · " + theme.ProviderSavedDefault})
 						}
+					} else if err := m.session.SetModel(choice); err != nil {
+						m.appendMessage(ChatMessage{Role: "error", Content: err.Error()})
 					} else {
-						m.session.SetModel(choice)
 						m.appendMessage(ChatMessage{Role: "agent", Content: m.modelSwitchNotice(choice)})
 					}
 					m.modelPicker.close()
@@ -1404,7 +1406,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// model list: let the user type the model name instead.
 			m.modelPicker.loading = false
 			m.modelPicker.typed = true
-			m.modelPicker.listErr = msg.err.Error()
+			name := m.session.ActiveProviderName()
+			if m.modelPicker.target != nil {
+				name = m.modelPicker.target.Name
+			}
+			m.modelPicker.listErr = fmt.Sprintf(theme.ModelListFailed, name, msg.err)
 		case msg.err != nil:
 			m.modelPicker.close()
 			m.appendMessage(ChatMessage{Role: "error", Content: msg.err.Error()})
@@ -1953,12 +1959,30 @@ func (m *Model) dispatchResolved(input string) tea.Cmd {
 		// that accepts the connection and never answers would freeze the TUI.
 		lookupCtx, cancel := context.WithTimeout(m.ctx, chat.ModelListTimeout)
 		defer cancel()
-		models, err := m.session.ListModels(lookupCtx)
+		// action.Endpoint ("" = the current endpoint) lets /models list ANY
+		// endpoint without switching to it, unlike /model's picker which is
+		// always the current one.
+		models, _, err := m.session.ModelChoices(lookupCtx, action.Endpoint)
+		name := m.session.ActiveProviderName()
+		if action.Endpoint != "" {
+			name = action.Endpoint
+			if e, ok := m.providerEntry(action.Endpoint); ok {
+				name = e.Name
+			}
+		}
 		if err != nil {
 			m.appendMessage(ChatMessage{Role: "error", Content: err.Error()})
 		} else {
-			listing := fencedListing(chat.FormatProviderModelList(m.session.ActiveProviderName(), models, m.session.Model()))
+			listing := fencedListing(chat.FormatProviderModelList(name, models, m.session.Model()))
 			m.appendMessage(ChatMessage{Role: "agent", Content: listing})
+		}
+		return nil
+	case slash.KindModelReset:
+		model, err := m.session.ResetModel()
+		if err != nil {
+			m.appendMessage(ChatMessage{Role: "error", Content: err.Error()})
+		} else {
+			m.appendMessage(ChatMessage{Role: "agent", Content: "model: " + model + " · " + theme.ModelResetNotice})
 		}
 		return nil
 	case slash.KindModelSet:
@@ -2021,7 +2045,7 @@ func (m *Model) dispatchResolved(input string) tea.Cmd {
 		return nil
 	case slash.KindLogin:
 		if action.Provider == "" {
-			m.openProviderPicker(false)
+			m.openProviderPicker(pickerLogin)
 			return nil
 		}
 		e, ok := m.providerEntry(action.Provider)
@@ -2029,14 +2053,36 @@ func (m *Model) dispatchResolved(input string) tea.Cmd {
 			m.appendMessage(ChatMessage{Role: "error", Content: fmt.Sprintf("unknown provider %q · /login lists them", action.Provider)})
 			return nil
 		}
+		if e.Kind != endpoint.KindProvider {
+			// A config.yaml default or named entry: /login authenticates
+			// registry providers only now that /endpoint lists (and
+			// switches to) everything, including these. Without this gate,
+			// e.LoginKind's zero value equals provider.LoginNone for a
+			// yaml entry (whose Def is the zero Definition), so useProvider
+			// would happily open a model picker for it and switch — the
+			// exact bypass /endpoint's split was meant to close.
+			m.appendMessage(ChatMessage{Role: "error", Content: fmt.Sprintf(theme.LoginNotAProvider, e.ID, e.ID)})
+			return nil
+		}
 		return m.useProvider(e, true)
 	case slash.KindLogout:
 		if action.Provider == "" {
-			m.openProviderPicker(true)
+			m.openProviderPicker(pickerLogout)
 			return nil
 		}
 		m.logout(action.Provider)
 		return nil
+	case slash.KindEndpoint:
+		if action.Endpoint == "" {
+			m.openEndpointPicker()
+			return nil
+		}
+		e, ok := m.providerEntry(action.Endpoint)
+		if !ok {
+			m.appendMessage(ChatMessage{Role: "error", Content: fmt.Sprintf(theme.EndpointUnknown, action.Endpoint)})
+			return nil
+		}
+		return m.useEndpoint(e)
 	case slash.KindResume:
 		return m.startResume(action.ResumeAll, action.ResumeID)
 	case slash.KindSettings:
@@ -3292,8 +3338,10 @@ func (m Model) helpLine() string {
 		return theme.ModelPickerTypeName
 	case m.modelPicker.active:
 		return theme.ModelPickerKeyHint
-	case m.providerPicker.active && m.providerPicker.logout:
+	case m.providerPicker.active && m.providerPicker.mode == pickerLogout:
 		return theme.ProviderPickerLogoutHint
+	case m.providerPicker.active && m.providerPicker.mode == pickerEndpoint:
+		return theme.EndpointPickerKeyHint
 	case m.providerPicker.active:
 		return theme.ProviderPickerKeyHint
 	case m.loginForm.active:

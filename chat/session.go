@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/mudler/nib/auth"
+	"github.com/mudler/nib/endpoint"
 	"github.com/mudler/nib/hooks"
 	"github.com/mudler/nib/llmprovider"
 	"github.com/mudler/nib/llmprovider/copilot"
@@ -127,14 +128,26 @@ type Session struct {
 	modelMu      sync.RWMutex
 	llmModel     string                    // guarded by modelMu
 	mainProvider types.ModelProviderConfig // guarded by modelMu
-	providerID   string                    // guarded by modelMu; ConfigProviderID until /login switches
+	endpointID   string                    // guarded by modelMu; endpoint.DefaultID until switched
 	// configProvider is the endpoint config.yaml describes, kept so the
-	// provider picker can switch back to it after using a /login provider.
+	// provider picker can switch back to it after using a named endpoint or a
+	// /login provider.
 	configProvider types.ModelProviderConfig
-	// providerStatePath is where the /login-picked default provider is kept
-	// (ProviderStateFile); empty disables persistence.
-	providerStatePath string
-	credStore         *auth.Store // credential store for /login-managed providers
+	// endpoints is the resolvable set of endpoints for this config: the
+	// config.yaml default, its named endpoints, and the provider registry.
+	endpoints *endpoint.Set
+	// configErrs are the config.yaml endpoints rejected while building
+	// endpoints, for the boot log.
+	configErrs []error
+	// startupNote is set by restoreStartupEndpoint when a saved pick could
+	// not be honored at startup, for the boot log.
+	startupNote string
+	// savedPath is where the picked endpoint is kept (ProviderStateFile),
+	// next to credentials.json. NewSession always sets it (plugin.BaseDirIn
+	// never resolves to ""); only a Session built directly within this
+	// package's own tests can leave it unset.
+	savedPath string
+	credStore *auth.Store // credential store for /login-managed providers
 
 	// learnedWindow is the context window a backend stated in an overflow
 	// error, and learnedWindowModel is the model it was learned for. They are
@@ -182,6 +195,12 @@ type Session struct {
 	// the user. When true, SetModel re-runs detection for the new model; when
 	// false, the user's explicit value is preserved across model switches.
 	compactionAutoDetected bool
+
+	// limitsFor is the model whose context window and output cap have already
+	// been asked of the endpoint; guarded by modelMu. Empty means the probes
+	// are still owed, which is the state a model switch returns it to. See
+	// modellimits.go.
+	limitsFor string
 
 	// prunedMu guards the tool-output pruning state below. The manipulator reads
 	// it from inside cogito's loop, and nothing here should assume which
@@ -402,6 +421,7 @@ func NewSession(ctx context.Context, cfg types.Config, callbacks Callbacks, tran
 	if err != nil {
 		return nil, fmt.Errorf("create main LLM: %w", err)
 	}
+	endpoints, configErrs := endpoint.New(cfg, credStore)
 	classifier, err := provenance.ClassifierForConfig(cfg)
 	if err != nil {
 		return nil, err
@@ -462,8 +482,10 @@ func NewSession(ctx context.Context, cfg types.Config, callbacks Callbacks, tran
 		llmModel:             mainProvider.Model,
 		mainProvider:         mainProvider,
 		configProvider:       mainProvider,
-		providerStatePath:    filepath.Join(plugin.BaseDirIn(cfg.BaseDir), ProviderStateFile),
-		providerID:           ConfigProviderID,
+		endpoints:            endpoints,
+		configErrs:           configErrs,
+		savedPath:            filepath.Join(plugin.BaseDirIn(cfg.BaseDir), ProviderStateFile),
+		endpointID:           endpoint.DefaultID,
 		credStore:            credStore,
 		apiKey:               mainProvider.APIKey,
 		baseURL:              mainProvider.BaseURL,
@@ -519,25 +541,17 @@ func NewSession(ctx context.Context, cfg types.Config, callbacks Callbacks, tran
 	}
 	s.hooks.Fire(ctx, hooks.EventSessionStart, "", map[string]any{"event": "SessionStart"})
 
-	// A provider picked with /login in an earlier session is the default.
-	s.restoreDefaultProvider()
+	// An endpoint picked in an earlier session is the default.
+	s.restoreStartupEndpoint()
 
-	// Auto-detect the context window when the user did not set one explicitly.
-	// A zero MaxContextTokens means "unset" (config.go no longer defaults it);
-	// the probe and static table fill it in, with the 128k constant as the
-	// final fallback. Best-effort: on failure the 128k default is applied.
+	// A zero MaxContextTokens means "unset" (config.go no longer defaults it).
+	// The default applies immediately so compaction and the gauge always have
+	// a figure; the endpoint is asked for the model's real window at the start
+	// of the first turn, in ensureModelLimits, rather than here. Building a
+	// session makes no request, so nib starts on a machine with no network.
 	if s.compaction.MaxContextTokens == 0 {
 		s.compactionAutoDetected = true
-		// Probe the endpoint the client really talks to: a /login provider's
-		// own URL and stored key, not config.yaml's.
-		baseURL, apiKey, _ := llmprovider.ModelsEndpoint(s.resolvedSessionProvider(), s.credStore)
-		probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
-		if v := detectContextSize(probeCtx, baseURL, apiKey, s.Model()); v > 0 {
-			s.compaction.MaxContextTokens = v
-		} else {
-			s.compaction.MaxContextTokens = defaultContextTokens
-		}
-		cancel()
+		s.compaction.MaxContextTokens = defaultContextTokens
 	}
 
 	return s, nil
@@ -1221,6 +1235,10 @@ func (s *Session) SendMessage(text string, parts ...ContentPart) (string, error)
 	}
 	turnCtx := s.beginTurn()
 	s.applyPendingReload()
+	// The endpoint is asked for this model's context window and output cap
+	// here, on the first turn that uses it, rather than while the session or
+	// the client was being built.
+	s.ensureModelLimits(turnCtx)
 	s.allowAllTurn = false
 	// The overflow retry is capped per TURN, not per session: a later turn that
 	// overflows deserves its own recovery attempt.
@@ -2053,23 +2071,53 @@ func (s *Session) currentLLM() (cogito.LLM, string) {
 // A turn already in flight finishes on the client it started with (see
 // currentLLM); the switch applies from the next turn. Safe to call from another
 // goroutine while a turn is running.
-func (s *Session) SetModel(name string) {
+//
+// The pick is recorded for the current endpoint via endpoint.WriteSaved,
+// uniformly across every endpoint (including the config.yaml default): the
+// next session starts back on this model rather than silently reverting to
+// whatever config.yaml or the endpoint's own definition says. A failed write
+// is only logged — the switch already happened, and a state-file problem
+// should not be reported as if the model change itself failed.
+func (s *Session) SetModel(name string) error {
 	provider := s.resolvedSessionProvider()
 	provider.Model = name
 	if err := s.applyProvider(provider, ""); err != nil {
 		xlog.Error("could not switch model", "model", name, "error", err)
-		return
+		return err
 	}
-	// On a /login provider the saved default follows the model; config.yaml
-	// owns the model for its own endpoint.
-	if id := s.ProviderID(); id != "" && id != ConfigProviderID {
-		s.saveDefaultProvider(id, name)
+	id := s.EndpointID()
+	if err := endpoint.WriteSaved(s.savedPath, endpoint.Saved{ID: id, Model: name}); err != nil {
+		xlog.Warn("could not save the endpoint default", "endpoint", id, "error", err)
 	}
+	return nil
+}
+
+// ResetModel drops the saved model override for the current endpoint, so the
+// model the endpoint itself names applies again, and reports the model now
+// in use. This is the escape hatch from a sticky pick: nib never edits
+// config.yaml, so the yaml's own model is restored by forgetting the pick
+// rather than by rewriting anything on disk that config.yaml owns.
+func (s *Session) ResetModel() (string, error) {
+	id := s.EndpointID()
+	p, err := s.endpoints.Config(id)
+	if err != nil {
+		return "", err
+	}
+	if p.Model == "" {
+		return "", fmt.Errorf("%s names no model of its own: pick one with /model", id)
+	}
+	if err := s.applyProvider(p, id); err != nil {
+		return "", err
+	}
+	if err := endpoint.WriteSaved(s.savedPath, endpoint.Saved{ID: id}); err != nil {
+		xlog.Warn("could not clear the saved model", "endpoint", id, "error", err)
+	}
+	return p.Model, nil
 }
 
 // applyProvider rebuilds the session LLM for provider (see SetModel). A
-// non-empty providerID also records which picker entry is now current.
-func (s *Session) applyProvider(provider types.ModelProviderConfig, providerID string) error {
+// non-empty id also records which picker entry is now current.
+func (s *Session) applyProvider(provider types.ModelProviderConfig, id string) error {
 	// Built outside the lock: every input is construction-time state, so
 	// nothing here needs to be ordered against a reader.
 	name := provider.Model
@@ -2085,8 +2133,8 @@ func (s *Session) applyProvider(provider types.ModelProviderConfig, providerID s
 	s.llm = llm
 	s.llmModel = name
 	s.mainProvider = provider
-	if providerID != "" {
-		s.providerID = providerID
+	if id != "" {
+		s.endpointID = id
 	}
 	s.modelMu.Unlock()
 
@@ -2096,20 +2144,12 @@ func (s *Session) applyProvider(provider types.ModelProviderConfig, providerID s
 	// prefers a redundant "preparing" label over a silent minute.
 	s.prefixWarm.Store(false)
 
-	// Re-detect the context window for the new model, but only when the
-	// current value was auto-detected. An explicit user override is preserved.
-	if s.compactionAutoDetected {
-		// The probe needs the endpoint the client really talks to, which for a
-		// /login provider is its default URL and stored key, not the config's.
-		baseURL, apiKey, _ := llmprovider.ModelsEndpoint(provider, s.credStore)
-		probeCtx, cancel := context.WithTimeout(s.ctx, probeTimeout)
-		if v := detectContextSize(probeCtx, baseURL, apiKey, name); v > 0 {
-			s.modelMu.Lock()
-			s.compaction.MaxContextTokens = v
-			s.modelMu.Unlock()
-		}
-		cancel()
-	}
+	// The new model's context window and output cap are asked for at the start
+	// of the next turn (ensureModelLimits), not here: switching model must not
+	// block on the network, and a switch made offline still has to work.
+	s.modelMu.Lock()
+	s.limitsFor = ""
+	s.modelMu.Unlock()
 	return nil
 }
 
@@ -2267,16 +2307,18 @@ func (e *UnservedModelError) Error() string {
 // returns the notice to show the user, or an error to show instead. Both front
 // ends go through it, so the policy and its wording cannot drift between them.
 //
-// SetModel takes no error by design, so a typo would otherwise switch happily
-// and surface a turn later as a 404 from the backend, with nothing pointing at
-// the cause. Validating here turns that into an immediate message that names
-// the models the endpoint does serve.
+// SetModel's own error only covers rebuilding the LLM client (a bad
+// provider config), not an unserved model name — without validating here, a
+// typo would switch happily and surface a turn later as a 404 from the
+// backend, with nothing pointing at the cause. Validating here turns that
+// into an immediate message that names the models the endpoint does serve.
 //
 // A lookup that fails does NOT veto the switch. The list is a convenience, and
 // a user asking for a different model may well be asking precisely because
 // something is wrong with the endpoint right now; refusing would leave them
 // stuck. The same goes for an endpoint that answers with an empty list. Both
-// cases switch and say the name went unverified.
+// cases switch (unless SetModel itself errors) and say the name went
+// unverified.
 func (s *Session) SwitchModel(ctx context.Context, name string) (string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -2289,19 +2331,27 @@ func (s *Session) SwitchModel(ctx context.Context, name string) (string, error) 
 
 	switch {
 	case partial && !slices.Contains(models, name):
-		s.SetModel(name)
+		if serr := s.SetModel(name); serr != nil {
+			return "", serr
+		}
 		return "model: " + name + " (not in the suggested list; the provider decides)", nil
 	case err != nil:
-		s.SetModel(name)
+		if serr := s.SetModel(name); serr != nil {
+			return "", serr
+		}
 		return "model: " + name + " (unverified: " + err.Error() + ")", nil
 	case len(models) == 0:
-		s.SetModel(name)
+		if serr := s.SetModel(name); serr != nil {
+			return "", serr
+		}
 		return "model: " + name + " (unverified: the endpoint advertises no models)", nil
 	case !slices.Contains(models, name):
 		return "", &UnservedModelError{Name: name, Models: models, Current: s.Model()}
 	}
 
-	s.SetModel(name)
+	if serr := s.SetModel(name); serr != nil {
+		return "", serr
+	}
 	return "model: " + name, nil
 }
 
@@ -2348,7 +2398,23 @@ func (s *Session) Logout(providerID string) (string, error) {
 	if err := s.credStore.Delete(def.ID); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("Logged out of %s (%s)", def.Name, def.ID), nil
+	notice := fmt.Sprintf("Logged out of %s (%s)", def.Name, def.ID)
+	if s.EndpointID() != def.ID {
+		return notice, nil
+	}
+	// The session was talking to this provider: leaving it selected would
+	// keep a credential-less endpoint as the startup default, and the next
+	// session would silently change model instead.
+	if err := s.SwitchProvider(endpoint.DefaultID, ""); err != nil {
+		// The return switch itself failed (e.g. config.yaml names no model),
+		// so the session is stranded ON def with its credential just deleted.
+		// Say so rather than the plain success notice: swallowing this left
+		// the user believing they were safely back on config.yaml while
+		// /login pointed at a command (/login) that no longer switches
+		// endpoints at all.
+		return notice + fmt.Sprintf(" · still on %s with no login now (%v) · pick another with /endpoint", def.Name, err), nil
+	}
+	return notice + " · back on " + endpoint.DefaultName + " · model: " + s.Model(), nil
 }
 
 // StartLogin begins a login flow for the given provider. For OAuth-code and

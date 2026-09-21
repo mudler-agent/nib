@@ -234,3 +234,40 @@ func TestResolveSettings(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveEndpoint(t *testing.T) {
+	for _, tc := range []struct {
+		in       string
+		wantKind Kind
+		wantID   string
+	}{
+		{"/endpoint", KindEndpoint, ""},
+		{"/endpoint config", KindEndpoint, "config"},
+		{"/endpoint @work-vllm", KindEndpoint, "@work-vllm"},
+		{"/endpoint  regolo  ", KindEndpoint, "regolo"},
+	} {
+		got := Resolve(tc.in, nil, nil, nil)
+		if got.Kind != tc.wantKind || got.Endpoint != tc.wantID {
+			t.Fatalf("Resolve(%q) = kind %v endpoint %q, want kind %v endpoint %q", tc.in, got.Kind, got.Endpoint, tc.wantKind, tc.wantID)
+		}
+	}
+}
+
+func TestResolveModelReset(t *testing.T) {
+	if got := Resolve("/model reset", nil, nil, nil); got.Kind != KindModelReset {
+		t.Fatalf("Resolve(\"/model reset\") = %v, want KindModelReset", got.Kind)
+	}
+	if got := Resolve("/model gpt-4o", nil, nil, nil); got.Kind != KindModelSet || got.Model != "gpt-4o" {
+		t.Fatalf("Resolve(\"/model gpt-4o\") = kind %v model %q, want kind KindModelSet model \"gpt-4o\"", got.Kind, got.Model)
+	}
+}
+
+func TestResolveModelsForOneEndpoint(t *testing.T) {
+	got := Resolve("/models @work", nil, nil, nil)
+	if got.Kind != KindModelList || got.Endpoint != "@work" {
+		t.Fatalf("Resolve(\"/models @work\") = kind %v endpoint %q, want kind KindModelList endpoint \"@work\"", got.Kind, got.Endpoint)
+	}
+	if got := Resolve("/models", nil, nil, nil); got.Kind != KindModelList || got.Endpoint != "" {
+		t.Fatalf("Resolve(\"/models\") = kind %v endpoint %q, want kind KindModelList endpoint \"\"", got.Kind, got.Endpoint)
+	}
+}

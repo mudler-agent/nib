@@ -57,11 +57,16 @@ func openAIFactory(def provider.Definition, config types.ModelProviderConfig, st
 	llm.SetMetadata(config.Metadata)
 	llm.SetReasoningEffort(config.ReasoningEffort)
 
-	// Resolve max output tokens: user config → API discovery → catalog → default.
+	// Resolve max output tokens: user config → catalog → default. The nil
+	// context skips the discovery request on purpose: building a client must
+	// not talk to the network, or starting a session and switching a model
+	// both block on a round-trip and fail where there is none. The session
+	// runs discovery on the first turn instead and applies what it finds
+	// through SetMaxTokens (see chat/modellimits.go).
 	if baseURL == "" {
 		baseURL = openAIDefaultBaseURL
 	}
-	res := catalog.ResolveMaxTokens(context.Background(), config, baseURL, apiKey)
+	res := catalog.ResolveMaxTokens(nil, config, baseURL, apiKey)
 	if !res.Omit && res.MaxTokens > 0 {
 		llm.SetMaxTokens(res.MaxTokens)
 	}

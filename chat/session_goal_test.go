@@ -61,6 +61,10 @@ func TestStopGateReRunsUntilGoalDone(t *testing.T) {
 	var reqCount int64 // atomic
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isModelProbe(r) {
+			serveEmptyModels(w)
+			return
+		}
 		n := atomic.AddInt64(&reqCount, 1)
 
 		var req struct {

@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbletea"
-	"github.com/mudler/nib/chat"
 	"github.com/mudler/nib/theme"
 )
 
@@ -16,6 +15,7 @@ type bootEntry struct {
 	ev    string // event name, e.g. "config"
 	dt    string // detail, e.g. "~/.config/nib/config.yaml"
 	ready bool   // marks the final READY line
+	warn  bool   // a degraded/unexpected condition, rendered in the warning style
 }
 
 // bootState tracks the boot log animation. It is a live state, not a gate:
@@ -141,9 +141,23 @@ func (m *Model) bootProvider() string {
 }
 
 // bootModel is the model requests use, from the session like bootProvider.
-// When a /login pick overrides a model config.yaml also names, both are
-// configured and only one is used, so the line says which instead of leaving
-// the user to guess why the header disagrees with config.yaml.
+// When the running model diverges from what config.yaml names for its own
+// endpoint, both are configured and only one is used, so the line says which
+// instead of leaving the user to guess why the header disagrees with
+// config.yaml.
+//
+// The note is gated on actual divergence — Model() != ActiveEndpointConfigModel()
+// — not on which endpoint is active. A /login pick or a named endpoint is the
+// usual way the two diverge, but SetModel now persists a pick uniformly on
+// every endpoint, including config.yaml's own default: a saved pick can
+// shadow config.yaml's model while the session never left the default
+// endpoint at all, and gating on endpoint identity would hide exactly that
+// case. See endpointOverrides in tui/settings.go for the same correction
+// applied to /settings.
+//
+// ActiveEndpointConfigModel (rather than ConfigModel) is what makes this
+// correct on a named endpoint too: ConfigModel is hard-wired to config.yaml's
+// TOP-LEVEL model, which a named endpoint's own model: key never touches.
 func (m *Model) bootModel() string {
 	if m.session == nil {
 		if m.cfg.Model != "" {
@@ -152,11 +166,12 @@ func (m *Model) bootModel() string {
 		return "default"
 	}
 	model := m.session.Model()
+	cfgModel := m.session.ActiveEndpointConfigModel()
+	overridden := model != "" && cfgModel != "" && model != cfgModel
 	if model == "" {
 		model = "default"
 	}
-	if cfgModel := m.session.ConfigModel(); cfgModel != "" && cfgModel != model &&
-		m.session.ProviderID() != chat.ConfigProviderID {
+	if overridden {
 		model += "  " + fmt.Sprintf(theme.BootModelOverride, cfgModel)
 	}
 	return model
@@ -180,11 +195,42 @@ func (b *bootState) refreshSession(m *Model) {
 	}
 }
 
+// appendStartupWarnings appends one boot entry per config.yaml endpoint
+// rejected at load and, if a saved pick could not be honored, one more
+// naming what happened instead. Both were previously invisible: the errors
+// and the note existed on the session (ConfigErrors, StartupNote) but nothing
+// consumed them, so a rejected endpoint or a dropped pick left no trace on
+// screen. Called once, right after refreshSession corrects the provider and
+// model lines, so the session (and therefore these accessors) is known to
+// exist.
+func (b *bootState) appendStartupWarnings(m *Model) {
+	if m.session == nil {
+		return
+	}
+	for _, err := range m.session.ConfigErrors() {
+		b.entries = append(b.entries, bootEntry{
+			ts:   fmt.Sprintf("%05.3f", time.Since(b.start).Seconds()),
+			ev:   "config.reject",
+			dt:   err.Error(),
+			warn: true,
+		})
+	}
+	if note := m.session.StartupNote(); note != "" {
+		b.entries = append(b.entries, bootEntry{
+			ts:   fmt.Sprintf("%05.3f", time.Since(b.start).Seconds()),
+			ev:   "endpoint.drop",
+			dt:   note,
+			warn: true,
+		})
+	}
+}
+
 // markReady flushes remaining scripted entries and appends the READY line.
 // Flushed entries get the same real details tick would have given them: a
 // session that is ready early must not leave the provider/model lines blank.
 func (b *bootState) markReady(m *Model) {
 	b.refreshSession(m)
+	b.appendStartupWarnings(m)
 	script := bootScript()
 	for b.index < len(script) {
 		e := script[b.index]
@@ -220,10 +266,14 @@ func (b *bootState) render(width int) string {
 		if len(ev) < 13 {
 			ev = ev + strings.Repeat(" ", 13-len(ev))
 		}
+		mark, evStyled := theme.Done.Render("✓"), theme.Running.Render(ev)
+		if e.warn {
+			mark, evStyled = theme.Error.Render("!"), theme.Error.Render(ev)
+		}
 		sb.WriteString(fmt.Sprintf("  %s  %s %s%s\n",
 			theme.Meta.Render("["+e.ts+"]"),
-			theme.Done.Render("✓"),
-			theme.Running.Render(ev),
+			mark,
+			evStyled,
 			theme.Help.Render(e.dt),
 		))
 	}

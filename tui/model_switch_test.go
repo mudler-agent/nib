@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -251,8 +252,11 @@ func TestModelPickerNavigationAndEnterSwitch(t *testing.T) {
 	if m.modelPicker.active || m.session.Model() != "model-b" {
 		t.Fatalf("Enter picker=%+v model=%q, want closed on model-b", m.modelPicker, m.session.Model())
 	}
-	if msg := lastMessage(t, m); msg.Role != "agent" || msg.Content != "model: model-b" {
-		t.Fatalf("switch confirmation = %+v", msg)
+	// The pick is on the config.yaml default endpoint and model-a is what the
+	// file names, so the confirmation also says the pick outlives the session.
+	wantSwitch := "model: model-b · " + fmt.Sprintf(theme.ModelOverridesConfigNotice, "model-a")
+	if msg := lastMessage(t, m); msg.Role != "agent" || msg.Content != wantSwitch {
+		t.Fatalf("switch confirmation = %+v, want %q", msg, wantSwitch)
 	}
 	if requests != 1 {
 		t.Fatalf("model endpoint requests = %d, want one load and no switch validation", requests)
@@ -328,8 +332,9 @@ func TestDispatchModelSetSwitchesTheSession(t *testing.T) {
 }
 
 // A typo must be refused in the transcript, as an error, with the session left
-// where it was: SetModel takes no error, so this is the only place the mistake
-// can still be caught before the next turn 404s.
+// where it was: SetModel's own error only covers a rebuild failure, not an
+// unserved model name, so this is the only place the mistake can still be
+// caught before the next turn 404s.
 //
 // The refusal arrives as TWO lines. The listing rides an "agent" line inside a
 // fence because the "error" role is word-wrapped, and a wrapped listing loses

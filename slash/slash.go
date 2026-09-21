@@ -34,6 +34,7 @@ const (
 	cmdLogout   = "logout"
 	cmdAttach   = "attach"
 	cmdSettings = "settings"
+	cmdEndpoint = "endpoint"
 
 	// /attach sub-verbs
 	cmdAttachClear = "clear"
@@ -44,6 +45,9 @@ const (
 
 	// /goal sub-verbs
 	cmdGoalClear = "clear"
+
+	// /model sub-verbs
+	cmdModelReset = "reset"
 
 	// /yolo sub-verbs
 	cmdYoloOn  = "on"
@@ -59,25 +63,27 @@ const (
 )
 
 const (
-	KindSend      Kind = iota // send Text to the agent
-	KindLoadSkill             // eagerly load Skill into the session prompt
-	KindError                 // report Err to the user, send nothing
-	KindCompact               // compact the current conversation
-	KindLoopStart             // start a recurring/self-paced loop
-	KindLoopStop              // stop one loop (LoopID) or all (empty)
-	KindLoopList              // list active loops
-	KindGoalSet               // set/replace the session goal (Text)
-	KindGoalShow              // show the current goal
-	KindGoalClear             // clear the current goal
-	KindAttach                // stage/list/clear file attachments
-	KindModelList             // list available models
-	KindModelPick             // pick a model from the available models
-	KindModelSet              // switch the session model to Model
-	KindYolo                  // toggle (or explicitly set) session-wide auto-approval
-	KindResume                // resume a recorded session (ResumeID) or open the picker
-	KindLogin                 // log in to a provider (Provider empty = list)
-	KindLogout                // log out of a provider (Provider empty = list)
-	KindSettings              // list, show, set or unset a config key (SettingKey etc.)
+	KindSend       Kind = iota // send Text to the agent
+	KindLoadSkill              // eagerly load Skill into the session prompt
+	KindError                  // report Err to the user, send nothing
+	KindCompact                // compact the current conversation
+	KindLoopStart              // start a recurring/self-paced loop
+	KindLoopStop               // stop one loop (LoopID) or all (empty)
+	KindLoopList               // list active loops
+	KindGoalSet                // set/replace the session goal (Text)
+	KindGoalShow               // show the current goal
+	KindGoalClear              // clear the current goal
+	KindAttach                 // stage/list/clear file attachments
+	KindModelList              // list available models
+	KindModelPick              // pick a model from the available models
+	KindModelSet               // switch the session model to Model
+	KindYolo                   // toggle (or explicitly set) session-wide auto-approval
+	KindResume                 // resume a recorded session (ResumeID) or open the picker
+	KindLogin                  // log in to a provider (Provider empty = list)
+	KindLogout                 // log out of a provider (Provider empty = list)
+	KindSettings               // list, show, set or unset a config key (SettingKey etc.)
+	KindEndpoint               // switch endpoint (Endpoint empty = open the picker)
+	KindModelReset             // drop the saved model override for the current endpoint
 )
 
 // AttachOp enumerates the /attach sub-operations.
@@ -124,6 +130,10 @@ type Action struct {
 	SettingValue    string // raw, possibly containing spaces
 	SettingHasValue bool   // a value was given (distinguishes an empty string)
 	SettingUnset    bool   // the value was "default" or "unset": remove the key
+
+	// Endpoint actions:
+	Endpoint string // KindEndpoint: endpoint ID; empty = picker.
+	//                KindModelList: which endpoint to list; empty = current.
 }
 
 // Expand renders a command's prompt template with the given args.
@@ -175,11 +185,14 @@ func Resolve(input string, cmds []types.CommandConfig, skills []types.Skill, age
 	case cmdCompact:
 		return Action{Kind: KindCompact}
 	case cmdModels:
-		return Action{Kind: KindModelList}
+		return Action{Kind: KindModelList, Endpoint: strings.TrimSpace(rest)}
 	case cmdModel:
 		name := strings.TrimSpace(rest)
-		if name == "" {
+		switch name {
+		case "":
 			return Action{Kind: KindModelPick}
+		case cmdModelReset:
+			return Action{Kind: KindModelReset}
 		}
 		return Action{Kind: KindModelSet, Model: name}
 	case cmdLoop:
@@ -226,6 +239,8 @@ func Resolve(input string, cmds []types.CommandConfig, skills []types.Skill, age
 			}
 			return Action{Kind: KindAttach, AttachOp: AttachStage, AttachPath: rest, Transcribe: transcribe}
 		}
+	case cmdEndpoint:
+		return Action{Kind: KindEndpoint, Endpoint: strings.TrimSpace(rest)}
 	default:
 		c, ok := findCommand(cmds, verb)
 		if !ok {

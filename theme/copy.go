@@ -50,11 +50,37 @@ const (
 	// ModelPickerLoginHint follows the key hint in /model's picker, which
 	// only lists the current provider's models: switching provider is /login.
 	ModelPickerLoginHint = "/login to switch provider"
+	// ModelListFailed is the picker's listErr when an endpoint could not be
+	// reached to list its models (%s the endpoint's name, %s the error). It
+	// precedes ModelPickerTypeName in the hint, so the dialog both explains
+	// the failure and says a model name can still be typed — it never closes
+	// silently on a listing failure.
+	ModelListFailed = "could not list models for %s: %v"
 
-	// BootModelOverride is the dim note on the boot log's model line when a
-	// saved /login pick replaces config.yaml's model (a %s for that model):
-	// both are configured, and only one is used, so the log says which.
-	BootModelOverride = "(config.yaml: %s, overridden by /login)"
+	// ModelResetNotice follows "model: <name>" in /model reset's success
+	// notice: the sticky per-endpoint override is gone and the endpoint's own
+	// model applies again.
+	ModelResetNotice = "reset to the endpoint's own model"
+
+	// ModelOverridesConfigNotice follows "model: <name>" in /model's success
+	// notice on config.yaml's DEFAULT endpoint, when the pick differs from
+	// what config.yaml itself declares (%s). SetModel persists a pick
+	// uniformly on every endpoint, including the default one, so the pick
+	// does outlive the session and shadow config.yaml on the next start —
+	// this says so now, instead of leaving the user to discover it only at
+	// the next boot's note. Only shown when /model reset would actually
+	// undo it (see SettingsModelOverrideNoReset for the case it would not).
+	ModelOverridesConfigNotice = "overrides config.yaml's %s until /model reset"
+
+	// BootModelOverride is the dim note on the boot log's model line when the
+	// running model diverges from config.yaml's own (a %s for config.yaml's
+	// model): both are configured, and only one is used, so the log says
+	// which. The cause is always the same shape — a pick saved in
+	// provider.json shadowing config.yaml — whether it came from a /login
+	// provider, a named endpoint, or a /model pick on config.yaml's own
+	// default endpoint, so one wording covers all three instead of naming
+	// /login specifically and being wrong for the other two.
+	BootModelOverride = "(config.yaml: %s, overridden by a saved pick)"
 
 	// /login provider picker, API-key form and OAuth wait dialog
 	// (tui/providerpicker.go).
@@ -75,6 +101,26 @@ const (
 	LoginWaitTitle            = "waiting for %s login…"
 	LoginWaitHint             = "finish in the browser · esc cancel"
 	LoginCancelled            = "login cancelled"
+
+	// /endpoint picker (tui/endpointpicker.go): the same dialog as /login's,
+	// but listing every endpoint — the config.yaml default, named endpoints,
+	// and the registry — not just the registry.
+	EndpointPickerTitle   = "endpoint"
+	EndpointPickerKeyHint = "type to filter · ↑↓ move · enter use or log in · esc cancel"
+	// EndpointSwitched is the transcript notice after /endpoint switches
+	// straight to the default or a named endpoint (a %s for its name, a %s
+	// for the model now in use).
+	EndpointSwitched = "endpoint: %s · model: %s"
+	// EndpointUnknown is `/endpoint <id>`'s refusal for an ID that matches no
+	// entry (a %s for the typed ID).
+	EndpointUnknown = "unknown endpoint %q · /endpoint lists them"
+	// LoginNotAProvider is `/login <id>`'s refusal when id names config.yaml's
+	// default endpoint or one of its named endpoints rather than a registry
+	// provider: /login only authenticates and switches registry providers now
+	// that /endpoint lists (and switches to) everything, so a config.yaml
+	// entry is pointed at /endpoint instead of being silently accepted (both
+	// %s are the typed ID).
+	LoginNotAProvider = "%s is a config.yaml endpoint, not a login provider · use /endpoint %s instead"
 
 	CLIWelcome = "a calm assistant for your terminal."
 	CLIExit    = "ctrl+c or 'exit' to leave · 'help' for commands"
@@ -164,26 +210,28 @@ const (
 	// Name is the verb shown, matched against the typed query, and used to
 	// build the option's Insert token; Desc is the one-line summary shown
 	// beside it in the popup.
-	CompLoopName    = "loop"
-	CompLoopDesc    = "recurring or self-paced task"
-	CompCompactName = "compact"
-	CompCompactDesc = "compact the conversation"
-	CompGoalName    = "goal"
-	CompGoalDesc    = "set a goal nib checks before stopping"
-	CompModelName   = "model"
-	CompModelDesc   = "switch model (current provider)"
-	CompModelsName  = "models"
-	CompModelsDesc  = "list the current provider's models"
-	CompAttachName  = "attach"
-	CompAttachDesc  = "stage a file for the next message"
-	CompYoloName    = "yolo"
-	CompYoloDesc    = "toggle (or on/off) auto-approve every tool call"
-	CompResumeName  = "resume"
-	CompResumeDesc  = "resume a recorded session"
-	CompLoginName   = "login"
-	CompLoginDesc   = "log in to a provider / switch provider"
-	CompLogoutName  = "logout"
-	CompLogoutDesc  = "remove a stored provider login"
+	CompLoopName     = "loop"
+	CompLoopDesc     = "recurring or self-paced task"
+	CompCompactName  = "compact"
+	CompCompactDesc  = "compact the conversation"
+	CompGoalName     = "goal"
+	CompGoalDesc     = "set a goal nib checks before stopping"
+	CompModelName    = "model"
+	CompModelDesc    = "switch model (current provider)"
+	CompModelsName   = "models"
+	CompModelsDesc   = "list the current provider's models"
+	CompAttachName   = "attach"
+	CompAttachDesc   = "stage a file for the next message"
+	CompYoloName     = "yolo"
+	CompYoloDesc     = "toggle (or on/off) auto-approve every tool call"
+	CompResumeName   = "resume"
+	CompResumeDesc   = "resume a recorded session"
+	CompLoginName    = "login"
+	CompLoginDesc    = "log in to a provider"
+	CompLogoutName   = "logout"
+	CompLogoutDesc   = "remove a stored provider login"
+	CompEndpointName = "endpoint"
+	CompEndpointDesc = "switch endpoint"
 
 	// ToolResultNoOutput is fmtBashResult's (chat/resultfmt.go) fallback for a
 	// failed bash/bash_job_output call whose stdout and stderr were both

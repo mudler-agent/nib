@@ -15,6 +15,12 @@ import (
 // of falling out on EOF. No turn is ever started, so nothing reaches an LLM.
 func runCLIScript(t *testing.T, cfg types.Config, script string) (string, string) {
 	t.Helper()
+	// A session records its endpoint and model pick under BaseDir. Left empty,
+	// that is the developer's own ~/.config/nib: the tests would read a real
+	// login and one test's /model pick would arrive in the next test's session.
+	if cfg.BaseDir == "" {
+		cfg.BaseDir = t.TempDir()
+	}
 	var out, errOut bytes.Buffer
 	err := RunCLI(context.Background(), cfg, Streams{
 		In:  strings.NewReader(script),

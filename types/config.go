@@ -145,7 +145,16 @@ type Config struct {
 	Provider string `yaml:"provider,omitempty"`
 	Model    string `yaml:"model"`
 	APIKey   string `yaml:"api_key"`
-	BaseURL  string `yaml:"base_url"`
+	// APIKeyEnv names an environment variable holding the top-level key, the
+	// same indirection ModelProviderConfig.APIKeyEnv offers named endpoints
+	// and the classifier — so a config file can describe the default
+	// endpoint without carrying its secret. APIKey wins when both are set;
+	// see ResolvedMainModel.
+	APIKeyEnv string `yaml:"api_key_env,omitempty"`
+	BaseURL   string `yaml:"base_url"`
+	// Endpoints are the named endpoints config.yaml offers besides the
+	// top-level default. See types/endpoint.go.
+	Endpoints Endpoints `yaml:"endpoints,omitempty"`
 	// PromptInjectionProtection controls provenance tracking, LLM classification,
 	// redaction, and approval hardening for untrusted external data. It is
 	// disabled by default to preserve existing behavior.
@@ -299,9 +308,13 @@ type PromptInjectionProtectionConfig struct {
 // ModelProviderConfig overrides the top-level provider settings for the
 // classifier. Empty fields inherit their top-level counterparts.
 type ModelProviderConfig struct {
-	Provider        string            `yaml:"provider,omitempty"`
-	Model           string            `yaml:"model,omitempty"`
-	APIKey          string            `yaml:"api_key,omitempty"`
+	Provider string `yaml:"provider,omitempty"`
+	Model    string `yaml:"model,omitempty"`
+	APIKey   string `yaml:"api_key,omitempty"`
+	// APIKeyEnv names an environment variable holding the key, so a config
+	// file can describe an endpoint without carrying its secret. APIKey
+	// wins when both are set.
+	APIKeyEnv       string            `yaml:"api_key_env,omitempty"`
 	BaseURL         string            `yaml:"base_url,omitempty"`
 	Metadata        map[string]string `yaml:"metadata,omitempty"`
 	ReasoningEffort string            `yaml:"reasoning_effort,omitempty"`
@@ -311,26 +324,46 @@ type ModelProviderConfig struct {
 }
 
 func (c ModelProviderConfig) Configured() bool {
-	return c.Provider != "" || c.Model != "" || c.APIKey != "" || c.BaseURL != "" ||
+	return c.Provider != "" || c.Model != "" || c.APIKey != "" || c.APIKeyEnv != "" || c.BaseURL != "" ||
 		len(c.Metadata) != 0 || c.ReasoningEffort != "" || c.MaxTokens != 0 ||
 		c.Command != "" || len(c.Args) != 0
 }
 
+// ResolvedAPIKey is the key to send: the inline one, else the value of the
+// environment variable APIKeyEnv names, else empty.
+func (c ModelProviderConfig) ResolvedAPIKey() string {
+	if c.APIKey != "" {
+		return c.APIKey
+	}
+	if c.APIKeyEnv != "" {
+		return os.Getenv(c.APIKeyEnv)
+	}
+	return ""
+}
+
 // ResolvedMainModel turns the top-level config into a provider config. An empty
 // provider preserves existing behavior by selecting OpenAI compatibility.
+//
+// The returned APIKey is already resolved (ResolvedAPIKey: the inline key,
+// else $APIKeyEnv) and APIKeyEnv is cleared, so every caller of this method —
+// not just endpoint/set.go's named-endpoint path — honors api_key_env
+// instead of silently ignoring it.
 func (c Config) ResolvedMainModel() ModelProviderConfig {
 	provider := c.Provider
 	if provider == "" {
 		provider = "openai"
 	}
-	return ModelProviderConfig{
+	m := ModelProviderConfig{
 		Provider:        provider,
 		Model:           c.Model,
 		APIKey:          c.APIKey,
+		APIKeyEnv:       c.APIKeyEnv,
 		BaseURL:         c.BaseURL,
 		Metadata:        c.Metadata,
 		ReasoningEffort: c.ReasoningEffort,
 	}
+	m.APIKey, m.APIKeyEnv = m.ResolvedAPIKey(), ""
+	return m
 }
 
 // ResolvedClassifierModel returns a separately configured classifier, or the
@@ -347,8 +380,16 @@ func (c Config) ResolvedClassifierModel() ModelProviderConfig {
 		if override.Model != "" {
 			base.Model = override.Model
 		}
-		if override.APIKey != "" {
-			base.APIKey = override.APIKey
+		switch {
+		case override.APIKey != "":
+			// Inline wins outright, over both the classifier's own env
+			// var and whatever the main block resolved to.
+			base.APIKey, base.APIKeyEnv = override.APIKey, ""
+		case override.APIKeyEnv != "":
+			// The classifier names its own env var: it must win over an
+			// already-resolved main key, not be shadowed by it, so clear
+			// APIKey here and let the resolve below fill it from the env.
+			base.APIKey, base.APIKeyEnv = "", override.APIKeyEnv
 		}
 		if override.BaseURL != "" {
 			base.BaseURL = override.BaseURL
@@ -365,6 +406,7 @@ func (c Config) ResolvedClassifierModel() ModelProviderConfig {
 		if len(override.Args) != 0 {
 			base.Args = override.Args
 		}
+		base.APIKey, base.APIKeyEnv = base.ResolvedAPIKey(), ""
 		return base
 	}
 	if c.CodexAppServer.Enabled {
