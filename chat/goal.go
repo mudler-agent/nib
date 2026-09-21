@@ -46,3 +46,23 @@ func goalReminder(goal string) string {
 		goal,
 	)
 }
+
+// GoalKickoff is the user turn /goal sends, so the agent starts on the goal
+// at once. It is also the model's first sight of the goal text: goal_done's
+// description only says "the current goal".
+func GoalKickoff(goal string) string {
+	return fmt.Sprintf(
+		"New goal: %q. Work toward it now. "+
+			"When it is fully met, call the `goal_done` tool with a one-line justification.",
+		goal,
+	)
+}
+
+// GoalResumeKickoff is the user turn /goal resume sends.
+func GoalResumeKickoff(goal string) string {
+	return fmt.Sprintf(
+		"Resume working toward the goal: %q. "+
+			"When it is fully met, call the `goal_done` tool with a one-line justification.",
+		goal,
+	)
+}

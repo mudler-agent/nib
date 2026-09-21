@@ -2160,11 +2160,13 @@ func (m *Model) dispatchResolved(input string) tea.Cmd {
 		return nil
 	case slash.KindGoalSet:
 		m.session.SetGoal(action.Text)
-		m.appendMessage(ChatMessage{Role: "agent", Content: theme.Goal + " Goal set: " + action.Text + "\nI'll pursue it on your next message, re-checking until it's met. Ctrl+C pauses it; /goal clear drops it."})
-		return nil
+		m.appendMessage(ChatMessage{Role: "agent", Content: theme.Goal + " Goal set: " + action.Text + "\nWorking on it now, re-checking until it's met. Ctrl+C pauses it; /goal clear drops it."})
+		return m.startGoalTurn(chat.GoalKickoff(action.Text))
 	case slash.KindGoalResume:
 		if m.session.ResumeGoal() {
-			m.appendMessage(ChatMessage{Role: "agent", Content: theme.Goal + " Goal resumed: " + m.session.Goal() + "\nI'll pursue it on your next message."})
+			goal := m.session.Goal()
+			m.appendMessage(ChatMessage{Role: "agent", Content: theme.Goal + " Goal resumed: " + goal + "\nWorking on it now."})
+			return m.startGoalTurn(chat.GoalResumeKickoff(goal))
 		} else if m.session.Goal() != "" {
 			m.appendMessage(ChatMessage{Role: "agent", Content: "The goal is not paused."})
 		} else {
@@ -2368,6 +2370,16 @@ func (m Model) loadModelsCmd(requestID uint64) tea.Cmd {
 		models, partial, err := m.session.ModelChoices(lookupCtx, id)
 		return modelListMsg{requestID: requestID, models: models, partial: partial, err: err}
 	}
+}
+
+// startGoalTurn starts the turn /goal and /goal resume send, so the agent
+// reacts to the goal at once. The notice already shows the goal, so the
+// kickoff text is not echoed to the transcript.
+func (m *Model) startGoalTurn(kickoff string) tea.Cmd {
+	m.loading = true
+	m.interruptArmed = false
+	m.status = ""
+	return m.sendMessage(kickoff)
 }
 
 // sendMessage sends a message to the AI. bumpTurnGen runs synchronously here

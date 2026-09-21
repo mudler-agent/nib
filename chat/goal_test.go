@@ -37,3 +37,13 @@ func TestGoalReminderMentionsGoal(t *testing.T) {
 		t.Fatalf("reminder should tell the model to call goal_done: %q", r)
 	}
 }
+
+// The kickoff turn is the model's first sight of the goal, so it must carry
+// the goal text and say how to finish.
+func TestGoalKickoffNamesTheGoal(t *testing.T) {
+	for _, got := range []string{GoalKickoff("make ci green"), GoalResumeKickoff("make ci green")} {
+		if !strings.Contains(got, "make ci green") || !strings.Contains(got, "goal_done") {
+			t.Fatalf("kickoff %q must name the goal and goal_done", got)
+		}
+	}
+}
