@@ -812,7 +812,13 @@ func (s *Session) emitAgentEvent(a *cogito.AgentState) {
 		}
 		s.agentStart[a.ID] = time.Now()
 		s.agentMu.Unlock()
+		if s.agentLogs != nil {
+			s.agentLogs.started(a.ID, time.Now())
+		}
 	case AgentStatusCompleted, AgentStatusFailed:
+		if s.agentLogs != nil {
+			s.agentLogs.forget(a.ID)
+		}
 		var au cogito.LLMUsage
 		ev.ToolCount, au = agentUsageFull(a)
 		ev.TotalTokens = au.TotalTokens
@@ -1403,6 +1409,11 @@ func (s *Session) SendMessage(text string, parts ...ContentPart) (string, error)
 		s.hooks.Fire(s.ctx, hooks.EventUserPromptSubmit, "", map[string]any{"event": "UserPromptSubmit", "prompt": text})
 	}
 	turnCtx := s.beginTurn()
+	// Report stalled sub-agents while this turn runs; notices can only reach
+	// a live run. See stale.go.
+	staleCtx, stopStale := context.WithCancel(turnCtx)
+	defer stopStale()
+	go s.watchStaleAgents(staleCtx)
 	s.applyPendingReload()
 	// The endpoint is asked for this model's context window and output cap
 	// here, on the first turn that uses it, rather than while the session or

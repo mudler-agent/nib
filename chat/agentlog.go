@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/mudler/cogito"
 	"github.com/mudler/nib/theme"
@@ -21,10 +22,19 @@ type agentLogStore struct {
 	mu        sync.Mutex
 	lines     map[string][]string // agentID -> recent activity lines
 	toolAgent map[string]string   // toolCallID -> agentID
+
+	// Stall tracking for running sub-agents; see stale.go.
+	lastActive map[string]time.Time // agentID -> last start, tool call or result
+	notified   map[string]bool      // agentID -> stall already reported
 }
 
 func newAgentLogStore() *agentLogStore {
-	return &agentLogStore{lines: map[string][]string{}, toolAgent: map[string]string{}}
+	return &agentLogStore{
+		lines:      map[string][]string{},
+		toolAgent:  map[string]string{},
+		lastActive: map[string]time.Time{},
+		notified:   map[string]bool{},
+	}
 }
 
 func (s *agentLogStore) append(agentID, line string) {
@@ -33,6 +43,7 @@ func (s *agentLogStore) append(agentID, line string) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.touchLocked(agentID, time.Now())
 	l := append(s.lines[agentID], line)
 	if len(l) > agentLogLimit {
 		l = l[len(l)-agentLogLimit:]
