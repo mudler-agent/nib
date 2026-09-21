@@ -28,10 +28,15 @@ var (
 	loadErr   error
 	catalogDB map[string]map[string]Model // provider -> modelID -> Model
 
-	// Secondary indices built on load for cross-provider lookup.
-	byModelID     map[string][]Model // modelID -> matching models
-	byBaseURLHost map[string][]Model // host -> matching models
-	modelIDs      []string           // byModelID's keys, sorted
+	// Secondary indices built on load. Model IDs keep their catalog case
+	// ("zai-org/GLM-5.2") while users type them in any case, so the ID keys
+	// below are lowercased, and each bucket holds every entry whose ID folds
+	// to that key. One provider can list IDs that differ only by case, so a
+	// provider bucket can hold more than one entry.
+	byProviderModel map[string]map[string][]Model // provider -> lowercased modelID -> models
+	byModelID       map[string][]Model            // lowercased modelID -> models
+	byBaseURLHost   map[string][]Model            // host -> models
+	modelIDs        []string                      // byModelID's keys, sorted
 )
 
 // Load decompresses and parses the embedded catalog. It is called lazily by
@@ -67,13 +72,18 @@ func decompress(data []byte) ([]byte, error) {
 // decides the answer. Built from map iteration, that order changed from run
 // to run, and so did the max_tokens nib sent for a model such as glm-5.2.
 func buildIndices() {
+	byProviderModel = make(map[string]map[string][]Model)
 	byModelID = make(map[string][]Model)
 	byBaseURLHost = make(map[string][]Model)
 	for _, provider := range sortedKeys(catalogDB) {
 		models := catalogDB[provider]
+		byID := make(map[string][]Model, len(models))
+		byProviderModel[strings.ToLower(provider)] = byID
 		for _, id := range sortedKeys(models) {
 			m := models[id]
-			byModelID[m.ID] = append(byModelID[m.ID], m)
+			key := strings.ToLower(m.ID)
+			byID[key] = append(byID[key], m)
+			byModelID[key] = append(byModelID[key], m)
 			if h := hostOf(m.BaseURL); h != "" {
 				byBaseURLHost[h] = append(byBaseURLHost[h], m)
 			}
@@ -103,25 +113,29 @@ func Lookup(providerName, modelID, baseURL string) (*Model, bool) {
 		return nil, false
 	}
 	providerName = strings.ToLower(providerName)
-	modelID = strings.ToLower(modelID)
+	key := strings.ToLower(modelID)
 
 	// 1. Exact provider + model ID.
-	if models, ok := catalogDB[providerName]; ok {
-		if m, ok := models[modelID]; ok {
-			return &m, true
-		}
+	if matches := byProviderModel[providerName][key]; len(matches) > 0 {
+		return &matches[preferExactCase(matches, modelID)], true
 	}
 
 	// 2. Base URL host + exact model ID — more precise than a bare
 	//    model-ID search because it ties the match to the actual endpoint.
 	host := hostOf(baseURL)
 	if host != "" {
-		if matches, ok := byBaseURLHost[host]; ok {
-			for i := range matches {
-				if strings.EqualFold(matches[i].ID, modelID) {
-					return &matches[i], true
-				}
+		matches := byBaseURLHost[host]
+		best := -1
+		for i := range matches {
+			if matches[i].ID == modelID {
+				return &matches[i], true
 			}
+			if best < 0 && strings.EqualFold(matches[i].ID, modelID) {
+				best = i
+			}
+		}
+		if best >= 0 {
+			return &matches[best], true
 		}
 	}
 
@@ -129,15 +143,18 @@ func Lookup(providerName, modelID, baseURL string) (*Model, bool) {
 	//    by multiple providers, prefer a non-openrouter entry (openrouter
 	//    has the omit flag, which would suppress max_tokens even for a
 	//    direct provider that needs it).
-	if matches, ok := byModelID[modelID]; ok && len(matches) > 0 {
-		best := 0
-		for i := range matches {
-			if !matches[i].Compat.IsOpenRouterHost {
-				best = i
-				break
+	//    Among those, prefer the entry in the case the user typed.
+	if matches := byModelID[key]; len(matches) > 0 {
+		var direct []Model
+		for _, m := range matches {
+			if !m.Compat.IsOpenRouterHost {
+				direct = append(direct, m)
 			}
 		}
-		return &matches[best], true
+		if len(direct) > 0 {
+			matches = direct
+		}
+		return &matches[preferExactCase(matches, modelID)], true
 	}
 
 	// 4. Suffix match: strip "org/" prefix from catalog IDs.
@@ -145,13 +162,24 @@ func Lookup(providerName, modelID, baseURL string) (*Model, bool) {
 	for _, id := range modelIDs {
 		matches := byModelID[id]
 		for i := range matches {
-			if suffixMatch(matches[i].ID, modelID) {
+			if suffixMatch(matches[i].ID, key) {
 				return &matches[i], true
 			}
 		}
 	}
 
 	return nil, false
+}
+
+// preferExactCase returns the index of the entry whose ID is exactly modelID,
+// or 0 when every entry differs from it only by case.
+func preferExactCase(matches []Model, modelID string) int {
+	for i := range matches {
+		if matches[i].ID == modelID {
+			return i
+		}
+	}
+	return 0
 }
 
 // suffixMatch reports whether catalogID ends with modelID after stripping an

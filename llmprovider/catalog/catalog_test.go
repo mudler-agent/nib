@@ -259,3 +259,45 @@ func TestIndicesAreInProviderOrder(t *testing.T) {
 		t.Fatal("modelIDs is not the sorted key set of byModelID")
 	}
 }
+
+// Every catalog entry is found by its own provider and ID, whatever their
+// case. Catalog IDs keep their original case ("zai-org/GLM-5.2") and one
+// provider can list IDs that differ only by case, so the exact entry must win
+// over a case-insensitive one.
+func TestLookupFindsEveryEntryByItsOwnID(t *testing.T) {
+	if err := Load(); err != nil {
+		t.Fatal(err)
+	}
+	misses := 0
+	for provider, models := range catalogDB {
+		for id, want := range models {
+			got, ok := Lookup(provider, id, "")
+			if !ok || got.Provider != want.Provider || got.ID != want.ID {
+				if misses < 5 {
+					gotID := "<none>"
+					if ok {
+						gotID = got.Provider + "/" + got.ID
+					}
+					t.Errorf("Lookup(%q, %q) = %s", provider, id, gotID)
+				}
+				misses++
+			}
+		}
+	}
+	if misses > 0 {
+		t.Fatalf("%d entries not found by their own provider and ID", misses)
+	}
+}
+
+// A user who types a model ID in a different case than the catalog still gets
+// that model, from step 3 (model ID across providers), not a suffix guess.
+func TestLookupModelIDIgnoresCase(t *testing.T) {
+	upper, ok := Lookup("no-such-provider", "ZAI-ORG/GLM-5.2", "")
+	if !ok {
+		t.Fatal("no match for ZAI-ORG/GLM-5.2")
+	}
+	lower, _ := Lookup("no-such-provider", "zai-org/glm-5.2", "")
+	if upper.Provider != lower.Provider || upper.ID != lower.ID {
+		t.Fatalf("case changed the match: %s/%s vs %s/%s", upper.Provider, upper.ID, lower.Provider, lower.ID)
+	}
+}
