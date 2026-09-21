@@ -126,20 +126,20 @@ func (l *LLM) CreateChatCompletion(ctx context.Context, request openai.ChatCompl
 
 // geminiRequest is the JSON body for POST /models/{model}:generateContent.
 type geminiRequest struct {
-	Contents           []geminiContent        `json:"contents"`
-	SystemInstruction  *geminiSystemInstr     `json:"systemInstruction,omitempty"`
-	Tools              []geminiToolDecl       `json:"tools,omitempty"`
-	ToolConfig         *geminiToolConfig      `json:"toolConfig,omitempty"`
-	GenerationConfig   *geminiGenerationConfig `json:"generationConfig,omitempty"`
+	Contents          []geminiContent         `json:"contents"`
+	SystemInstruction *geminiSystemInstr      `json:"systemInstruction,omitempty"`
+	Tools             []geminiToolDecl        `json:"tools,omitempty"`
+	ToolConfig        *geminiToolConfig       `json:"toolConfig,omitempty"`
+	GenerationConfig  *geminiGenerationConfig `json:"generationConfig,omitempty"`
 }
 
 type geminiContent struct {
-	Role  string         `json:"role"`
-	Parts []geminiPart   `json:"parts"`
+	Role  string       `json:"role"`
+	Parts []geminiPart `json:"parts"`
 }
 
 type geminiPart struct {
-	Text             string             `json:"text,omitempty"`
+	Text             string                  `json:"text,omitempty"`
 	FunctionCall     *geminiFunctionCall     `json:"functionCall,omitempty"`
 	FunctionResponse *geminiFunctionResponse `json:"functionResponse,omitempty"`
 	InlineData       *geminiInlineData       `json:"inlineData,omitempty"`
@@ -408,7 +408,7 @@ func parseImageURL(rawURL string) *geminiPart {
 // ---------------------------------------------------------------------------
 
 type geminiResponse struct {
-	Candidates []geminiCandidate `json:"candidates"`
+	Candidates    []geminiCandidate   `json:"candidates"`
 	UsageMetadata geminiUsageMetadata `json:"usageMetadata"`
 }
 

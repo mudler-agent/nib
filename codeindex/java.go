@@ -18,7 +18,7 @@ func (e *javaExtractor) Extract(root *bonsai.Node, src []byte) []Entry {
 	for _, child := range root.Children {
 		switch child.Kind {
 		case bonsaijava.KindPackageDeclaration:
-				name := strings.TrimSuffix(strings.TrimPrefix(compactText(child, src), "package "), ";")
+			name := strings.TrimSuffix(strings.TrimPrefix(compactText(child, src), "package "), ";")
 			entries = append(entries, Entry{
 				Section:   SectionPackage,
 				Name:      name,

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	openai "github.com/sashabaranov/go-openai"
 	"github.com/klauspost/compress/zstd"
+	openai "github.com/sashabaranov/go-openai"
 )
 
 // --- Reasoning controls ---
@@ -309,9 +309,9 @@ func TestApplyResponsesLiteShapeNoInstructions(t *testing.T) {
 		{Role: "user", Content: "hello"},
 	}
 	cr := codexRequest{
-		Model: "gpt-5",
-		Input: input,
-		Tools: tools,
+		Model:  "gpt-5",
+		Input:  input,
+		Tools:  tools,
 		Stream: true,
 	}
 
@@ -453,12 +453,12 @@ func TestFullRequestBodyWithAllFeatures(t *testing.T) {
 			Effort  string `json:"effort"`
 			Context string `json:"context"`
 		} `json:"reasoning"`
-		ServiceTier    string `json:"service_tier"`
-		PromptCacheKey string `json:"prompt_cache_key"`
-		Instructions   string `json:"instructions"`
-		Tools          []any  `json:"tools"`
-		ParallelToolCalls *bool `json:"parallel_tool_calls"`
-		Input          []struct {
+		ServiceTier       string `json:"service_tier"`
+		PromptCacheKey    string `json:"prompt_cache_key"`
+		Instructions      string `json:"instructions"`
+		Tools             []any  `json:"tools"`
+		ParallelToolCalls *bool  `json:"parallel_tool_calls"`
+		Input             []struct {
 			Type string `json:"type"`
 			Role string `json:"role"`
 		} `json:"input"`

@@ -18,11 +18,11 @@ import (
 
 // ModelInfo is the subset of a /models entry we care about.
 type ModelInfo struct {
-	ID                   string `json:"id"`
-	MaxCompletionTokens  *int   `json:"max_completion_tokens"`
-	MaxTokens            *int   `json:"max_tokens"`
-	ContextLength        *int   `json:"context_length"`
-	MaxOutputTokens      *int   `json:"max_output_tokens"`
+	ID                  string `json:"id"`
+	MaxCompletionTokens *int   `json:"max_completion_tokens"`
+	MaxTokens           *int   `json:"max_tokens"`
+	ContextLength       *int   `json:"context_length"`
+	MaxOutputTokens     *int   `json:"max_output_tokens"`
 }
 
 // OutputCap returns the discovered output token cap, or 0 if unknown.

@@ -11,14 +11,14 @@ package catalog
 // Model is the subset of catalog fields needed for max_tokens resolution.
 // All other JSON fields are ignored by the decoder.
 type Model struct {
-	ID            string  `json:"id"`
-	Name          string  `json:"name"`
-	API           string  `json:"api"`
-	Provider      string  `json:"provider"`
-	BaseURL       string  `json:"baseUrl"`
-	ContextWindow *int    `json:"contextWindow"`
-	MaxTokens     *int    `json:"maxTokens"`
-	Compat        Compat  `json:"compat"`
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	API           string `json:"api"`
+	Provider      string `json:"provider"`
+	BaseURL       string `json:"baseUrl"`
+	ContextWindow *int   `json:"contextWindow"`
+	MaxTokens     *int   `json:"maxTokens"`
+	Compat        Compat `json:"compat"`
 }
 
 // Compat holds the compatibility flags that govern how max_tokens is sent

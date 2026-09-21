@@ -20,18 +20,18 @@ import (
 	"strings"
 
 	"github.com/mudler/cogito"
-	openai "github.com/sashabaranov/go-openai"
 	"github.com/mudler/nib/llmprovider/openairesponses"
+	openai "github.com/sashabaranov/go-openai"
 )
 
 const defaultAPIVersion = "v1"
 
 // Config holds the connection + auth parameters for the Azure adapter.
 type Config struct {
-	Model         string
-	BaseURL       string // e.g. "https://{resource}.openai.azure.com/openai/v1"
-	APIKey        string
-	APIVersion    string // default "v1"
+	Model          string
+	BaseURL        string // e.g. "https://{resource}.openai.azure.com/openai/v1"
+	APIKey         string
+	APIVersion     string // default "v1"
 	DeploymentName string // if empty, Model is used
 }
 

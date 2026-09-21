@@ -177,11 +177,11 @@ func (e *rustExtractor) extractImpl(node *bonsai.Node, src []byte) Entry {
 					mName := textByField(dc, src, bonsairust.FieldName)
 					params := textByField(dc, src, bonsairust.FieldParameters)
 					retType := textByField(dc, src, bonsairust.FieldReturnType)
-				sig := mName + params
-				if retType != "" {
-					sig += " -> " + retType
-				}
-				methods = append(methods, sig)
+					sig := mName + params
+					if retType != "" {
+						sig += " -> " + retType
+					}
+					methods = append(methods, sig)
 				}
 			}
 		}

@@ -14,18 +14,18 @@ import (
 
 const (
 	codeAssistEndpoint = "https://cloudcode-pa.googleapis.com"
-	pollInterval      = 5 * time.Second
-	pollMaxAttempts   = 24
+	pollInterval       = 5 * time.Second
+	pollMaxAttempts    = 24
 )
 
 type loadCodeAssistResponse struct {
 	CloudAicompanionProject string `json:"cloudaicompanionProject"`
-	CurrentTier            *struct {
+	CurrentTier             *struct {
 		ID string `json:"id"`
 	} `json:"currentTier"`
 	AllowedTiers []struct {
 		ID        string `json:"id"`
-		IsDefault bool `json:"isDefault"`
+		IsDefault bool   `json:"isDefault"`
 	} `json:"allowedTiers"`
 }
 

@@ -13,26 +13,26 @@ import (
 
 const (
 	maxFileSize  int64 = 2 << 20 // 2 MB
-	maxFields    int    = 8
-	maxDetailLen int    = 120
+	maxFields    int   = 8
+	maxDetailLen int   = 120
 )
 
 // Section labels an entry for the output skeleton.
 type Section string
 
 const (
-	SectionPackage Section = "Package"
-	SectionImport  Section = "Import"
-	SectionType    Section = "Type"
-	SectionFunc    Section = "Function"
-	SectionMethod  Section = "Method"
-	SectionConst   Section = "Constant"
-	SectionVar     Section = "Variable"
-	SectionClass   Section = "Class"
-	SectionTrait   Section = "Trait" // interface in Java, trait in Rust
-	SectionImpl    Section = "Impl"
-	SectionModule  Section = "Module"
-	SectionMacro   Section = "Macro"
+	SectionPackage  Section = "Package"
+	SectionImport   Section = "Import"
+	SectionType     Section = "Type"
+	SectionFunc     Section = "Function"
+	SectionMethod   Section = "Method"
+	SectionConst    Section = "Constant"
+	SectionVar      Section = "Variable"
+	SectionClass    Section = "Class"
+	SectionTrait    Section = "Trait" // interface in Java, trait in Rust
+	SectionImpl     Section = "Impl"
+	SectionModule   Section = "Module"
+	SectionMacro    Section = "Macro"
 	SectionHeading  Section = "Heading"  // markdown headings
 	SectionResource Section = "Resource" // terraform/HCL blocks
 )

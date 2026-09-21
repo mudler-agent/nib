@@ -101,7 +101,7 @@ func TestResolveTokenFromHostsJSON(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)
 
- copilotDir := filepath.Join(tmp, "github-copilot")
+	copilotDir := filepath.Join(tmp, "github-copilot")
 	os.MkdirAll(copilotDir, 0o755)
 	hosts := map[string]map[string]string{
 		"github.com": {"oauth_token": "ghcop_hosts_json_token"},
@@ -370,13 +370,13 @@ func TestCopilotHeaders(t *testing.T) {
 	})
 
 	required := map[string]string{
-		"Authorization":         "Bearer my-token",
-		"Content-Type":          "application/json",
-		"Editor-Version":        editorVersion,
-		"X-Github-Api-Version":  "2025-10-01",
-		"X-Initiator":           "agent",
-		"X-Interaction-Type":    "conversation-agent",
-		"Openai-Intent":         "conversation-agent",
+		"Authorization":        "Bearer my-token",
+		"Content-Type":         "application/json",
+		"Editor-Version":       editorVersion,
+		"X-Github-Api-Version": "2025-10-01",
+		"X-Initiator":          "agent",
+		"X-Interaction-Type":   "conversation-agent",
+		"Openai-Intent":        "conversation-agent",
 	}
 	for key, want := range required {
 		if got := capturedHeaders.Get(key); got != want {

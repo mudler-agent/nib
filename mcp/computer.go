@@ -89,7 +89,7 @@ func inputFieldsHint(els []ComputerElement) string {
 }
 
 const (
-	settleMaxProbes = 4                     // ~1.2s ceiling
+	settleMaxProbes = 4 // ~1.2s ceiling
 	settleInterval  = 350 * time.Millisecond
 )
 

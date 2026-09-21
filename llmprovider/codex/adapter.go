@@ -26,17 +26,17 @@ import (
 	"strings"
 
 	"github.com/mudler/cogito"
-	openai "github.com/sashabaranov/go-openai"
 	"github.com/mudler/nib/llmprovider/openairesponses"
+	openai "github.com/sashabaranov/go-openai"
 )
 
 const (
-	codexBaseURL    = "https://chatgpt.com/backend-api"
-	codexClientVer  = "0.153.0"
-	codexEndpoint   = "/codex/responses"
+	codexBaseURL   = "https://chatgpt.com/backend-api"
+	codexClientVer = "0.153.0"
+	codexEndpoint  = "/codex/responses"
 
-	headerRoutingHint  = "x-codex-routing-hint"
-	headerResponsesLite = "x-openai-internal-codex-responses-lite"
+	headerRoutingHint     = "x-codex-routing-hint"
+	headerResponsesLite   = "x-openai-internal-codex-responses-lite"
 	headerContentEncoding = "Content-Encoding"
 )
 
@@ -209,19 +209,19 @@ func (l *LLM) sendRequest(ctx context.Context, url string, plainBody, compressed
 // ---------------------------------------------------------------------------
 
 type codexRequest struct {
-	Model            string            `json:"model"`
-	Input            []codexInput      `json:"input"`
-	Instructions     string            `json:"instructions,omitempty"`
-	Tools            []codexTool       `json:"tools,omitempty"`
-	ToolChoice       any               `json:"tool_choice,omitempty"`
-	Include          []string          `json:"include"`
-	Store            bool              `json:"store"`
-	Stream           bool              `json:"stream"`
-	ClientMetadata   map[string]string `json:"client_metadata,omitempty"`
-	Reasoning        *codexReasoning   `json:"reasoning,omitempty"`
-	ServiceTier      string            `json:"service_tier,omitempty"`
-	PromptCacheKey   string            `json:"prompt_cache_key,omitempty"`
-	ParallelToolCalls *bool            `json:"parallel_tool_calls,omitempty"`
+	Model             string            `json:"model"`
+	Input             []codexInput      `json:"input"`
+	Instructions      string            `json:"instructions,omitempty"`
+	Tools             []codexTool       `json:"tools,omitempty"`
+	ToolChoice        any               `json:"tool_choice,omitempty"`
+	Include           []string          `json:"include"`
+	Store             bool              `json:"store"`
+	Stream            bool              `json:"stream"`
+	ClientMetadata    map[string]string `json:"client_metadata,omitempty"`
+	Reasoning         *codexReasoning   `json:"reasoning,omitempty"`
+	ServiceTier       string            `json:"service_tier,omitempty"`
+	PromptCacheKey    string            `json:"prompt_cache_key,omitempty"`
+	ParallelToolCalls *bool             `json:"parallel_tool_calls,omitempty"`
 }
 
 type codexReasoning struct {
@@ -237,7 +237,7 @@ type codexInput struct {
 	Role      string      `json:"role,omitempty"`
 	Content   string      `json:"content,omitempty"`
 	CallID    string      `json:"call_id,omitempty"`
-	Name      string `json:"name,omitempty"`
+	Name      string      `json:"name,omitempty"`
 	Arguments string      `json:"arguments,omitempty"`
 	Output    string      `json:"output,omitempty"`
 	Tools     []codexTool `json:"tools,omitempty"`

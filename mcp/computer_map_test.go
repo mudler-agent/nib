@@ -39,12 +39,12 @@ func TestMapKeyNormalizesArrayAndAliases(t *testing.T) {
 		wantTool string
 		wantKey  string // press_key key, or the last element for hotkey
 	}{
-		{`["return"]`, "press_key", "return"},   // JSON-array string, single key
-		{`["enter"]`, "press_key", "return"},    // array string + alias
-		{"enter", "press_key", "return"},        // bare alias
-		{"ESC", "press_key", "escape"},          // upper-case alias
-		{`["ctrl","c"]`, "hotkey", "c"},         // JSON-array combo
-		{"cmd+return", "hotkey", "return"},      // combo with an aliasable name
+		{`["return"]`, "press_key", "return"}, // JSON-array string, single key
+		{`["enter"]`, "press_key", "return"},  // array string + alias
+		{"enter", "press_key", "return"},      // bare alias
+		{"ESC", "press_key", "escape"},        // upper-case alias
+		{`["ctrl","c"]`, "hotkey", "c"},       // JSON-array combo
+		{"cmd+return", "hotkey", "return"},    // combo with an aliasable name
 	}
 	for _, c := range cases {
 		tool, args, err := buildCuaCall(ComputerUseInput{Action: "key", Keys: c.keys}, StickyContext{PID: 1})

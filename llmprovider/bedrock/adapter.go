@@ -169,8 +169,8 @@ type wireContentBlock struct {
 }
 
 type wireImageBlock struct {
-	Format string            `json:"format"`
-	Source wireImageSource   `json:"source"`
+	Format string          `json:"format"`
+	Source wireImageSource `json:"source"`
 }
 
 type wireImageSource struct {
@@ -223,9 +223,9 @@ type wireInputSchema struct {
 }
 
 type wireToolChoice struct {
-	Auto *struct{}         `json:"auto,omitempty"`
-	Any  *struct{}         `json:"any,omitempty"`
-	Tool *wireToolChoiceT  `json:"tool,omitempty"`
+	Auto *struct{}        `json:"auto,omitempty"`
+	Any  *struct{}        `json:"any,omitempty"`
+	Tool *wireToolChoiceT `json:"tool,omitempty"`
 }
 
 type wireToolChoiceT struct {
@@ -487,8 +487,8 @@ type messageStartEvent struct {
 }
 
 type contentBlockStartEvent struct {
-	ContentBlockIndex int                  `json:"contentBlockIndex"`
-	Start              *contentBlockStart   `json:"start,omitempty"`
+	ContentBlockIndex int                `json:"contentBlockIndex"`
+	Start             *contentBlockStart `json:"start,omitempty"`
 }
 
 type contentBlockStart struct {
@@ -502,13 +502,13 @@ type contentBlockToolUseStart struct {
 
 type contentBlockDeltaEvent struct {
 	ContentBlockIndex int                `json:"contentBlockIndex"`
-	Delta              *contentBlockDelta `json:"delta,omitempty"`
+	Delta             *contentBlockDelta `json:"delta,omitempty"`
 }
 
 type contentBlockDelta struct {
-	Text             *string                 `json:"text,omitempty"`
+	Text             *string                   `json:"text,omitempty"`
 	ToolUse          *contentBlockToolUseDelta `json:"toolUse,omitempty"`
-	ReasoningContent *contentBlockReasoning   `json:"reasoningContent,omitempty"`
+	ReasoningContent *contentBlockReasoning    `json:"reasoningContent,omitempty"`
 }
 
 type contentBlockToolUseDelta struct {

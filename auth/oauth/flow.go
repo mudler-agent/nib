@@ -30,9 +30,9 @@ type TokenResponse struct {
 // Identity is the account/org info recovered after a token exchange.
 type Identity struct {
 	AccountID string
-	Email    string
-	OrgID    string
-	OrgName  string
+	Email     string
+	OrgID     string
+	OrgName   string
 }
 
 // AuthorizeURL builds the authorization-code flow URL for the user to open.

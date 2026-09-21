@@ -119,15 +119,15 @@ func (l *LLM) CreateChatCompletion(ctx context.Context, request openai.ChatCompl
 // ---------------------------------------------------------------------------
 
 type responsesRequest struct {
-	Model           string            `json:"model"`
-	Input           []responsesInput  `json:"input"`
-	Instructions    string            `json:"instructions,omitempty"`
+	Model           string           `json:"model"`
+	Input           []responsesInput `json:"input"`
+	Instructions    string           `json:"instructions,omitempty"`
 	Tools           []responsesTool  `json:"tools,omitempty"`
-	ToolChoice      any               `json:"tool_choice,omitempty"`
-	MaxOutputTokens int               `json:"max_output_tokens,omitempty"`
-	Temperature     *float32          `json:"temperature,omitempty"`
-	TopP            *float32          `json:"top_p,omitempty"`
-	Store           bool              `json:"store"`
+	ToolChoice      any              `json:"tool_choice,omitempty"`
+	MaxOutputTokens int              `json:"max_output_tokens,omitempty"`
+	Temperature     *float32         `json:"temperature,omitempty"`
+	TopP            *float32         `json:"top_p,omitempty"`
+	Store           bool             `json:"store"`
 }
 
 type responsesInput struct {
@@ -178,16 +178,16 @@ func (l *LLM) translateRequest(req openai.ChatCompletionRequest) ([]byte, error)
 			for _, tc := range msg.ToolCalls {
 				input = append(input, responsesInput{
 					Type:      "function_call",
-					CallID:     tc.ID,
-					Name:       tc.Function.Name,
-					Arguments:  tc.Function.Arguments,
+					CallID:    tc.ID,
+					Name:      tc.Function.Name,
+					Arguments: tc.Function.Arguments,
 				})
 			}
 		case openai.ChatMessageRoleTool:
 			input = append(input, responsesInput{
 				Type:   "function_call_output",
-				CallID:  msg.ToolCallID,
-				Output:  msg.Content,
+				CallID: msg.ToolCallID,
+				Output: msg.Content,
 			})
 		default:
 			input = append(input, responsesInput{
@@ -285,19 +285,19 @@ type responsesAPIResponse struct {
 	Object string                `json:"object"`
 	Model  string                `json:"model"`
 	Output []responsesOutputItem `json:"output"`
-	Usage  responsesAPIUsage    `json:"usage"`
+	Usage  responsesAPIUsage     `json:"usage"`
 	Status string                `json:"status"`
-	Error  *responsesAPIError   `json:"error"`
+	Error  *responsesAPIError    `json:"error"`
 }
 
 type responsesOutputItem struct {
-	Type      string                  `json:"type"`
-	Role      string                  `json:"role,omitempty"`
+	Type      string                   `json:"type"`
+	Role      string                   `json:"role,omitempty"`
 	Content   []responsesOutputContent `json:"content,omitempty"`
-	CallID    string                  `json:"call_id,omitempty"`
-	Name      string                  `json:"name,omitempty"`
-	Arguments string                  `json:"arguments,omitempty"`
-	ID        string                  `json:"id,omitempty"`
+	CallID    string                   `json:"call_id,omitempty"`
+	Name      string                   `json:"name,omitempty"`
+	Arguments string                   `json:"arguments,omitempty"`
+	ID        string                   `json:"id,omitempty"`
 }
 
 type responsesOutputContent struct {
@@ -361,9 +361,9 @@ func (l *LLM) translateResponse(body []byte, requestModel string) (cogito.LLMRep
 	}
 
 	response := openai.ChatCompletionResponse{
-		ID:    ar.ID,
+		ID:     ar.ID,
 		Object: "chat.completion",
-		Model: firstNonEmpty(ar.Model, requestModel),
+		Model:  firstNonEmpty(ar.Model, requestModel),
 		Choices: []openai.ChatCompletionChoice{{
 			Index: 0,
 			Message: openai.ChatCompletionMessage{

@@ -46,9 +46,9 @@ func ResolveMaxTokens(ctx context.Context, config types.ModelProviderConfig, bas
 	// 1. User-explicit setting always wins.
 	if config.MaxTokens > 0 {
 		res := Resolution{
-			MaxTokens:  config.MaxTokens,
-			Source:     "user-config",
-			WireField:  "max_completion_tokens",
+			MaxTokens: config.MaxTokens,
+			Source:    "user-config",
+			WireField: "max_completion_tokens",
 		}
 		applyCatalogCompat(&res, config, baseURL)
 		return res
@@ -63,9 +63,9 @@ func ResolveMaxTokens(ctx context.Context, config types.ModelProviderConfig, bas
 		if info != nil {
 			if cap := info.OutputCap(); cap > 0 {
 				res := Resolution{
-					MaxTokens:  cap,
-					Source:     "api-discovery",
-					WireField:  "max_completion_tokens",
+					MaxTokens: cap,
+					Source:    "api-discovery",
+					WireField: "max_completion_tokens",
 				}
 				applyCatalogCompat(&res, config, baseURL)
 				return res
@@ -76,9 +76,9 @@ func ResolveMaxTokens(ctx context.Context, config types.ModelProviderConfig, bas
 	// 3. Catalog lookup.
 	if m, ok := Lookup(config.Provider, config.Model, baseURL); ok {
 		res := Resolution{
-			MaxTokens:  FallbackMaxTokens,
-			Source:     "catalog-fallback",
-			WireField:  m.Compat.MaxTokensFieldName(),
+			MaxTokens: FallbackMaxTokens,
+			Source:    "catalog-fallback",
+			WireField: m.Compat.MaxTokensFieldName(),
 		}
 
 		// If the catalog has an explicit maxTokens, use it.
@@ -100,9 +100,9 @@ func ResolveMaxTokens(ctx context.Context, config types.ModelProviderConfig, bas
 
 	// 4. Final fallback.
 	res := Resolution{
-		MaxTokens:  FallbackMaxTokens,
-		Source:     "default",
-		WireField:  "max_completion_tokens",
+		MaxTokens: FallbackMaxTokens,
+		Source:    "default",
+		WireField: "max_completion_tokens",
 	}
 	// Check if this is an OpenRouter host even without a catalog entry.
 	if isOpenRouterHost(baseURL) {

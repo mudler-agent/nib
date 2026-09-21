@@ -281,7 +281,7 @@ var registry = map[string]Definition{
 			"user:mcp_servers",
 			"user:file_upload",
 		},
-		AuthorizeParams: map[string]string{"code": "true"},
+		AuthorizeParams:   map[string]string{"code": "true"},
 		ExtraTokenHeaders: map[string]string{"anthropic-beta": "oauth-2025-04-20"},
 		IdentityURL:       "https://api.anthropic.com/api/claude_cli/bootstrap?entrypoint=cli",
 		IdentityMethod:    "bootstrap",
@@ -309,9 +309,9 @@ var registry = map[string]Definition{
 			"api.connectors.read", "api.connectors.invoke",
 		},
 		AuthorizeParams: map[string]string{
-			"id_token_add_organizations":  "true",
-			"codex_cli_simplified_flow":   "true",
-			"originator":                  "nib",
+			"id_token_add_organizations": "true",
+			"codex_cli_simplified_flow":  "true",
+			"originator":                 "nib",
 		},
 	},
 	"google-gemini-cli": {

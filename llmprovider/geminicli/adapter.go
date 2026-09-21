@@ -142,17 +142,17 @@ type credentials struct {
 }
 
 type rawCredential struct {
-	Token        string `json:"token"`
-	AccessToken  string `json:"access_token"`
-	ProjectID    string `json:"projectId"`
-	ProjectIDAlt string `json:"project_id"`
-	RefreshToken string `json:"refreshToken"`
-	RefreshTokenAlt string `json:"refresh_token"`
-	Refresh      string `json:"refresh"`
-	ExpiresAt    json.Number `json:"expiresAt"`
-	ExpiresAtAlt json.Number `json:"expires_at"`
-	Expires      json.Number `json:"expires"`
-	Email        string `json:"email"`
+	Token           string      `json:"token"`
+	AccessToken     string      `json:"access_token"`
+	ProjectID       string      `json:"projectId"`
+	ProjectIDAlt    string      `json:"project_id"`
+	RefreshToken    string      `json:"refreshToken"`
+	RefreshTokenAlt string      `json:"refresh_token"`
+	Refresh         string      `json:"refresh"`
+	ExpiresAt       json.Number `json:"expiresAt"`
+	ExpiresAtAlt    json.Number `json:"expires_at"`
+	Expires         json.Number `json:"expires"`
+	Email           string      `json:"email"`
 }
 
 func parseCredentials(raw string) (*credentials, error) {
@@ -197,17 +197,17 @@ func parseCredentials(raw string) (*credentials, error) {
 
 // ccaRequest is the Cloud Code Assist envelope.
 type ccaRequest struct {
-	Project string      `json:"project"`
-	Model   string      `json:"model"`
-	Request ccaInner    `json:"request"`
+	Project string   `json:"project"`
+	Model   string   `json:"model"`
+	Request ccaInner `json:"request"`
 }
 
 type ccaInner struct {
-	Contents         []ccaContent         `json:"contents"`
-	SystemInstruction *ccaSystemInstr     `json:"systemInstruction,omitempty"`
-	Tools            []ccaToolDecl        `json:"tools,omitempty"`
-	ToolConfig       *ccaToolConfig       `json:"toolConfig,omitempty"`
-	GenerationConfig *ccaGenerationConfig `json:"generationConfig,omitempty"`
+	Contents          []ccaContent         `json:"contents"`
+	SystemInstruction *ccaSystemInstr      `json:"systemInstruction,omitempty"`
+	Tools             []ccaToolDecl        `json:"tools,omitempty"`
+	ToolConfig        *ccaToolConfig       `json:"toolConfig,omitempty"`
+	GenerationConfig  *ccaGenerationConfig `json:"generationConfig,omitempty"`
 }
 
 type ccaContent struct {
@@ -216,10 +216,10 @@ type ccaContent struct {
 }
 
 type ccaPart struct {
-	Text             string             `json:"text,omitempty"`
-	FunctionCall     *ccaFunctionCall   `json:"functionCall,omitempty"`
+	Text             string               `json:"text,omitempty"`
+	FunctionCall     *ccaFunctionCall     `json:"functionCall,omitempty"`
 	FunctionResponse *ccaFunctionResponse `json:"functionResponse,omitempty"`
-	InlineData       *ccaInlineData     `json:"inlineData,omitempty"`
+	InlineData       *ccaInlineData       `json:"inlineData,omitempty"`
 }
 
 type ccaFunctionCall struct {
@@ -474,7 +474,7 @@ func parseImageURL(rawURL string) *ccaPart {
 
 type ccaResponse struct {
 	Response ccaResponseBody `json:"response"`
-	Error   *ccaError        `json:"error,omitempty"`
+	Error    *ccaError       `json:"error,omitempty"`
 }
 
 type ccaResponseBody struct {

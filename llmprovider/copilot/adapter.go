@@ -110,9 +110,9 @@ func (l *LLM) CreateChatCompletion(ctx context.Context, request openai.ChatCompl
 type protocolRoute string
 
 const (
-	routeChat       protocolRoute = "chat"
-	routeMessages   protocolRoute = "messages"
-	routeResponses  protocolRoute = "responses"
+	routeChat      protocolRoute = "chat"
+	routeMessages  protocolRoute = "messages"
+	routeResponses protocolRoute = "responses"
 )
 
 // routeProtocol determines which Copilot API endpoint to use based on model

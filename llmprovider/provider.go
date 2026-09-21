@@ -17,13 +17,13 @@ import (
 
 	"github.com/mudler/cogito"
 	"github.com/mudler/cogito/clients"
-	openai "github.com/sashabaranov/go-openai"
 	"github.com/mudler/nib/auth"
 	"github.com/mudler/nib/codexapp"
 	"github.com/mudler/nib/llmprovider/catalog"
 	"github.com/mudler/nib/llmprovider/registry"
 	"github.com/mudler/nib/provider"
 	"github.com/mudler/nib/types"
+	openai "github.com/sashabaranov/go-openai"
 
 	// Blank imports trigger init() self-registration.
 	_ "github.com/mudler/nib/llmprovider/anthropic"
@@ -31,8 +31,8 @@ import (
 	_ "github.com/mudler/nib/llmprovider/bedrock"
 	_ "github.com/mudler/nib/llmprovider/codex"
 	_ "github.com/mudler/nib/llmprovider/copilot"
-	_ "github.com/mudler/nib/llmprovider/google"
 	_ "github.com/mudler/nib/llmprovider/geminicli"
+	_ "github.com/mudler/nib/llmprovider/google"
 	_ "github.com/mudler/nib/llmprovider/googlevertex"
 	_ "github.com/mudler/nib/llmprovider/ollama"
 	_ "github.com/mudler/nib/llmprovider/openairesponses"

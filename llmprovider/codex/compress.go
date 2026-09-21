@@ -25,6 +25,6 @@ func compressZstd(data []byte) []byte {
 // isOfficialCodexURL reports whether the URL targets the official ChatGPT
 // Codex backend (and thus supports zstd request encoding).
 func isOfficialCodexURL(url string) bool {
-	return url == codexBaseURL || 
+	return url == codexBaseURL ||
 		len(url) > len(codexBaseURL) && url[:len(codexBaseURL)] == codexBaseURL
 }

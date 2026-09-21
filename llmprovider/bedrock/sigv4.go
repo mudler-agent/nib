@@ -59,7 +59,7 @@ var sigUnsignable = map[string]bool{
 	"expect":            true,
 	"from":              true,
 	"keep-alive":        true,
-	"max-forwards":     true,
+	"max-forwards":      true,
 	"pragma":            true,
 	"referer":           true,
 	"te":                true,

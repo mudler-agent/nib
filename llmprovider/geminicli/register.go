@@ -72,5 +72,3 @@ func postExchangeHook(ctx context.Context, cred auth.Credential, def provider.De
 	cred.ProjectID = projectID
 	return cred, nil
 }
-
-

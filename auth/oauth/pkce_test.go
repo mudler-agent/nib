@@ -36,10 +36,10 @@ func TestGenerateVerifierUniqueness(t *testing.T) {
 		v, err := GenerateVerifier()
 		if err != nil {
 			t.Fatalf("GenerateVerifier: %v", err)
-	}
+		}
 		if seen[v] {
 			t.Fatal("duplicate verifier generated")
-	}
+		}
 		seen[v] = true
 	}
 }
@@ -103,10 +103,10 @@ func TestGenerateStateUniqueness(t *testing.T) {
 		s, err := GenerateState()
 		if err != nil {
 			t.Fatalf("GenerateState: %v", err)
-	}
+		}
 		if seen[s] {
 			t.Fatal("duplicate state generated")
-	}
+		}
 		seen[s] = true
 	}
 }

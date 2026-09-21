@@ -513,9 +513,9 @@ func TestSetModelRefreshesContextWindowOnUnknownModel(t *testing.T) {
 	// stale keep and a correct fallback are observable. 200000 is o1's static
 	// value — a plausible auto-detected figure for the previous model.
 	s := &Session{
-		ctx:                   context.Background(),
-		llmModel:              "o1",
-		baseURL:               srv.URL + "/v1",
+		ctx:                    context.Background(),
+		llmModel:               "o1",
+		baseURL:                srv.URL + "/v1",
 		compactionAutoDetected: true,
 	}
 	s.compaction.MaxContextTokens = 200000

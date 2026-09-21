@@ -126,7 +126,7 @@ func (s *sessionState) buildMetadata() requestMetadata {
 		InstallationID:   s.installationID,
 		TurnState:        s.turnState,
 		HasTurnState:     s.hasTurnState,
-		TurnMetadataJSON:  turnJSON,
+		TurnMetadataJSON: turnJSON,
 	}
 }
 

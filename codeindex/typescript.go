@@ -5,7 +5,7 @@ import (
 
 	"github.com/msuozzo/bonsai"
 	bonsaijs "github.com/msuozzo/bonsai/bonsai-javascript"
-	bonsaits "github.com/msuozzo/bonsai/bonsai-tsx"     // parser for .tsx files
+	bonsaits "github.com/msuozzo/bonsai/bonsai-tsx"         // parser for .tsx files
 	bonsaitsx "github.com/msuozzo/bonsai/bonsai-typescript" // kind/field constants (shared with tsx)
 )
 

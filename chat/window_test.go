@@ -33,8 +33,8 @@ func TestContextBudgetKeepsTheFlatReserveOnALargeWindow(t *testing.T) {
 	cfg := types.CompactionConfig{ReserveTokens: 4096}
 	// 8192 is the boundary: window/2 == ReserveTokens, flat still applies.
 	for _, tc := range []struct{ window, want int }{
-		{8192, 4096},    // 8192 - 4096, at the boundary
-		{16384, 12288},  // 16384 - 4096
+		{8192, 4096},     // 8192 - 4096, at the boundary
+		{16384, 12288},   // 16384 - 4096
 		{128000, 123904}, // 128000 - 4096
 		{262144, 258048}, // 262144 - 4096
 	} {
@@ -51,9 +51,9 @@ func TestContextBudgetKeepsTheFlatReserveOnALargeWindow(t *testing.T) {
 func TestContextBudgetClampsTheReserveOnASmallWindow(t *testing.T) {
 	cfg := types.CompactionConfig{ReserveTokens: 4096}
 	for _, tc := range []struct{ window, want int }{
-		{4096, 2048},  // reserve clamped 4096 → 2048
-		{2048, 1024},  // reserve clamped 4096 → 1024
-		{8191, 4096},  // just under the boundary: reserve clamped to 4095
+		{4096, 2048}, // reserve clamped 4096 → 2048
+		{2048, 1024}, // reserve clamped 4096 → 1024
+		{8191, 4096}, // just under the boundary: reserve clamped to 4095
 	} {
 		if got := ContextBudget(cfg, tc.window); got != tc.want {
 			t.Fatalf("budget(%d) = %d, want %d", tc.window, got, tc.want)

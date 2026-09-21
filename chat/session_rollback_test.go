@@ -60,7 +60,7 @@ func newRollbackTestSession(t *testing.T, llm cogito.LLM) *Session {
 		llmModel:      "test-model",
 		systemPrompt:  "you are a test assistant",
 		cogitoOptions: types.AgentOptions{Iterations: 10, MaxAttempts: 3, MaxRetries: 1},
-		agentManager:   cogito.NewAgentManager(),
+		agentManager:  cogito.NewAgentManager(),
 		agentLogs:     newAgentLogStore(),
 		inject:        make(chan openai.ChatCompletionMessage, 8),
 	}

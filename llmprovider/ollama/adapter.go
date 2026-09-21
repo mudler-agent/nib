@@ -131,12 +131,12 @@ type ollamaOptions struct {
 }
 
 type ollamaMessage struct {
-	Role      string             `json:"role"`
-	Content   string             `json:"content"`
-	Thinking   string             `json:"thinking,omitempty"`
-	ToolCalls  []ollamaToolCall   `json:"tool_calls,omitempty"`
-	ToolName   string             `json:"tool_name,omitempty"`
-	Images     []string           `json:"images,omitempty"`
+	Role      string           `json:"role"`
+	Content   string           `json:"content"`
+	Thinking  string           `json:"thinking,omitempty"`
+	ToolCalls []ollamaToolCall `json:"tool_calls,omitempty"`
+	ToolName  string           `json:"tool_name,omitempty"`
+	Images    []string         `json:"images,omitempty"`
 }
 
 type ollamaTool struct {
@@ -346,25 +346,25 @@ func firstNonEmpty(a, b string) string {
 // ---------------------------------------------------------------------------
 
 type ollamaResponse struct {
-	Model      string         `json:"model"`
-	Message    ollamaRespMsg  `json:"message"`
-	Done       bool           `json:"done"`
-	DoneReason string         `json:"done_reason"`
+	Model      string        `json:"model"`
+	Message    ollamaRespMsg `json:"message"`
+	Done       bool          `json:"done"`
+	DoneReason string        `json:"done_reason"`
 	EvalCount  int           `json:"eval_count"`
 	PromptEval int           `json:"prompt_eval_count"`
-	Error      string         `json:"error,omitempty"`
+	Error      string        `json:"error,omitempty"`
 }
 
 type ollamaRespMsg struct {
-	Role      string                `json:"role"`
-	Content   string                `json:"content"`
-	Thinking  string                `json:"thinking,omitempty"`
-	ToolCalls []ollamaRespToolCall  `json:"tool_calls,omitempty"`
+	Role      string               `json:"role"`
+	Content   string               `json:"content"`
+	Thinking  string               `json:"thinking,omitempty"`
+	ToolCalls []ollamaRespToolCall `json:"tool_calls,omitempty"`
 }
 
 type ollamaRespToolCall struct {
-	Type     string                    `json:"type"`
-	Function ollamaRespToolCallFunc    `json:"function"`
+	Type     string                 `json:"type"`
+	Function ollamaRespToolCallFunc `json:"function"`
 }
 
 type ollamaRespToolCallFunc struct {

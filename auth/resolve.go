@@ -88,7 +88,7 @@ func resolveOAuth(store *Store, def provider.Definition, cred Credential) (Resol
 		}
 		cred.ExpiresAt = oauth.ExpiresAt(tr.ExpiresIn)
 		// Persist the refreshed token. A save failure is non-fatal — the
-			// in-memory credential is still valid for this session.
+		// in-memory credential is still valid for this session.
 		_ = store.Save(cred)
 	}
 

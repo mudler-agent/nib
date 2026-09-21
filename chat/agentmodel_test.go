@@ -127,7 +127,7 @@ func TestNewAgentLLMHonorsEndpointModel(t *testing.T) {
 	srv, requests := newLLMServer(t)
 	s := &Session{
 		llmModel:       "main-model",
-		baseURL:         srv.URL + "/v1",
+		baseURL:        srv.URL + "/v1",
 		endpointModels: []string{"main-model", "endpoint-model"},
 	}
 	askOnce(t, s.newAgentLLM(s.Model(), "endpoint-model", 0, nil))
@@ -148,7 +148,7 @@ func TestNewAgentLLMFallsBackForInventedModel(t *testing.T) {
 	srv, requests := newLLMServer(t)
 	s := &Session{
 		llmModel:       "main-model",
-		baseURL:         srv.URL + "/v1",
+		baseURL:        srv.URL + "/v1",
 		endpointModels: []string{"main-model", "endpoint-model"},
 	}
 	askOnce(t, s.newAgentLLM(s.Model(), "invented-model", 0, nil))
@@ -212,7 +212,7 @@ func TestAgentModelGuidanceCapsLongList(t *testing.T) {
 func TestAllowedAgentModelsLazyFetchesOnFirstCall(t *testing.T) {
 	srv := newModelsServer(t, "alpha", "beta")
 	s := &Session{
-		baseURL:    srv.URL + "/v1",
+		baseURL:     srv.URL + "/v1",
 		agentModels: map[string]bool{"configured": true},
 	}
 	if s.endpointModels != nil {

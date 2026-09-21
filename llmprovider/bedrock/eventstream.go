@@ -18,11 +18,11 @@ import (
 //	[message CRC32   u32]   ← CRC over everything except the trailing 4 bytes
 
 const (
-	esPreludeLen      = 8
-	esPreludeCRCLen   = 4
-	esMessageCRCLen   = 4
-	esHeaderBlockOff  = esPreludeLen + esPreludeCRCLen
-	esMinMessageLen   = esHeaderBlockOff + esMessageCRCLen
+	esPreludeLen     = 8
+	esPreludeCRCLen  = 4
+	esMessageCRCLen  = 4
+	esHeaderBlockOff = esPreludeLen + esPreludeCRCLen
+	esMinMessageLen  = esHeaderBlockOff + esMessageCRCLen
 )
 
 // eventStreamMessage is one decoded eventstream frame.
