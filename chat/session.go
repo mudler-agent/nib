@@ -1792,12 +1792,15 @@ func (s *Session) SendMessage(text string, parts ...ContentPart) (string, error)
 				}
 				if stalled < turnRetryBudget {
 					wait := turnWait(err, stalled)
-					if s.callbacks.OnStatus != nil {
-						s.callbacks.OnStatus(turnRetryStatus(err, wait, stalled))
+					announce := func(status string) {
+						if s.callbacks.OnStatus != nil {
+							s.callbacks.OnStatus(status)
+						}
 					}
+					retry := stalled
 					stalled++
 					xlog.Warn("backend error, retrying turn", "error", err, "wait", wait, "attempt", stalled)
-					if retrySleep(turnCtx, wait) == nil {
+					if waitTurnRetry(turnCtx, err, wait, retry, announce) == nil {
 						s.turnRetryMu.Lock()
 						s.turnRetryTotal++
 						s.turnRetryMu.Unlock()

@@ -61,6 +61,24 @@ func TestSpinnerNonTTYDeduplicates(t *testing.T) {
 	}
 }
 
+// A retry wait re-announces itself each second to count down. The log gets one
+// line per wait, not one per second, but a new attempt still prints.
+func TestSpinnerNonTTYPrintsRetryCountdownOnce(t *testing.T) {
+	var buf bytes.Buffer
+	s := newSpinner(&buf)
+
+	s.start("thinking")
+	s.update("Rate limited — retrying in 3s (1/10, ctrl+c to stop)…")
+	s.update("Rate limited — retrying in 2s (1/10, ctrl+c to stop)…")
+	s.update("Rate limited — retrying in 1s (1/10, ctrl+c to stop)…")
+	s.update("Rate limited — retrying in 1m0s (2/10, ctrl+c to stop)…")
+	s.stop()
+
+	if n := strings.Count(buf.String(), "Rate limited"); n != 2 {
+		t.Fatalf("expected one line per retry attempt, got %d in %q", n, buf.String())
+	}
+}
+
 // After a stop()/start() cycle (e.g. across a tool-call boundary) the same
 // status reprints, so progress stays visible in the log.
 func TestSpinnerNonTTYReprintsAfterStop(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -67,11 +68,20 @@ func newSpinner(out io.Writer) *spinner {
 	}
 }
 
+// countdownRe matches the part of a retry status that changes each second.
+var countdownRe = regexp.MustCompile(`retrying in [0-9hms.]+`)
+
 // printStatic emits a status line once in non-TTY mode, skipping consecutive
 // duplicates so a steady "thinking" state produces a single line, not a flood.
 // Caller must hold s.mu.
 func (s *spinner) printStatic(message string) {
 	if message == "" || message == s.lastLine {
+		return
+	}
+	// A retry wait re-announces itself every second to count down. Without
+	// a terminal to redraw in, print it once instead of once per second.
+	if countdownRe.ReplaceAllString(message, "") == countdownRe.ReplaceAllString(s.lastLine, "") {
+		s.lastLine = message
 		return
 	}
 	s.lastLine = message

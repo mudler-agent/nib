@@ -254,6 +254,31 @@ func turnRetryStatus(err error, wait time.Duration, retry int) string {
 		what, wait.Round(time.Second), retry+1, turnRetryBudget)
 }
 
+// retryResumeStatus replaces the countdown once the wait ends. Nothing else
+// is sure to replace it: a retry that streams a plain answer emits no status
+// of its own, so the countdown would stay on screen for the rest of the turn.
+const retryResumeStatus = "Thinking…"
+
+// waitTurnRetry sleeps for wait before a turn retry, re-announcing the status
+// each second so the countdown the user sees goes down. When the wait ends it
+// announces retryResumeStatus. The wait is measured in retrySleep steps, not
+// wall time, so a stubbed sleep in tests ends it at once.
+func waitTurnRetry(ctx context.Context, err error, wait time.Duration, retry int, announce func(string)) error {
+	for left := wait; left > 0; {
+		announce(turnRetryStatus(err, left, retry))
+		step := left % time.Second
+		if step == 0 {
+			step = time.Second
+		}
+		if serr := retrySleep(ctx, step); serr != nil {
+			return serr
+		}
+		left -= step
+	}
+	announce(retryResumeStatus)
+	return nil
+}
+
 // rateLimitMessage builds a user-facing message for a terminal 429 error. If
 // the error carries a reset time, the message includes it.
 func rateLimitMessage(err error) string {

@@ -458,3 +458,42 @@ func TestTurnRetryIsAnnounced(t *testing.T) {
 	}
 	t.Fatalf("a rate-limit retry went unannounced; statuses seen: %v", lines)
 }
+
+// The countdown goes down while the turn waits, instead of showing the first
+// wait for the whole of it.
+func TestWaitTurnRetryCountsDown(t *testing.T) {
+	stubRetrySleep(t)
+	var lines []string
+	err := waitTurnRetry(context.Background(), errors.New("status 429"), 3*time.Second, 0,
+		func(s string) { lines = append(lines, s) })
+	if err != nil {
+		t.Fatalf("waitTurnRetry: %v", err)
+	}
+	want := []string{
+		"Rate limited — retrying in 3s (1/10, ctrl+c to stop)…",
+		"Rate limited — retrying in 2s (1/10, ctrl+c to stop)…",
+		"Rate limited — retrying in 1s (1/10, ctrl+c to stop)…",
+		retryResumeStatus,
+	}
+	if strings.Join(lines, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("statuses = %q, want %q", lines, want)
+	}
+}
+
+// A retry that then succeeds must not leave the rate-limit line on screen: a
+// plain streamed answer emits no status of its own to replace it.
+func TestTurnRetryStatusIsClearedAfterTheWait(t *testing.T) {
+	stubRetrySleep(t)
+	rec := &retryStatusRecorder{}
+	s := newRateLimitSession(t, &rateLimitLLM{failures: 2 * requestAttempts})
+	s.callbacks = rec.callbacks()
+
+	if _, err := s.SendMessage("what changed?"); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.lines) == 0 || rec.lines[len(rec.lines)-1] != retryResumeStatus {
+		t.Fatalf("last status = %q, want %q; statuses seen: %v", rec.lines[len(rec.lines)-1], retryResumeStatus, rec.lines)
+	}
+}
