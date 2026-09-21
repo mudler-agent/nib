@@ -215,6 +215,9 @@ The current list is shown in the footer as a compact summary line, e.g.
 `◐ 2/5 ✓ read files ◐ writing tests · deploy`. The list is ephemeral — it
 lives for the session and is not persisted to disk.
 
+Press `Ctrl+T` to toggle a full-panel view of the todo list with all items,
+their statuses, and a completion count.
+
 This is inspired by [maki](https://github.com/tontinton/maki)'s todo system.
 
 ### `/model` and `/models`: switch model mid-session

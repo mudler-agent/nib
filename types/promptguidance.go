@@ -123,7 +123,7 @@ func toolGuidance(builtinTools []string) string {
 	}
 
 	if toolExposed(builtinTools, "todo_write") {
-		paragraphs = append(paragraphs, "Use the todo_write tool to plan multi-step tasks (3+ steps) before starting work. Send the COMPLETE todo list on every call — it replaces the entire list, not a delta. Mark an item in_progress when you begin it and completed when done. Keep exactly one item in_progress at a time. Update the list after each step, not just at the end.")
+		paragraphs = append(paragraphs, "Use the todo_write tool to plan multi-step tasks (3+ steps) before starting work. Send the COMPLETE todo list on every call — it replaces the entire list, not a delta. Skip it for trivial tasks. Mark an item in_progress when you begin it and completed when done. Keep exactly one item in_progress at a time. Update the list after EACH completed step, not just at the end.")
 	}
 
 	return strings.Join(paragraphs, "\n\n")

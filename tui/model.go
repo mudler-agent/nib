@@ -374,6 +374,9 @@ type Model struct {
 	logOpenKind string         // "agent" | "shell" for the open job
 	logVP       viewport.Model // scrollable full-log view
 
+	// Ctrl+T todo panel state.
+	showTodo bool // panel open
+
 	// Unified `/` completion state
 	completion compState
 
@@ -870,6 +873,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// Ctrl+T todo panel: intercepts keys while open. Ctrl+C falls
+		// through so it can still interrupt/quit.
+		if m.showTodo && msg.Type != tea.KeyCtrlC {
+			switch msg.Type {
+			case tea.KeyEsc, tea.KeyCtrlT:
+				m.showTodo = false
+				m.reflowLayout()
+				return m, nil
+			}
+			return m, nil // swallow other keys while panel is open
+		}
 		// Ctrl+O log viewer: intercepts navigation/scroll keys while open. Ctrl+C
 		// falls through so it can still interrupt/quit.
 		if m.showLogs && msg.Type != tea.KeyCtrlC {
@@ -1181,6 +1195,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// persists across turns until the user toggles it again.
 			m.reasoningCollapsed = !m.reasoningCollapsed
 			m.updateViewport()
+			return m, nil
+
+		case tea.KeyCtrlT:
+			// Toggle the todo panel.
+			if !m.sessionReady {
+				return m, nil
+			}
+			m.showTodo = !m.showTodo
+			m.reflowLayout()
 			return m, nil
 
 		case tea.KeyTab:
@@ -2692,6 +2715,8 @@ func (m Model) renderComposer(w int) string {
 		composer.WriteString(theme.Help.Render(theme.Starting))
 	case m.showLogs:
 		// no input: the log viewer owns the body and the keystrokes
+	case m.showTodo:
+		// no input: the todo panel owns the body and the keystrokes
 	case m.awaitingApproval && !m.approvalEditing:
 		// no input: choice row lives in the viewport approval block
 	case m.awaitingResume:
@@ -2972,6 +2997,9 @@ func (m Model) showingViewport() bool {
 	if m.showLogs {
 		return false
 	}
+	if m.showTodo {
+		return false
+	}
 	return len(m.messages) > 0 || m.loading || m.awaitingApproval || m.awaitingAsk || m.awaitingResume || m.modelPicker.active ||
 		m.providerPicker.active || m.loginForm.active || m.loginWait.active
 }
@@ -3007,6 +3035,9 @@ func (m Model) reasoningBoxHit(y int) bool {
 // while the log viewer owns the body, which hides the footer entirely.
 func (m Model) footerRows() []render.FooterRow {
 	if m.showLogs {
+		return nil
+	}
+	if m.showTodo {
 		return nil
 	}
 	var rows []render.FooterRow
@@ -3279,6 +3310,8 @@ func (m Model) View() string {
 	// Body: log viewer, first-run empty state, otherwise the conversation viewport.
 	var body string
 	switch {
+	case m.showTodo:
+		body = m.renderTodoPanel()
 	case m.showLogs:
 		body = m.renderLogsViewer()
 	case m.boot != nil && !m.boot.collapsed:
@@ -3333,6 +3366,8 @@ func (m Model) View() string {
 // helpLine returns the context-appropriate help string.
 func (m Model) helpLine() string {
 	switch {
+	case m.showTodo:
+		return theme.ScrollKeys + " scroll · esc/ctrl+t close"
 	case m.showLogs && m.logOpenID != "":
 		return theme.ScrollKeys + " scroll · esc back · ctrl+o close"
 	case m.showLogs:
