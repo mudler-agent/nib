@@ -59,6 +59,9 @@ func humanizeError(err error) error {
 	if isContextOverflow(err) {
 		return &FriendlyError{err: err, msg: contextOverflowMessage(err.Error())}
 	}
+	if isRateLimitError(err) {
+		return &FriendlyError{err: err, msg: rateLimitMessage(err)}
+	}
 	return err
 }
 

@@ -239,6 +239,11 @@ type Session struct {
 	overflowMu      sync.Mutex
 	overflowRetried int
 
+	// turnRetryTotal counts the times the CURRENT turn was run again after
+	// a rate-limited or transient backend error. See retry.go.
+	turnRetryMu    sync.Mutex
+	turnRetryTotal int
+
 	tracer *trace.Recorder // non-nil when session tracing is enabled
 
 	// memoryStore persists notes written via the memory tool. Rooted at the
@@ -1385,6 +1390,11 @@ func (s *Session) SendMessage(text string, parts ...ContentPart) (string, error)
 	s.overflowMu.Lock()
 	s.overflowRetried = 0
 	s.overflowMu.Unlock()
+	s.turnRetryMu.Lock()
+	s.turnRetryTotal = 0
+	s.turnRetryMu.Unlock()
+	// Failed attempts in a row that made no progress; see turnRetryBudget.
+	stalled := 0
 	defer s.endTurn()
 	// Report this turn's own size while it runs; hand authority back to
 	// s.fragment (which compaction may since have shrunk) once it ends.
@@ -1701,6 +1711,39 @@ func (s *Session) SendMessage(text string, parts ...ContentPart) (string, error)
 						if s.callbacks.OnCompactDone != nil {
 							s.callbacks.OnCompactDone(cb, ca)
 						}
+						continue
+					}
+				}
+			}
+
+			// Backend failure recovery: a rate limit or a transient error
+			// (5xx, dropped connection, timeout) must not end a turn that may
+			// have run for many minutes. Wait, then continue from the
+			// fragment cogito returned, so the tool calls this attempt
+			// finished are kept rather than run again. See retry.go.
+			//
+			// Bounded by turnRetryBudget attempts in a row without progress,
+			// and never after an interrupt: Ctrl+C cancels turnCtx, which
+			// also ends the wait.
+			if canRetryTurn(turnCtx, err) {
+				resume, progressed := resumableFragment(runFragment, newFragment)
+				if progressed {
+					stalled = 0
+				}
+				if stalled < turnRetryBudget {
+					wait := turnWait(err, stalled)
+					if s.callbacks.OnStatus != nil {
+						s.callbacks.OnStatus(turnRetryStatus(err, wait, stalled))
+					}
+					stalled++
+					xlog.Warn("backend error, retrying turn", "error", err, "wait", wait, "attempt", stalled)
+					if retrySleep(turnCtx, wait) == nil {
+						s.turnRetryMu.Lock()
+						s.turnRetryTotal++
+						s.turnRetryMu.Unlock()
+						s.historyMu.Lock()
+						s.fragment = resume
+						s.historyMu.Unlock()
 						continue
 					}
 				}

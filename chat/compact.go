@@ -216,6 +216,15 @@ func (s *Session) overflowRetries() int {
 	return s.overflowRetried
 }
 
+// turnRetries reports how many times the current turn was run again after a
+// rate-limited or transient backend error. Read by tests; the budget itself
+// is enforced in SendMessage.
+func (s *Session) turnRetries() int {
+	s.turnRetryMu.Lock()
+	defer s.turnRetryMu.Unlock()
+	return s.turnRetryTotal
+}
+
 // ContextBudget is the window minus the reserve held back for the response,
 // where the reserve is never allowed to claim more than half of the window.
 //

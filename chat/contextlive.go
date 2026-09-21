@@ -82,13 +82,20 @@ type trackedLLM struct {
 }
 
 func (t *trackedLLM) CreateChatCompletion(ctx context.Context, request openai.ChatCompletionRequest) (cogito.LLMReply, cogito.LLMUsage, error) {
-	reply, usage, err := t.LLM.CreateChatCompletion(ctx, request)
+	var usage cogito.LLMUsage
+	reply, err := retryRequest(ctx, func() (cogito.LLMReply, error) {
+		r, u, e := t.LLM.CreateChatCompletion(ctx, request)
+		usage = u
+		return r, e
+	})
 	t.live.record(usage.PromptTokens)
 	return reply, usage, err
 }
 
 func (t *trackedLLM) Ask(ctx context.Context, f cogito.Fragment) (cogito.Fragment, error) {
-	out, err := t.LLM.Ask(ctx, f)
+	out, err := retryRequest(ctx, func() (cogito.Fragment, error) {
+		return t.LLM.Ask(ctx, f)
+	})
 	if out.Status != nil {
 		t.live.record(out.Status.LastUsage.PromptTokens)
 	}
@@ -113,7 +120,9 @@ type trackedStreamingLLM struct {
 // The relay goroutine is bounded by the source channel: it ends when the
 // provider closes it, which cogito's own consumer loop already depends on.
 func (t *trackedStreamingLLM) CreateChatCompletionStream(ctx context.Context, request openai.ChatCompletionRequest) (<-chan cogito.StreamEvent, error) {
-	src, err := t.stream.CreateChatCompletionStream(ctx, request)
+	src, err := retryRequest(ctx, func() (<-chan cogito.StreamEvent, error) {
+		return t.stream.CreateChatCompletionStream(ctx, request)
+	})
 	if err != nil {
 		return src, err
 	}
