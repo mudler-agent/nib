@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 
@@ -10,6 +11,10 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+// The in-memory servers below run until ctx ends. A server whose ctx is
+// cancelled at exit returns context.Canceled, which is shutdown, not a
+// failure, so it is not reported. Whether a server sees that or its client
+// closing first depends on goroutine timing.
 func StartTransports(ctx context.Context, cfg types.Config, shellJobs *ShellJobs) ([]mcp.Transport, error) {
 	if shellJobs == nil {
 		shellJobs = NewShellJobsInDir(cfg.WorkingDir)
@@ -18,7 +23,7 @@ func StartTransports(ctx context.Context, cfg types.Config, shellJobs *ShellJobs
 	bashMCPServerTransport, bashMCPServerClient := mcp.NewInMemoryTransports()
 
 	go func() {
-		if err := startBashMCPServer(ctx, bashMCPServerTransport, shellJobs.mgr); err != nil {
+		if err := startBashMCPServer(ctx, bashMCPServerTransport, shellJobs.mgr); err != nil && !errors.Is(err, context.Canceled) {
 			fmt.Fprintf(os.Stderr, "MCP server error: %v\n", err)
 		}
 	}()
@@ -27,7 +32,7 @@ func StartTransports(ctx context.Context, cfg types.Config, shellJobs *ShellJobs
 	filesystemMCPServerTransport, filesystemMCPServerClient := mcp.NewInMemoryTransports()
 
 	go func() {
-		if err := StartFileSystemMCPServer(ctx, filesystemMCPServerTransport, cfg.WorkingDir); err != nil {
+		if err := StartFileSystemMCPServer(ctx, filesystemMCPServerTransport, cfg.WorkingDir); err != nil && !errors.Is(err, context.Canceled) {
 			fmt.Fprintf(os.Stderr, "Filesystem MCP server error: %v\n", err)
 		}
 	}()
@@ -36,7 +41,7 @@ func StartTransports(ctx context.Context, cfg types.Config, shellJobs *ShellJobs
 	webMCPServerTransport, webMCPServerClient := mcp.NewInMemoryTransports()
 
 	go func() {
-		if err := StartWebMCPServer(ctx, webMCPServerTransport, cfg); err != nil {
+		if err := StartWebMCPServer(ctx, webMCPServerTransport, cfg); err != nil && !errors.Is(err, context.Canceled) {
 			fmt.Fprintf(os.Stderr, "Web MCP server error: %v\n", err)
 		}
 	}()
@@ -48,7 +53,7 @@ func StartTransports(ctx context.Context, cfg types.Config, shellJobs *ShellJobs
 	if cfg.Computer.Enabled {
 		computerServerTransport, computerClient := mcp.NewInMemoryTransports()
 		go func() {
-			if err := StartComputerMCPServer(ctx, computerServerTransport, cfg); err != nil {
+			if err := StartComputerMCPServer(ctx, computerServerTransport, cfg); err != nil && !errors.Is(err, context.Canceled) {
 				fmt.Fprintf(os.Stderr, "computer MCP server error: %v\n", err)
 			}
 		}()
@@ -60,7 +65,7 @@ func StartTransports(ctx context.Context, cfg types.Config, shellJobs *ShellJobs
 	if cfg.Browser.Enabled {
 		browserServerTransport, browserClient := mcp.NewInMemoryTransports()
 		go func() {
-			if err := StartBrowserMCPServer(ctx, browserServerTransport, cfg); err != nil {
+			if err := StartBrowserMCPServer(ctx, browserServerTransport, cfg); err != nil && !errors.Is(err, context.Canceled) {
 				fmt.Fprintf(os.Stderr, "browser MCP server error: %v\n", err)
 			}
 		}()
