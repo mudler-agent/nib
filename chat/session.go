@@ -1098,7 +1098,7 @@ func (s *Session) toolOptions(turnCtx context.Context, goal, mainModel string) [
 	if s.toolEnabled("spawn_agent") {
 		opts = append(opts, cogito.EnableAgentSpawning)
 	}
-	if s.toolEnabled("ask_user") {
+	if s.toolEnabled("ask_user") && !s.AutoApprove() {
 		opts = append(opts, cogito.WithTools(askUserToolDefinition(func(req AskRequest) string {
 			if s.callbacks.OnAskUser != nil {
 				return s.callbacks.OnAskUser(req)
@@ -2009,7 +2009,7 @@ func (s *Session) ToolCount() int {
 		"memory", "index",
 	}
 	for _, name := range builtins {
-		if s.toolEnabled(name) {
+		if s.toolEnabled(name) && !(name == "ask_user" && s.AutoApprove()) {
 			n++
 			if name == "spawn_agent" {
 				n += 2 // check_agent + get_agent_result
