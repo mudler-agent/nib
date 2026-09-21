@@ -932,3 +932,24 @@ func TestPruneLeavesSupersededReadsAloneBelowHighWater(t *testing.T) {
 		t.Fatalf("nothing should be stubbed below high water, got %+v", newly)
 	}
 }
+
+// A whole read of a large source file returns the outline, not the lines
+// (mcp/filesystem.go outlineRead). It has no range, so without a check it
+// "covers" every earlier ranged read of the file, and the sweep drops those
+// reads as redundant although the outline holds none of their lines.
+func TestOutlineReadSupersedesNothing(t *testing.T) {
+	outline := `{"content":"[3000 lines, too large to return whole...]","total_lines":3000,"outline":true,"success":true}`
+	msgs := []openai.ChatCompletionMessage{
+		callMsg("mid", "read", `{"path":"a.go","offset":50,"limit":20}`), bigResult("mid", 10),
+		callMsg("whole", "read", `{"path":"a.go"}`), resultMsg("whole", outline),
+	}
+	if got := supersededReadIDs(msgs, indexToolCalls(msgs)); len(got) != 0 {
+		t.Fatalf("an outline read superseded %v", got)
+	}
+
+	// The outline itself is covered by a later whole read that returned lines.
+	msgs = append(msgs, callMsg("again", "read", `{"path":"a.go"}`), bigResult("again", 10))
+	if got := supersededReadIDs(msgs, indexToolCalls(msgs)); !got["whole"] || !got["mid"] {
+		t.Fatalf("a later whole read should supersede the outline and the range, got %v", got)
+	}
+}

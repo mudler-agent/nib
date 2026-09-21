@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/mudler/nib/types"
 	openai "github.com/sashabaranov/go-openai"
@@ -124,10 +125,19 @@ func staleReadIDs(msgs []openai.ChatCompletionMessage, calls map[string]toolCall
 // A later read covers an earlier one only when its line range contains the
 // earlier range. As in staleReadIDs, the later call must be in a later assistant
 // message.
+//
+// A read that returned the file's outline covers nothing: it has no range, but
+// it holds none of the file's lines (see isOutlineRead).
 func supersededReadIDs(msgs []openai.ChatCompletionMessage, calls map[string]toolCallInfo) map[string]bool {
+	outlines := make(map[string]bool)
+	for _, m := range msgs {
+		if m.Role == "tool" && isOutlineRead(m.Content) {
+			outlines[m.ToolCallID] = true
+		}
+	}
 	byPath := make(map[string][]toolCallInfo)
-	for _, info := range calls {
-		if info.name == "read" && info.path != "" {
+	for id, info := range calls {
+		if info.name == "read" && info.path != "" && !outlines[id] {
 			p := filepath.Clean(info.path)
 			byPath[p] = append(byPath[p], info)
 		}
@@ -150,6 +160,20 @@ func supersededReadIDs(msgs []openai.ChatCompletionMessage, calls map[string]too
 		}
 	}
 	return out
+}
+
+// isOutlineRead reports whether a read result is the outline the read tool
+// returns in place of a large source file (mcp/filesystem.go outlineRead). The
+// result arrives as the MCP JSON envelope of readFileOutput, so a body that is
+// not JSON is never an outline.
+func isOutlineRead(content string) bool {
+	if !strings.Contains(content, `"outline"`) {
+		return false
+	}
+	var r struct {
+		Outline bool `json:"outline"`
+	}
+	return json.Unmarshal([]byte(content), &r) == nil && r.Outline
 }
 
 // readCovers reports whether read a returns every line that read b returns.

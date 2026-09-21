@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/mudler/nib/codeindex"
 )
 
 // fileSystem holds per-server state that gates mutating operations. An edit is
@@ -74,7 +75,9 @@ func (f *fileSystem) read(ctx context.Context, req *mcp.CallToolRequest, input r
 ) {
 	input.Path = f.resolve(input.Path)
 	res, out, err := readFile(ctx, req, input)
-	if out.Success {
+	// An outline is not the file's contents: edit matches exact text, so it
+	// stays locked until the model reads the lines it wants to change.
+	if out.Success && !out.Outline {
 		f.markSeen(input.Path)
 	}
 	return res, out, err
@@ -123,8 +126,33 @@ type readFileInput struct {
 type readFileOutput struct {
 	Content    string `json:"content" jsonschema:"file content with line numbers in format '   1| content'"`
 	TotalLines int    `json:"total_lines" jsonschema:"total number of lines in file"`
+	Outline    bool   `json:"outline,omitempty" jsonschema:"true when the file was too large to return whole and content is its outline; read line ranges with offset and limit"`
 	Success    bool   `json:"success" jsonschema:"whether operation was successful"`
 	Error      string `json:"error,omitempty" jsonschema:"error message if failed"`
+}
+
+// outlineMinLines is the size above which a read with no range returns the
+// file's outline instead of its lines, when codeindex supports the file type.
+// A whole read of a file this long costs tens of thousands of tokens, and the
+// model usually wants one function of it. Explicit offset/limit always return
+// lines.
+const outlineMinLines = 2000
+
+// outlineRead returns the outline read result for a large source file, or false
+// when codeindex cannot index it and the read must return lines.
+func outlineRead(path string, totalLines int) (readFileOutput, bool) {
+	outline, err := codeindex.Index(path)
+	if err != nil || strings.TrimSpace(outline) == "" {
+		return readFileOutput{}, false
+	}
+	header := fmt.Sprintf("[%d lines, too large to return whole. This is the file's outline, with line ranges in []. "+
+		"Read the part you need with offset and limit.]\n\n", totalLines)
+	return readFileOutput{
+		Content:    header + outline,
+		TotalLines: totalLines,
+		Outline:    true,
+		Success:    true,
+	}, true
 }
 
 // Input type for writing files
@@ -235,6 +263,12 @@ func readFile(ctx context.Context, req *mcp.CallToolRequest, input readFileInput
 	}
 
 	totalLines := len(lines)
+
+	if input.Offset <= 0 && input.Limit <= 0 && totalLines > outlineMinLines {
+		if out, ok := outlineRead(input.Path, totalLines); ok {
+			return nil, out, nil
+		}
+	}
 
 	// Apply offset and limit
 	offset := input.Offset
@@ -594,8 +628,10 @@ func StartFileSystemMCPServer(ctx context.Context, transport mcp.Transport, root
 
 	// Add tool for reading files
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "read",
-		Description: "Read file with line numbers, supports optional offset and limit for reading specific line ranges",
+		Name: "read",
+		Description: fmt.Sprintf("Read file with line numbers, supports optional offset and limit for reading specific line ranges. "+
+			"A source file over %d lines read without offset or limit returns its outline instead (outline=true); "+
+			"read the lines you need from it with offset and limit.", outlineMinLines),
 	}, fs.read)
 
 	// Add tool for writing files

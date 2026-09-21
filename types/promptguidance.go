@@ -105,6 +105,7 @@ func toolGuidance(builtinTools []string) string {
 		} else {
 			p += "Read a file once, in full, rather than requesting line ranges and re-reading it; offset and limit are there for a file too large to read in one call."
 		}
+		p += " A source file too large to return whole comes back as its outline instead; read the lines you need from it with offset and limit."
 		p += " Do not re-read a file you have already read in this conversation unless you have changed it."
 		paragraphs = append(paragraphs, p)
 	}
