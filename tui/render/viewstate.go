@@ -1,5 +1,7 @@
 package render
 
+import "github.com/mudler/nib/internal/textdiff"
+
 // Role identifies the speaker or origin of a Message.
 type Role string
 
@@ -24,7 +26,16 @@ type Message struct {
 	// imports chat to build it.
 	Label   string
 	AgentID string
-	// HugNext is meaningful for RoleAgent only: true when the next raw message
+	// Meta, Status and Diff are meaningful for RoleTool only. Meta is dim
+	// detail after the label ("+3 -1", "11 lines", "exit 1"); Status is the
+	// outcome the header marks; Diff, when set, replaces Content as the body
+	// (a write or edit shown as the change it made).
+	Meta   string
+	Status ToolStatus
+	Diff   *textdiff.Diff
+	// HugNext, for RoleTool, is true when this block is a lone header line and
+	// the next message is another tool block: the Presenter omits the trailing
+	// separator so a run of one-line calls stacks. For RoleAgent it is true when the next raw message
 	// continues this same agent's thread (a run of agent_tool/agent_result
 	// lines rendered separately by the model, never through Message). A
 	// Presenter must omit its own trailing separator in that case — the
@@ -116,6 +127,11 @@ type Dialog struct {
 	Rows             [][2]string // key/value detail rows (approval argument cards)
 	RowsUnstructured bool        // true: Rows is a single prose row, not a key/value table
 	Hint             string
+	// Meta is dim detail after an approval's Title (a diff's "+3 -1", "new
+	// file"); Diff, when set, is the change a write or edit approval would
+	// make, shown beneath the Rows.
+	Meta string
+	Diff *textdiff.Diff
 }
 
 // FooterRowKind identifies which footer row a FooterRow is, so a Presenter can

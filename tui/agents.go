@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/mudler/nib/chat"
+	"github.com/mudler/nib/internal/textdiff"
 	"github.com/mudler/nib/theme"
 	"github.com/mudler/nib/tui/render"
 )
@@ -103,6 +104,11 @@ func jobsFooterRow(jobs []agentJob) (render.FooterRow, bool) {
 			failed++
 		}
 	}
+	// Finished jobs are history (ctrl+o logs keeps them); the row stays only
+	// while something runs, or a failure is still worth a look.
+	if running == 0 && failed == 0 {
+		return render.FooterRow{}, false
+	}
 	parts := []string{fmt.Sprintf("jobs: %d running", running)}
 	if done > 0 {
 		parts = append(parts, fmt.Sprintf("%d done", done))
@@ -114,30 +120,54 @@ func jobsFooterRow(jobs []agentJob) (render.FooterRow, bool) {
 	return render.FooterRow{Text: strings.Join(parts, "  ·  "), Kind: render.FooterJobs}, true
 }
 
-// toolApprovalLabel builds the tool-approval header, labeling sub-agent calls.
-func toolApprovalLabel(req chat.ToolCallRequest) string {
-	if req.AgentID != "" {
-		return fmt.Sprintf("%s %s · %s wants to run", theme.SubAgent, render.ShortID(req.AgentID), req.Name)
-	}
-	return req.Name + " wants to run"
+// approvalContent is what a tool-approval prompt shows above its menu.
+type approvalContent struct {
+	title        string
+	meta         string
+	rows         [][2]string
+	unstructured bool
+	diff         *textdiff.Diff
 }
 
-// approvalRows builds a render.Dialog's Rows for a tool-approval prompt: the
-// structured argument card when chat.ToolArgRows recognizes the tool (one row
-// per field), or a single fallback row carrying the raw formatted call
-// otherwise — reported via the second return value (render.Dialog's
-// RowsUnstructured) rather than an empty-key convention, since chat.ToolArgRows
-// keys come from JSON object keys and a tool emitting a literal "" key would
-// otherwise collide with that convention.
-func approvalRows(req chat.ToolCallRequest) (rows [][2]string, unstructured bool) {
+// buildApprovalContent lays out a tool-approval prompt. The title is the
+// call's one-line summary ("edit main.go", "$ go test ./..."), tagged with
+// the sub-agent that asked; a tool the summary formatters do not know (an MCP
+// tool) is titled by name with its arguments as a key/value card beneath. A
+// write or edit with a predicted change shows that change as a diff, with its
+// "+N -M" as the title's meta. Any further lines of the summary (a multi-line
+// script) follow as one prose row; the summary's first line is never repeated
+// under the title.
+func buildApprovalContent(req chat.ToolCallRequest) approvalContent {
+	var c approvalContent
 	if rows, ok := chat.ToolArgRows(req.Name, req.Arguments); ok {
-		out := make([][2]string, len(rows))
+		c.title = req.Name
+		c.rows = make([][2]string, len(rows))
 		for i, r := range rows {
-			out[i] = [2]string{r.Key, r.ValueDisplay()}
+			c.rows[i] = [2]string{r.Key, r.ValueDisplay()}
 		}
-		return out, false
+	} else {
+		summary := chat.FormatToolCall(req.Name, req.Arguments)
+		first, rest, _ := strings.Cut(summary, "\n")
+		c.title = first
+		if first == "" {
+			c.title = req.Name
+		}
+		if req.Change != nil {
+			if d := req.Change.Diff(); !d.Empty() {
+				c.diff = &d
+				c.meta = changeMeta(req.Change, render.DiffStat(d))
+				rest = "" // the diff replaces the old -> new summary
+			}
+		}
+		if strings.TrimSpace(rest) != "" {
+			c.rows = [][2]string{{"", rest}}
+			c.unstructured = true
+		}
 	}
-	return [][2]string{{"", chat.FormatToolCall(req.Name, req.Arguments)}}, true
+	if req.AgentID != "" {
+		c.title = theme.SubAgent + " " + render.ShortID(req.AgentID) + " " + theme.Sep + " " + c.title
+	}
+	return c
 }
 
 // firstRunningJobID returns the id of the first running job, or "".

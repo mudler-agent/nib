@@ -132,6 +132,11 @@ func fmtEditResult(v any) string {
 	if !ok {
 		return ""
 	}
+	// A failed edit still carries "replacements": 0 (the field is not
+	// omitempty), so check for the failure first or it reads as a success.
+	if succ, ok := m["success"].(bool); ok && !succ {
+		return ""
+	}
 	n := argStr(m, "replacements")
 	if n == "" {
 		return ""
@@ -224,4 +229,26 @@ func fmtBashResult(v any) string {
 		return fmt.Sprintf(theme.ToolResultNoOutput, int(ec))
 	}
 	return ""
+}
+
+// ToolOutcome reports whether a tool result is a failure, for marking the
+// call in the transcript. A built-in tool fails when its JSON result carries
+// "success": false or a non-empty "error"; bash also fails on a nonzero exit
+// code, and detail is then "exit N". A result that is not a JSON object (plain
+// text from an MCP tool) is never judged a failure: nothing in it says so.
+func ToolOutcome(result string) (failed bool, detail string) {
+	var m map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(result)), &m); err != nil {
+		return false, ""
+	}
+	if ec, ok := m["exit_code"].(float64); ok && ec != 0 {
+		return true, fmt.Sprintf(theme.ToolExitCode, int(ec))
+	}
+	if e, ok := m["error"].(string); ok && strings.TrimSpace(e) != "" {
+		return true, ""
+	}
+	if succ, ok := m["success"].(bool); ok && !succ {
+		return true, ""
+	}
+	return false, ""
 }

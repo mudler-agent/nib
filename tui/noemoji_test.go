@@ -44,13 +44,13 @@ func TestNoEmojiInRenderHelpers(t *testing.T) {
 	}
 
 	// Tool-approval labels, both sub-agent and root variants.
-	sub := toolApprovalLabel(chat.ToolCallRequest{Name: "echo", AgentID: "a1b2c3d4e5"})
+	sub := buildApprovalContent(chat.ToolCallRequest{Name: "echo", AgentID: "a1b2c3d4e5"}).title
 	if containsEmoji(sub) {
-		t.Fatalf("toolApprovalLabel (sub-agent) contains emoji: %q", sub)
+		t.Fatalf("approval title (sub-agent) contains emoji: %q", sub)
 	}
-	root := toolApprovalLabel(chat.ToolCallRequest{Name: "echo"})
+	root := buildApprovalContent(chat.ToolCallRequest{Name: "echo"}).title
 	if containsEmoji(root) {
-		t.Fatalf("toolApprovalLabel (root) contains emoji: %q", root)
+		t.Fatalf("approval title (root) contains emoji: %q", root)
 	}
 
 	// Ctrl+O log viewer list.

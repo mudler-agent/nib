@@ -199,11 +199,15 @@ func restoredTranscript(hist []openai.ChatCompletionMessage) []ChatMessage {
 				out = append(out, ChatMessage{Role: "assistant", Content: msg.Content})
 			}
 			for _, call := range msg.ToolCalls {
-				out = append(out, ChatMessage{
+				tm := ChatMessage{
 					Role:      "tool",
 					Name:      call.Function.Name,
 					Arguments: call.Function.Arguments,
-				})
+				}
+				if c := chat.ArgsFileChange(call.Function.Name, call.Function.Arguments); c != nil {
+					setChange(&tm, c)
+				}
+				out = append(out, tm)
 			}
 		}
 	}

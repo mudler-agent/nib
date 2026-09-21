@@ -28,6 +28,11 @@ func shellJobsFooterRow(jobs []wizmcp.ShellJobInfo) (render.FooterRow, bool) {
 			failed++
 		}
 	}
+	// Finished jobs are history (ctrl+o logs keeps them); the row stays only
+	// while something runs, or a failure is still worth a look.
+	if running == 0 && failed == 0 {
+		return render.FooterRow{}, false
+	}
 	parts := []string{fmt.Sprintf("shell: %d running", running)}
 	if done > 0 {
 		parts = append(parts, fmt.Sprintf("%d done", done))

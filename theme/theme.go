@@ -1,6 +1,7 @@
 // Package theme is the single source of truth for nib's visual language:
 // a calm, warm-editorial palette of foreground-only inks (no background is
-// ever set, so nib respects the user's terminal theme), typographic glyphs
+// set, so nib respects the user's terminal theme — the one exception is the
+// muted, light/dark-adaptive tint on diff lines, see DiffAddBg), typographic glyphs
 // (no emoji), and the lipgloss styles built from them. Both the TUI (tui/)
 // and the CLI (cmd/cli.go) render through these styles so the two modes look
 // like one product.
@@ -20,6 +21,25 @@ var (
 	Danger = lipgloss.Color("131") // muted brick — errors / denials
 	Dim    = lipgloss.Color("245") // labels, rules, help
 	Faint  = lipgloss.Color("240") // ghost hints, metadata
+	Code   = lipgloss.Color("137") // inline code — warm tan, legible on light and dark
+)
+
+// Diff tints — the only backgrounds nib sets. A diff is read as a band of
+// green and red rows, which a foreground-only colour cannot give, so added and
+// removed lines get a muted tint picked per terminal background (light or
+// dark) and per colour depth. On a 16-colour terminal the tint is dropped
+// (ANSI "" is no colour): the basic ANSI greens and reds are too loud as
+// backgrounds, and the coloured +/- sign still carries the meaning. The sign is
+// also what keeps a diff readable without colour at all.
+var (
+	DiffAddBg = lipgloss.CompleteAdaptiveColor{
+		Light: lipgloss.CompleteColor{TrueColor: "#e3f4e6", ANSI256: "194"},
+		Dark:  lipgloss.CompleteColor{TrueColor: "#203a29", ANSI256: "22"},
+	}
+	DiffDelBg = lipgloss.CompleteAdaptiveColor{
+		Light: lipgloss.CompleteColor{TrueColor: "#fbe6e6", ANSI256: "224"},
+		Dark:  lipgloss.CompleteColor{TrueColor: "#422427", ANSI256: "52"},
+	}
 )
 
 // Glyphs — typographic marks, no emoji. These are vars, not consts, because
@@ -43,6 +63,9 @@ var (
 	NewOutputGlyph = "↓"  // footer marker: new content arrived while scrolled up
 	HairlineGlyph  = "─"  // the one-cell rule repeated under the header
 	BoxRule        = "│"  // vertical rule down the side of a collapsed trace box
+	Check          = "✓"  // tool call succeeded
+	DiffGap        = "⋯"  // elided unchanged lines between two diff hunks
+	NoticeGlyph    = "∙"  // housekeeping notice (context pruned / compacted)
 
 	// RadioOn/RadioOff mark a single-select ask_user option; CheckOn/CheckOff
 	// mark a multi-select one. Cursor marks whichever row is highlighted,
@@ -106,6 +129,9 @@ func applyGlyphProfile() {
 		NewOutputGlyph = "v"
 		HairlineGlyph = "-"
 		BoxRule = "|"
+		Check = "ok"
+		DiffGap = "..."
+		NoticeGlyph = "-"
 		RadioOn, RadioOff = "(*)", "( )"
 		CheckOn, CheckOff = "[x]", "[ ]"
 		Cursor = ">"
@@ -121,6 +147,9 @@ func applyGlyphProfile() {
 	NewOutputGlyph = "↓"
 	HairlineGlyph = "─"
 	BoxRule = "│"
+	Check = "✓"
+	DiffGap = "⋯"
+	NoticeGlyph = "∙"
 	RadioOn, RadioOff = "◉", "○"
 	CheckOn, CheckOff = "◼", "◻"
 	Cursor = "▸"
@@ -144,6 +173,23 @@ var (
 	ApproveKey = lipgloss.NewStyle().Bold(true).Foreground(Accent)
 	Running    = lipgloss.NewStyle().Foreground(Accent)
 	Done       = lipgloss.NewStyle().Foreground(Sage)
+	// Tool blocks: the verb (first word of the call summary) in the terminal's
+	// own foreground so a run of calls can be scanned by what they did; the
+	// rest of the summary and the output stay dim.
+	ToolVerb   = lipgloss.NewStyle()
+	ToolDetail = lipgloss.NewStyle().Foreground(Dim)
+	ToolOutput = lipgloss.NewStyle().Foreground(Dim)
+	ToolOK     = lipgloss.NewStyle().Foreground(Sage)
+	ToolFailed = lipgloss.NewStyle().Foreground(Danger)
+	// Diff rows. Changed lines keep the terminal foreground on their tint (the
+	// text is what the user must read); context lines are dim; the sign takes
+	// the line's colour.
+	DiffAdd     = lipgloss.NewStyle().Background(DiffAddBg)
+	DiffDel     = lipgloss.NewStyle().Background(DiffDelBg)
+	DiffAddSign = lipgloss.NewStyle().Background(DiffAddBg).Foreground(Sage)
+	DiffDelSign = lipgloss.NewStyle().Background(DiffDelBg).Foreground(Danger)
+	DiffContext = lipgloss.NewStyle().Foreground(Dim)
+	DiffLineNo  = lipgloss.NewStyle().Foreground(Faint)
 	// Yolo flags the auto-approve-everything mode — bold brick so it reads as a
 	// standing warning that the approval gate is off.
 	Yolo = lipgloss.NewStyle().Bold(true).Foreground(Danger)

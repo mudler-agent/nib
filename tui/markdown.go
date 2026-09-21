@@ -41,6 +41,7 @@ func nibMarkdownStyle() ansi.StyleConfig {
 	accent := string(theme.Accent)
 	dim := string(theme.Dim)
 	faint := string(theme.Faint)
+	code := string(theme.Code)
 	zero := uint(0)
 	yes := true
 
@@ -72,7 +73,7 @@ func nibMarkdownStyle() ansi.StyleConfig {
 		Link:        ansi.StylePrimitive{Color: &accent, Underline: &yes},
 		LinkText:    ansi.StylePrimitive{Color: &accent},
 		Code: ansi.StyleBlock{
-			StylePrimitive: ansi.StylePrimitive{Color: &faint},
+			StylePrimitive: ansi.StylePrimitive{Color: &code},
 		},
 		CodeBlock: ansi.StyleCodeBlock{
 			StyleBlock: ansi.StyleBlock{
