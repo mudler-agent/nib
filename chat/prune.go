@@ -16,10 +16,15 @@ import (
 // The index is what makes ordering questions answerable — "was this file edited
 // AFTER this read" is the whole stale-read rule, and a tool result carries no
 // position of its own beyond where it sits in the slice.
+//
+// offset and limit are the read tool's line range. They are zero when the call
+// has none, which the read tool takes as "from the start" and "to the end".
 type toolCallInfo struct {
-	name string
-	path string
-	idx  int
+	name   string
+	path   string
+	idx    int
+	offset int
+	limit  int
 }
 
 // indexToolCalls maps tool_call_id to the call that produced it.
@@ -37,10 +42,12 @@ func indexToolCalls(msgs []openai.ChatCompletionMessage) map[string]toolCallInfo
 			// poison the index: the call keeps its name and simply has no path,
 			// so no path-scoped rule will match it.
 			var args struct {
-				Path string `json:"path"`
+				Path   string `json:"path"`
+				Offset int    `json:"offset"`
+				Limit  int    `json:"limit"`
 			}
 			if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err == nil {
-				info.path = args.Path
+				info.path, info.offset, info.limit = args.Path, args.Offset, args.Limit
 			}
 			out[tc.ID] = info
 		}
@@ -105,6 +112,61 @@ func staleReadIDs(msgs []openai.ChatCompletionMessage, calls map[string]toolCall
 	return stale
 }
 
+// supersededReadIDs returns the tool_call_ids of read results that a later read
+// of the same file covers.
+//
+// Dropping such a result loses nothing: the later read holds the same lines, and
+// it holds them as they are now. That makes them the first choice when the size
+// sweep must free space. Without that choice the sweep drops the oldest reads,
+// which are often other files the model still needs, and the model re-reads
+// them.
+//
+// A later read covers an earlier one only when its line range contains the
+// earlier range. As in staleReadIDs, the later call must be in a later assistant
+// message.
+func supersededReadIDs(msgs []openai.ChatCompletionMessage, calls map[string]toolCallInfo) map[string]bool {
+	byPath := make(map[string][]toolCallInfo)
+	for _, info := range calls {
+		if info.name == "read" && info.path != "" {
+			p := filepath.Clean(info.path)
+			byPath[p] = append(byPath[p], info)
+		}
+	}
+
+	out := make(map[string]bool)
+	for _, m := range msgs {
+		if m.Role != "tool" || m.ToolCallID == "" {
+			continue
+		}
+		info, ok := calls[m.ToolCallID]
+		if !ok || info.name != "read" || info.path == "" {
+			continue
+		}
+		for _, later := range byPath[filepath.Clean(info.path)] {
+			if later.idx > info.idx && readCovers(later, info) {
+				out[m.ToolCallID] = true
+				break
+			}
+		}
+	}
+	return out
+}
+
+// readCovers reports whether read a returns every line that read b returns.
+// A zero or negative limit means "to the end of the file".
+func readCovers(a, b toolCallInfo) bool {
+	if a.offset > b.offset {
+		return false
+	}
+	if a.limit <= 0 {
+		return true
+	}
+	if b.limit <= 0 {
+		return false
+	}
+	return a.offset+a.limit >= b.offset+b.limit
+}
+
 // The clauses a stub can carry in place of the body it replaced.
 //
 // The stub is the ONLY channel telling the model why content it can see it once
@@ -118,9 +180,14 @@ func staleReadIDs(msgs []openai.ChatCompletionMessage, calls map[string]toolCall
 // function of the reason alone, so that recording the reason once is enough to
 // reproduce the same text byte for byte on every later call — see
 // pruneToolOutputs on why that matters.
+//
+// A superseded read is the third case. Its content is still in the prompt, in
+// a later read of the same file, so its stub must NOT ask for a re-read. That
+// request would start the loop that dropping the result was meant to stop.
 const (
-	detailBudget = "output dropped to save context"
-	detailStale  = "output dropped after a later edit"
+	detailBudget     = "output dropped to save context"
+	detailStale      = "output dropped after a later edit"
+	detailSuperseded = "output dropped, a later read of the same file has it"
 )
 
 // prunedStub renders the placeholder that replaces a dropped tool result. It
@@ -133,6 +200,9 @@ const (
 func prunedStub(name, path, detail string) string {
 	if detail == "" {
 		detail = detailBudget
+	}
+	if detail == detailSuperseded {
+		return fmt.Sprintf("[%s %s — %s]", name, path, detail)
 	}
 	if path != "" {
 		return fmt.Sprintf("[%s %s — %s; re-read for current contents]", name, path, detail)
@@ -215,8 +285,8 @@ func pruneToolOutputs(msgs []openai.ChatCompletionMessage, cfg types.ToolOutputP
 	if cfg.HighWaterTokens > 0 {
 		// sweepToLowWater passes over everything already in target, so this
 		// never overwrites a stale read's clause with the budget one.
-		for _, id := range sweepToLowWater(msgs, cfg, target, protected) {
-			target[id] = detailBudget
+		for _, r := range sweepToLowWater(msgs, cfg, target, protected, supersededReadIDs(msgs, calls)) {
+			target[r.id] = r.detail
 		}
 	}
 
@@ -333,9 +403,13 @@ const pruningMinScale = 0.25
 // results the model had only just fetched. The effective mark is the larger
 // of the configured value and this fraction of the window, so a small window
 // keeps its configured policy and a large one gets room in proportion to it.
+//
+// The low mark is 20% and not 10% because a sweep cuts all the way down to it.
+// At 10% of a 200k window, a sweep kept three 6k reads, less than a normal
+// working set, and the model re-read the rest in a loop.
 const (
 	pruningHighWaterFraction = 0.30
-	pruningLowWaterFraction  = 0.10
+	pruningLowWaterFraction  = 0.20
 )
 
 // effectivePruning returns cfg with water marks sized to the context window,
@@ -474,13 +548,22 @@ func trailingToolRun(msgs []openai.ChatCompletionMessage) map[string]bool {
 	return protected
 }
 
-// sweepToLowWater picks the oldest eligible results to stub until the total
-// tool-output size drops below cfg.LowWaterTokens, returning their ids in
-// oldest-first order.
+// sweepToLowWater picks eligible results to stub until the total tool-output
+// size drops below cfg.LowWaterTokens, and returns each one with the clause its
+// stub carries.
+//
+// It takes the superseded reads first, oldest first, because dropping them
+// loses nothing. Then it takes the remaining results, oldest first.
+//
+// Superseded reads are stubbed only here, in a sweep, and not as soon as the
+// later read arrives. Stubbing them at once would change an early message on
+// every re-read and cost a prefix-cache re-prefill each time. The stale-read
+// rule pays that cost because the old content is wrong. A superseded read is
+// only redundant.
 //
 // It stops when nothing eligible is left rather than violating MinResultTokens:
 // size pruning is best-effort and never guarantees a ceiling.
-func sweepToLowWater(msgs []openai.ChatCompletionMessage, cfg types.ToolOutputPruningConfig, target map[string]string, protected map[string]bool) []string {
+func sweepToLowWater(msgs []openai.ChatCompletionMessage, cfg types.ToolOutputPruningConfig, target map[string]string, protected, superseded map[string]bool) []stubbedResult {
 	total := 0
 	for _, m := range msgs {
 		if m.Role != "tool" {
@@ -494,23 +577,36 @@ func sweepToLowWater(msgs []openai.ChatCompletionMessage, cfg types.ToolOutputPr
 		return nil
 	}
 
-	var picked []string
-	for _, m := range msgs {
-		if total < cfg.LowWaterTokens {
-			break
+	var picked []stubbedResult
+	taken := make(map[string]bool)
+	pass := func(onlySuperseded bool) {
+		for _, m := range msgs {
+			if total < cfg.LowWaterTokens {
+				return
+			}
+			if m.Role != "tool" || m.ToolCallID == "" || taken[m.ToolCallID] {
+				continue
+			}
+			if onlySuperseded && !superseded[m.ToolCallID] {
+				continue
+			}
+			if _, done := target[m.ToolCallID]; done || protected[m.ToolCallID] {
+				continue
+			}
+			size := tokensOf(m.Content)
+			if size < cfg.MinResultTokens {
+				continue
+			}
+			detail := detailBudget
+			if superseded[m.ToolCallID] {
+				detail = detailSuperseded
+			}
+			picked = append(picked, stubbedResult{id: m.ToolCallID, detail: detail})
+			taken[m.ToolCallID] = true
+			total -= size
 		}
-		if m.Role != "tool" || m.ToolCallID == "" {
-			continue
-		}
-		if _, done := target[m.ToolCallID]; done || protected[m.ToolCallID] {
-			continue
-		}
-		size := tokensOf(m.Content)
-		if size < cfg.MinResultTokens {
-			continue
-		}
-		picked = append(picked, m.ToolCallID)
-		total -= size
 	}
+	pass(true)
+	pass(false)
 	return picked
 }

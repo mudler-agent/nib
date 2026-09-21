@@ -858,3 +858,77 @@ func TestEffectivePruningConfiguredMarksAreFloors(t *testing.T) {
 		t.Fatalf("configured marks above window marks: got high=%d low=%d", got.HighWaterTokens, got.LowWaterTokens)
 	}
 }
+
+// When the sweep has to free space, an older read that a later read of the same
+// file covers goes first. Dropping it loses nothing, because the later read
+// still holds the same content. Dropping an older read of a different file
+// loses a file the model then re-reads.
+func TestPruneSweepDropsSupersededReadsBeforeOlderDistinctOnes(t *testing.T) {
+	msgs := []openai.ChatCompletionMessage{
+		callMsg("c1", "read", `{"path":"a.go"}`), bigResult("c1", 3000),
+		callMsg("c2", "read", `{"path":"b.go"}`), bigResult("c2", 3000),
+		callMsg("c3", "read", `{"path":"b.go"}`), bigResult("c3", 3000),
+		callMsg("c4", "read", `{"path":"c.go"}`), bigResult("c4", 3000),
+		{Role: "user", Content: "next"},
+	}
+	cfg := types.ToolOutputPruningConfig{HighWaterTokens: 10000, LowWaterTokens: 10000, MinResultTokens: 1}
+
+	out, newly, _ := pruneToolOutputs(msgs, cfg, nil)
+	if len(newly) != 1 || newly[0].id != "c2" {
+		t.Fatalf("want only the superseded read c2 stubbed, got %+v", newly)
+	}
+	if out[1].Content != msgs[1].Content {
+		t.Fatal("the oldest read a.go was stubbed although a superseded read could go instead")
+	}
+	if !strings.Contains(out[3].Content, detailSuperseded) {
+		t.Fatalf("superseded stub has the wrong reason: %q", out[3].Content)
+	}
+	if strings.Contains(out[3].Content, "re-read") {
+		t.Fatalf("a superseded stub must not ask for a re-read: %q", out[3].Content)
+	}
+}
+
+// A later read covers an earlier one only when its line range contains the
+// earlier range. A read of other lines of the same file is not a duplicate.
+func TestSupersededReadIDsRespectsLineRanges(t *testing.T) {
+	msgs := []openai.ChatCompletionMessage{
+		callMsg("full", "read", `{"path":"a.go"}`), bigResult("full", 10),
+		callMsg("head", "read", `{"path":"a.go","limit":100}`), bigResult("head", 10),
+		callMsg("mid", "read", `{"path":"a.go","offset":50,"limit":20}`), bigResult("mid", 10),
+		callMsg("tail", "read", `{"path":"a.go","offset":200}`), bigResult("tail", 10),
+		callMsg("full2", "read", `{"path":"./a.go"}`), bigResult("full2", 10),
+		callMsg("mid2", "read", `{"path":"a.go","offset":60,"limit":5}`), bigResult("mid2", 10),
+	}
+	got := supersededReadIDs(msgs, indexToolCalls(msgs))
+	want := map[string]bool{"full": true, "head": true, "mid": true, "tail": true}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for id := range want {
+		if !got[id] {
+			t.Errorf("%s should be superseded by the later full read", id)
+		}
+	}
+
+	partial := []openai.ChatCompletionMessage{
+		callMsg("full", "read", `{"path":"a.go"}`), bigResult("full", 10),
+		callMsg("head", "read", `{"path":"a.go","limit":100}`), bigResult("head", 10),
+	}
+	if got := supersededReadIDs(partial, indexToolCalls(partial)); len(got) != 0 {
+		t.Fatalf("a partial read must not supersede a full one, got %v", got)
+	}
+}
+
+// Below the high-water mark a superseded read stays. Stubbing it at once would
+// change an early message on every re-read and cost a prefix-cache re-prefill.
+func TestPruneLeavesSupersededReadsAloneBelowHighWater(t *testing.T) {
+	msgs := []openai.ChatCompletionMessage{
+		callMsg("c1", "read", `{"path":"a.go"}`), bigResult("c1", 500),
+		callMsg("c2", "read", `{"path":"a.go"}`), bigResult("c2", 500),
+		{Role: "user", Content: "next"},
+	}
+	cfg := types.ToolOutputPruningConfig{HighWaterTokens: 10000, LowWaterTokens: 5000, MinResultTokens: 1}
+	if _, newly, _ := pruneToolOutputs(msgs, cfg, nil); len(newly) != 0 {
+		t.Fatalf("nothing should be stubbed below high water, got %+v", newly)
+	}
+}
