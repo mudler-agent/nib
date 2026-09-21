@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 
@@ -28,8 +29,9 @@ var (
 	catalogDB map[string]map[string]Model // provider -> modelID -> Model
 
 	// Secondary indices built on load for cross-provider lookup.
-	byModelID     map[string][]Model          // modelID -> matching models
-	byBaseURLHost map[string][]Model          // host -> matching models
+	byModelID     map[string][]Model // modelID -> matching models
+	byBaseURLHost map[string][]Model // host -> matching models
+	modelIDs      []string           // byModelID's keys, sorted
 )
 
 // Load decompresses and parses the embedded catalog. It is called lazily by
@@ -59,17 +61,34 @@ func decompress(data []byte) ([]byte, error) {
 	return r.DecodeAll(data, nil)
 }
 
+// buildIndices walks providers and their models in sorted order. The same
+// model ID is often served by several providers with different limits, and
+// Lookup returns the first acceptable entry of a bucket, so the bucket order
+// decides the answer. Built from map iteration, that order changed from run
+// to run, and so did the max_tokens nib sent for a model such as glm-5.2.
 func buildIndices() {
 	byModelID = make(map[string][]Model)
 	byBaseURLHost = make(map[string][]Model)
-	for _, models := range catalogDB {
-		for _, m := range models {
+	for _, provider := range sortedKeys(catalogDB) {
+		models := catalogDB[provider]
+		for _, id := range sortedKeys(models) {
+			m := models[id]
 			byModelID[m.ID] = append(byModelID[m.ID], m)
 			if h := hostOf(m.BaseURL); h != "" {
 				byBaseURLHost[h] = append(byBaseURLHost[h], m)
 			}
 		}
 	}
+	modelIDs = sortedKeys(byModelID)
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	return keys
 }
 
 // Lookup finds a model in the catalog using progressively looser matching:
@@ -123,7 +142,8 @@ func Lookup(providerName, modelID, baseURL string) (*Model, bool) {
 
 	// 4. Suffix match: strip "org/" prefix from catalog IDs.
 	//    e.g. user model "glm-5.2" matches catalog ID "zai-org/glm-5.2".
-	for _, matches := range byModelID {
+	for _, id := range modelIDs {
+		matches := byModelID[id]
 		for i := range matches {
 			if suffixMatch(matches[i].ID, modelID) {
 				return &matches[i], true

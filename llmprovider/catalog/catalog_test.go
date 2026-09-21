@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/mudler/nib/types"
@@ -238,5 +240,22 @@ func TestDiscoverModelError(t *testing.T) {
 	}
 	if info != nil {
 		t.Fatal("expected nil for 500 response")
+	}
+}
+
+// Lookup returns the first acceptable entry of a byModelID bucket, so a bucket
+// in map order gave the same model a different maxTokens from run to run.
+// Buckets must list their providers in sorted order.
+func TestIndicesAreInProviderOrder(t *testing.T) {
+	if err := Load(); err != nil {
+		t.Fatal(err)
+	}
+	for id, matches := range byModelID {
+		if !slices.IsSortedFunc(matches, func(a, b Model) int { return strings.Compare(a.Provider, b.Provider) }) {
+			t.Fatalf("byModelID[%q] is not in provider order", id)
+		}
+	}
+	if !slices.IsSorted(modelIDs) || len(modelIDs) != len(byModelID) {
+		t.Fatal("modelIDs is not the sorted key set of byModelID")
 	}
 }
