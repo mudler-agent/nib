@@ -399,6 +399,23 @@ func TestOverflowAnnouncesTheRetryThatHappens(t *testing.T) {
 	}
 }
 
+// Once the retry starts, the overflow line goes away: a retry that streams a
+// plain answer emits no status of its own to replace it.
+func TestOverflowRetryStatusIsCleared(t *testing.T) {
+	rec := &retryStatusRecorder{}
+	s := newOverflowSession(t, &overflowLLM{failures: 1})
+	s.callbacks = rec.callbacks()
+
+	if _, err := s.SendMessage("what changed?"); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if n := len(rec.lines); n == 0 || rec.lines[n-1] != retryResumeStatus {
+		t.Fatalf("last status is not %q; statuses seen: %v", retryResumeStatus, rec.lines)
+	}
+}
+
 // And it is not made when it cannot be kept. The status fired BEFORE compaction
 // ran, so both no-retry branches — a failed summariser and a compaction with
 // nothing to summarise — told the user nib was retrying and then handed them the

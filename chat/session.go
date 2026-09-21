@@ -1771,6 +1771,13 @@ func (s *Session) SendMessage(text string, parts ...ContentPart) (string, error)
 						if s.callbacks.OnCompactDone != nil {
 							s.callbacks.OnCompactDone(cb, ca)
 						}
+						// The compaction notice now records what happened. Put
+						// the status back, or a retry that streams a plain
+						// answer leaves "compacting and retrying" on screen
+						// for the rest of the turn (see retryResumeStatus).
+						if s.callbacks.OnStatus != nil {
+							s.callbacks.OnStatus(retryResumeStatus)
+						}
 						continue
 					}
 				}
