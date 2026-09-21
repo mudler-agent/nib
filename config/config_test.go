@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/mudler/nib/types"
 )
@@ -595,6 +596,12 @@ func (fv fillVariant) into(t *testing.T, v reflect.Value) {
 		m.SetMapIndex(key, val)
 		v.Set(m)
 	case reflect.Struct:
+		// time.Time keeps its state in unexported fields, which the loop
+		// below cannot set; build one from the variant instead.
+		if v.Type() == reflect.TypeOf(time.Time{}) {
+			v.Set(reflect.ValueOf(time.Unix(1_000_000+fv.i, 0).UTC()))
+			return
+		}
 		for i := range v.NumField() {
 			if f := v.Field(i); f.CanSet() {
 				fv.into(t, f)

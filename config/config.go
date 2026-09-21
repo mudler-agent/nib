@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"time"
 
 	"dario.cat/mergo"
 	"github.com/mudler/nib/internal"
@@ -286,10 +287,31 @@ func LoadWith(o LoadOptions) types.Config {
 // cfg.Hooks, cfg.Skills and cfg.Commands, which would write into the caller's
 // backing array whenever it has spare capacity.
 func applySeeds(cfg *types.Config, defaults types.Config) {
-	if err := mergo.Merge(cfg, cloneSliceFields(defaults)); err != nil {
+	if err := mergo.Merge(cfg, cloneSliceFields(defaults), mergo.WithTransformers(timeTransformer{})); err != nil {
 		// Only reachable for a nil or non-struct argument, neither of which the
 		// single call site can produce. Report rather than drop it silently.
 		fmt.Fprintf(os.Stderr, "nib: config defaults: %v\n", err)
+	}
+}
+
+// timeTransformer merges a time.Time as one value. mergo otherwise walks into
+// its unexported fields and copies nothing, so a seeded or overridden time
+// never lands. A zero source is skipped, like every other zero value; without
+// override it fills only a zero destination.
+type timeTransformer struct{ override bool }
+
+func (t timeTransformer) Transformer(typ reflect.Type) func(dst, src reflect.Value) error {
+	if typ != reflect.TypeOf(time.Time{}) {
+		return nil
+	}
+	return func(dst, src reflect.Value) error {
+		if !dst.CanSet() || src.Interface().(time.Time).IsZero() {
+			return nil
+		}
+		if t.override || dst.Interface().(time.Time).IsZero() {
+			dst.Set(src)
+		}
+		return nil
 	}
 }
 
@@ -329,7 +351,7 @@ func applySeeds(cfg *types.Config, defaults types.Config) {
 // LoadOptions.BaseDir after this runs, unconditionally, which is what keeps the
 // root to a single knob for both channels.
 func applyOverrides(cfg *types.Config, overrides types.Config) {
-	if err := mergo.Merge(cfg, cloneSliceFields(overrides), mergo.WithOverride); err != nil {
+	if err := mergo.Merge(cfg, cloneSliceFields(overrides), mergo.WithOverride, mergo.WithTransformers(timeTransformer{override: true})); err != nil {
 		// Only reachable for a nil or non-struct argument, neither of which the
 		// single call site can produce. Report rather than drop it silently.
 		fmt.Fprintf(os.Stderr, "nib: config overrides: %v\n", err)
