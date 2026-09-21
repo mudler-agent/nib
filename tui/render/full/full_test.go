@@ -171,6 +171,14 @@ func TestFooterRowsStyledByKind(t *testing.T) {
 		}
 	})
 
+	t.Run("todo gets Subtle, unfilled", func(t *testing.T) {
+		text := "2/5 ✓ read files ◐ writing tests"
+		want := theme.Subtle.Render(text)
+		if got := footer(render.FooterTodo, text); got != want {
+			t.Errorf("FooterTodo row = %q, want %q", got, want)
+		}
+	})
+
 	t.Run("unset Kind falls back to the plain default, not Jobs styling", func(t *testing.T) {
 		text := "some future row"
 		want := theme.Subtle.Render(text)

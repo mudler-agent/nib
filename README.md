@@ -203,6 +203,20 @@ in-turn "keep going" gate: the model self-judges progress and continues until
 done. You can still chat and steer while a goal is being pursued. Goals are
 session-only and single (setting a new one replaces the old).
 
+### `todo_write` — ephemeral task tracking
+
+The `todo_write` tool lets the model plan and track multi-step work within the
+current session. The model sends the **complete** todo list on every call
+(replace-all semantics — there is no add/update/delete, just the full list each
+time). Each item has a status: `pending`, `in_progress`, `completed`, or
+`cancelled`.
+
+The current list is shown in the footer as a compact summary line, e.g.
+`◐ 2/5 ✓ read files ◐ writing tests · deploy`. The list is ephemeral — it
+lives for the session and is not persisted to disk.
+
+This is inspired by [maki](https://github.com/tontinton/maki)'s todo system.
+
 ### `/model` and `/models`: switch model mid-session
 
 - `/models` lists the models the configured endpoint serves, marking the

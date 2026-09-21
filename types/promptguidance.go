@@ -122,6 +122,10 @@ func toolGuidance(builtinTools []string) string {
 		paragraphs = append(paragraphs, "edit requires that you have "+seenBy+" the file first, and it replaces the old string only when that string appears exactly once in the file. Include enough surrounding context to make it unique, or pass all=true to replace every occurrence.")
 	}
 
+	if toolExposed(builtinTools, "todo_write") {
+		paragraphs = append(paragraphs, "Use the todo_write tool to plan multi-step tasks (3+ steps) before starting work. Send the COMPLETE todo list on every call — it replaces the entire list, not a delta. Mark an item in_progress when you begin it and completed when done. Keep exactly one item in_progress at a time. Update the list after each step, not just at the end.")
+	}
+
 	return strings.Join(paragraphs, "\n\n")
 }
 

@@ -3023,6 +3023,9 @@ func (m Model) footerRows() []render.FooterRow {
 		if row, ok := goalFooterRow(m.session.Goal()); ok {
 			rows = append(rows, row)
 		}
+		if row, ok := todoFooterRow(m.session.TodoList()); ok {
+			rows = append(rows, row)
+		}
 	}
 	return rows
 }
