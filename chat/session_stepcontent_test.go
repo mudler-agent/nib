@@ -54,11 +54,13 @@ func TestStepContentReachesCallbackBeforeToolResult(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	// No ApprovalMode "auto": auto-approval hides ask_user from the tool set,
+	// and the scripted step calls it. The default mode is enough, since
+	// ask_user never goes through tool approval.
 	cfg := types.Config{
-		Model:        "fake-model",
-		APIKey:       "fake-key",
-		BaseURL:      srv.URL + "/v1",
-		ApprovalMode: "auto",
+		Model:   "fake-model",
+		APIKey:  "fake-key",
+		BaseURL: srv.URL + "/v1",
 		AgentOptions: types.AgentOptions{
 			Iterations:  10,
 			MaxAttempts: 3,
