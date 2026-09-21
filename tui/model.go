@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -293,6 +294,9 @@ type Model struct {
 	// Tool approval state
 	pendingTool      *chat.ToolCallRequest
 	awaitingApproval bool
+	// bell is the terminal ringBell writes BEL to; nil never rings. See
+	// WithBell.
+	bell io.Writer
 	// approvalEditing distinguishes the two approval sub-modes: false is the
 	// default key-driven choice mode (single y/a/n/e/A/Esc keypresses, input
 	// hidden); true is edit mode where the textarea is shown for a free-form
@@ -1510,6 +1514,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// A tail of non-turn entries (skill loads / resolve errors) may have
 		// appended notices without starting a turn; re-render so they show now.
 		m.updateViewport()
+		// Nothing queued started a turn: the composer is the user's again.
+		m.ringBell()
 
 	case parkMsg:
 		if msg.parked {
@@ -1555,6 +1561,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// follow-up now (flips back to loading via releaseQueueFront).
 			if m.releaseQueueFront() {
 				m.status = "Thinking…"
+			} else {
+				m.ringBell()
 			}
 		} else {
 			// An injected message resumed the run: re-lock the composer and show
@@ -1783,6 +1791,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false         // Allow user input for approval
 		m.textarea.Focus()        // Ensure textarea is focused for input
 		m.updateViewport()
+		m.ringBell()
 		// The next request is read only once this one is answered, in
 		// resolveApproval. Both channels are unbuffered, so that keeps exactly
 		// one caller waiting on toolResponseChan, and each answer reaches the
@@ -1806,6 +1815,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		m.textarea.Focus()
 		m.updateViewport()
+		m.ringBell()
 		cmds = append(cmds, m.listenAskRequest())
 
 	case agentEventMsg:

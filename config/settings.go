@@ -57,6 +57,7 @@ type Setting struct {
 // absent still lists, with its type standing in for the description.
 var settingDocs = map[string]string{
 	"ui.hide_hud":                             "hide the footer clock, cpu and memory badges",
+	"ui.no_bell":                              "do not ring the terminal bell when nib needs you",
 	"approval_mode":                           "tool-call gating: prompt, strict, allowlist or auto",
 	"model":                                   "the model new sessions start on",
 	"provider":                                "the main LLM transport (openai, codex, ...)",

@@ -298,6 +298,10 @@ type UIConfig struct {
 	// predict compaction rather than describing the machine. Zero value
 	// (false) = badges shown.
 	HideHUD bool `yaml:"hide_hud,omitempty"`
+	// NoBell stops the TUI ringing the terminal bell when it hands control
+	// back to the user (turn done, approval or answer needed). Zero value
+	// (false) = the bell rings.
+	NoBell bool `yaml:"no_bell,omitempty"`
 }
 
 type PromptInjectionProtectionConfig struct {

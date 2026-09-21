@@ -76,6 +76,10 @@ func RunTUI(ctx context.Context, cfg types.Config, height int, streams Streams, 
 	// Move to beginning of line
 	fmt.Fprint(ttyOut, "\x1b[G")
 
+	// The bell goes to the terminal the program renders to, the only place a
+	// host watching nib (tmux, voro) can see it.
+	model = model.WithBell(ttyOut)
+
 	caps := pres.Caps()
 	prog := tea.NewProgram(model, tuiProgramOptions(ctx, ttyIn, ttyOut, caps)...)
 
