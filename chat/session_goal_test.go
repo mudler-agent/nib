@@ -183,11 +183,14 @@ func TestStopGateReRunsUntilGoalDone(t *testing.T) {
 	}
 }
 
-// TestGoalClearedOnInterrupt proves that interrupting an in-flight goal
-// pursuit clears the goal and breaks the stop-gate re-run loop. The fake
-// server always returns a plain assistant message + finish_reason "stop", so
-// the goal is never met: without interrupt the stop-gate would re-run forever.
-func TestGoalClearedOnInterrupt(t *testing.T) {
+// TestGoalPausedOnInterrupt proves that interrupting an in-flight goal
+// pursuit breaks the stop-gate re-run loop and PAUSES the goal: the text stays,
+// so Ctrl+C does not silently throw away what the user asked for, but the next
+// message is not pursued against it. The fake server always returns a plain
+// assistant message + finish_reason "stop", so the goal is never met: without
+// interrupt, and without the pause on the next message, the stop-gate would
+// re-run forever.
+func TestGoalPausedOnInterrupt(t *testing.T) {
 	xlog.SetLogger(xlog.NewLogger(xlog.LogLevel("error"), ""))
 
 	firstSeen := make(chan struct{}, 1)
@@ -295,7 +298,58 @@ func TestGoalClearedOnInterrupt(t *testing.T) {
 		t.Fatal("SendMessage did not return after Interrupt; stop-gate loop not broken")
 	}
 
-	if g := session.Goal(); g != "" {
-		t.Fatalf("Goal() = %q after Interrupt, want empty (interrupt must clear the goal)", g)
+	if g := session.Goal(); g != "never satisfied" {
+		t.Fatalf("Goal() = %q after Interrupt, want the goal kept", g)
+	}
+	if !session.GoalPaused() {
+		t.Fatal("GoalPaused() = false after Interrupt, want true")
+	}
+
+	// A paused goal is not pursued: the next message runs once and returns.
+	go func() {
+		_, sendErr := session.SendMessage("steer")
+		done <- sendErr
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a paused goal was still pursued: SendMessage kept re-running")
+	}
+
+	if !session.ResumeGoal() {
+		t.Fatal("ResumeGoal() = false with a paused goal")
+	}
+	if session.GoalPaused() {
+		t.Fatal("GoalPaused() = true after ResumeGoal")
+	}
+}
+
+func TestGoalPauseAccessors(t *testing.T) {
+	s, err := NewSession(context.Background(), types.Config{}, Callbacks{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer s.Close()
+
+	if s.ResumeGoal() {
+		t.Fatal("ResumeGoal() = true with no goal")
+	}
+	s.SetGoal("g")
+	s.PauseGoal()
+	if !s.GoalPaused() {
+		t.Fatal("PauseGoal did not pause")
+	}
+	s.SetGoal("new")
+	if s.GoalPaused() {
+		t.Fatal("SetGoal must start the new goal unpaused")
+	}
+	s.PauseGoal()
+	s.ClearGoal()
+	if s.GoalPaused() || s.Goal() != "" {
+		t.Fatal("ClearGoal must clear the goal and the pause")
+	}
+	s.PauseGoal()
+	if s.GoalPaused() {
+		t.Fatal("PauseGoal with no goal must not pause")
 	}
 }

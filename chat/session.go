@@ -94,11 +94,19 @@ type Session struct {
 	userInjected []string
 	undelivered  []string
 
+	// pendingNotices holds background-job notices that arrived while no run was
+	// live, for the next turn. Guarded by runMu.
+	pendingNotices []string
+
 	// goal is the active session goal (the /goal stop-gate). While non-empty,
 	// SendMessage re-runs the turn until the model calls goal_done. goalDone is
-	// set by that tool within a run. Both guarded by runMu.
-	goal     string
-	goalDone bool
+	// set by that tool within a run. goalPaused keeps the goal text but stops
+	// the pursuit: an interrupt pauses the goal instead of clearing it, so
+	// Ctrl+C does not silently throw away what the user asked for. All guarded
+	// by runMu.
+	goal       string
+	goalDone   bool
+	goalPaused bool
 
 	// todoList is the ephemeral in-memory todo list (todo_write tool). It is
 	// not persisted — it lives for the session and is cleared when the session
@@ -760,6 +768,23 @@ func (s *Session) KillAgent(id string) bool {
 	return true
 }
 
+// StopAgents cancels every sub-agent, running or detached. Cancelling one that
+// already finished does nothing.
+//
+// It is for quitting. Detached sub-agents run on a context that a turn's
+// cancel does not reach, so without it they stopped only when the process
+// exited, mid-call.
+func (s *Session) StopAgents() {
+	if s.agentManager == nil {
+		return
+	}
+	for _, a := range s.agentManager.List() {
+		if a.Cancel != nil {
+			a.Cancel()
+		}
+	}
+}
+
 // emitAgentEvent maps a cogito sub-agent state into a chat.AgentEvent and
 // forwards it to the registered OnAgentEvent callback (if any). It is shared by
 // the spawn (Status=running) and completion callbacks so the mapping lives in
@@ -874,21 +899,67 @@ func (s *Session) ExportHistory() []openai.ChatCompletionMessage {
 func (s *Session) SetGoal(goal string) {
 	s.runMu.Lock()
 	s.goal = goal
+	s.goalPaused = false
 	s.runMu.Unlock()
 }
 
-// Goal returns the active session goal, or "" if none.
+// Goal returns the session goal, or "" if none. A paused goal is still
+// returned; see GoalPaused.
 func (s *Session) Goal() string {
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
 	return s.goal
 }
 
-// ClearGoal removes the active session goal.
+// ClearGoal removes the session goal, paused or not.
 func (s *Session) ClearGoal() {
 	s.runMu.Lock()
 	s.goal = ""
+	s.goalPaused = false
 	s.runMu.Unlock()
+}
+
+// PauseGoal stops pursuing the goal but keeps its text. Turns run as if no
+// goal were set until ResumeGoal. It does nothing when there is no goal.
+func (s *Session) PauseGoal() {
+	s.runMu.Lock()
+	s.goalPaused = s.goal != ""
+	s.runMu.Unlock()
+}
+
+// ResumeGoal pursues a paused goal again from the next turn. It reports
+// whether there was a paused goal to resume.
+func (s *Session) ResumeGoal() bool {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	if s.goal == "" || !s.goalPaused {
+		return false
+	}
+	s.goalPaused = false
+	return true
+}
+
+// GoalPaused reports whether the goal is paused.
+func (s *Session) GoalPaused() bool {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	return s.goalPaused
+}
+
+// activeGoalLocked returns the goal a turn pursues: "" when there is none or
+// it is paused. The caller holds runMu.
+func (s *Session) activeGoalLocked() string {
+	if s.goalPaused {
+		return ""
+	}
+	return s.goal
+}
+
+// activeGoal is activeGoalLocked for callers that do not hold runMu.
+func (s *Session) activeGoal() string {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	return s.activeGoalLocked()
 }
 
 // TodoList returns the session's ephemeral todo list (may be nil if the session
@@ -948,8 +1019,57 @@ func (s *Session) SetShellJobs(jobs *wizmcp.ShellJobs) {
 				notice += ":\n" + tail
 			}
 		}
-		s.Inject(notice)
+		s.deliverNotice(notice)
 	})
+}
+
+// maxPendingNotices caps the notices kept for the next turn. A burst of jobs
+// finishing while the user is away must not flood the next prompt; the newest
+// notices are the ones kept.
+const maxPendingNotices = 16
+
+// deliverNotice injects a background-job notice into the live run, or keeps
+// it for the next turn when no run is live.
+//
+// Without the second half a job that finished after an interrupt ended the
+// run, or between turns, reached the model never: Inject had no run to
+// deliver to and dropped it.
+func (s *Session) deliverNotice(notice string) {
+	if s.Inject(notice) {
+		return
+	}
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	s.pendingNotices = append(s.pendingNotices, notice)
+	if n := len(s.pendingNotices); n > maxPendingNotices {
+		s.pendingNotices = slices.Clone(s.pendingNotices[n-maxPendingNotices:])
+	}
+}
+
+// takePendingNotices returns and clears the notices kept for the next turn.
+func (s *Session) takePendingNotices() []string {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	out := s.pendingNotices
+	s.pendingNotices = nil
+	return out
+}
+
+// restorePendingNotices puts notices back ahead of any that arrived since, for
+// a turn that failed before the model saw them.
+func (s *Session) restorePendingNotices(notices []string) {
+	if len(notices) == 0 {
+		return
+	}
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	s.pendingNotices = append(slices.Clone(notices), s.pendingNotices...)
+}
+
+// pendingNoticesMessage renders kept notices as the one message that goes
+// before the user's message in the next turn.
+func pendingNoticesMessage(notices []string) string {
+	return "Background jobs finished while no turn was running:\n\n" + strings.Join(notices, "\n\n")
 }
 
 // InjectUser delivers a user-typed follow-up into the live run (see Inject),
@@ -1205,6 +1325,7 @@ func (s *Session) toolOptions(turnCtx context.Context, goal, mainModel string) [
 			s.runMu.Lock()
 			s.goalDone = true
 			s.goal = ""
+			s.goalPaused = false
 			s.runMu.Unlock()
 			return "Goal marked complete: " + justification
 		})))
@@ -1309,6 +1430,13 @@ func (s *Session) SendMessage(text string, parts ...ContentPart) (string, error)
 	// retry double-adds it.
 	preTurnFragment := s.fragment
 	preTurnMessages := s.messages
+	// Notices kept from while no run was live go first, so the model reads
+	// them before the message that may ask about them. They are not added to
+	// s.messages: the user never typed them.
+	notices := s.takePendingNotices()
+	if len(notices) > 0 {
+		s.fragment = s.fragment.AddMessage("user", pendingNoticesMessage(notices))
+	}
 	s.fragment = buildUserFragment(s.fragment, text, parts)
 	s.messages = append(s.messages, openai.ChatCompletionMessage{
 		Role:    "user",
@@ -1451,7 +1579,7 @@ func (s *Session) SendMessage(text string, parts ...ContentPart) (string, error)
 
 	// Tool schemas — shared with Warm so a priming request advertises exactly
 	// the tools this turn advertises. See toolOptions.
-	cogitoOpts = append(cogitoOpts, s.toolOptions(turnCtx, s.Goal(), mainModel)...)
+	cogitoOpts = append(cogitoOpts, s.toolOptions(turnCtx, s.activeGoal(), mainModel)...)
 
 	// Add ForceReasoning only if enabled in config
 	if s.cogitoOptions.ForceReasoning {
@@ -1464,7 +1592,7 @@ func (s *Session) SendMessage(text string, parts ...ContentPart) (string, error)
 	// Stop-gate (/goal): while a goal is active, re-run after each stop until
 	// the model calls goal_done (which clears the goal and sets goalDone) or the
 	// turn is interrupted. The user can chat/steer mid-pursuit via the existing
-	// inject path; Ctrl+C cancels turnCtx and clears the goal.
+	// inject path; Ctrl+C cancels turnCtx and pauses the goal.
 	var err error
 	var response string
 	for {
@@ -1492,10 +1620,11 @@ func (s *Session) SendMessage(text string, parts ...ContentPart) (string, error)
 		newFragment, err = cogito.ExecuteTools(llm, runFragment, cogitoOpts...)
 		if err != nil && !errors.Is(err, cogito.ErrNoToolSelected) {
 			// Interrupt (turnCtx cancelled) surfaces here as a context error;
-			// clear the goal so the user's stop sticks and it doesn't re-arm.
-			// Other (transient) errors leave the goal active intentionally.
+			// pause the goal so the user's stop sticks and it doesn't re-arm,
+			// while keeping its text for /goal resume. Other (transient) errors
+			// leave the goal active intentionally.
 			if turnCtx.Err() != nil {
-				s.ClearGoal()
+				s.PauseGoal()
 			}
 			// The tokens this run already burned are real and already billed,
 			// so record them before bailing. cogito stamps CumulativeUsage in a
@@ -1596,6 +1725,8 @@ func (s *Session) SendMessage(text string, parts ...ContentPart) (string, error)
 			s.fragment = preTurnFragment
 			s.messages = preTurnMessages
 			s.historyMu.Unlock()
+			// The rollback dropped the notices too; keep them for the next turn.
+			s.restorePendingNotices(notices)
 			return "", err
 		}
 
@@ -1637,16 +1768,16 @@ func (s *Session) SendMessage(text string, parts ...ContentPart) (string, error)
 
 		s.runMu.Lock()
 		done := s.goalDone
-		goal := s.goal
+		goal := s.activeGoalLocked()
 		s.runMu.Unlock()
 
 		// Stop when there is no goal, the model declared it done, or the turn
-		// was interrupted. Interrupt also clears the goal (user stopped it).
+		// was interrupted. Interrupt also pauses the goal (user stopped it).
 		if goal == "" || done {
 			break
 		}
 		if turnCtx.Err() != nil {
-			s.ClearGoal()
+			s.PauseGoal()
 			break
 		}
 
@@ -1721,9 +1852,7 @@ func (s *Session) Warm(ctx context.Context) error {
 	// Holding it across a prime would block Interrupt and the injection path for
 	// the whole prefill. Do not "fix" a prime/turn race by widening this without
 	// measuring what it blocks.
-	s.runMu.Lock()
-	goal := s.goal
-	s.runMu.Unlock()
+	goal := s.activeGoal()
 
 	s.historyMu.Lock()
 	sys := s.systemPrompt

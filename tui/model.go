@@ -180,10 +180,22 @@ type Model struct {
 	// re-renders keep respecting the reading position. One-shot: consumed by
 	// the render it applies to.
 	forceFollow bool
-	// interruptArmed is set after a first Ctrl+C interrupts an in-flight turn,
-	// so a second Ctrl+C exits instead of just re-interrupting. Reset when a new
-	// turn starts and when the turn ends.
+	// interruptArmed is set after a Ctrl+C or Esc interrupts an in-flight turn,
+	// so the next Ctrl+C arms the exit instead of re-interrupting. Reset when a
+	// new turn starts and when the turn ends.
 	interruptArmed bool
+	// exitArmed is set by a Ctrl+C with nothing else left to do. Only a second
+	// Ctrl+C while it is set quits; any other key, or exitArmWindow passing,
+	// disarms it. exitSeq tells the current arm's timeout from an earlier one.
+	exitArmed bool
+	exitSeq   int
+	// hint is a one-shot line shown in place of the help line (the exit
+	// warning, "draft cleared"). The next key other than Ctrl+C clears it.
+	hint string
+	// queueHeld stops the queue from being sent automatically. An interrupt
+	// sets it, so pressing stop does not start the next queued message; Enter
+	// on an empty composer releases it.
+	queueHeld bool
 	// parked is true while the live run is parked (the assistant replied but the
 	// run is still alive waiting on the injection channel — background work
 	// pending, or simply ready for a follow-up). While parked the composer is
@@ -873,9 +885,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		// Ctrl+T todo panel: intercepts keys while open. Ctrl+C falls
-		// through so it can still interrupt/quit.
-		if m.showTodo && msg.Type != tea.KeyCtrlC {
+		// Any key but Ctrl+C disarms an armed exit and clears a one-shot hint.
+		if msg.Type != tea.KeyCtrlC && (m.exitArmed || m.hint != "") {
+			m.disarmExit()
+		}
+		// Ctrl+C with no dialog open goes through the one-step-per-press ladder
+		// (handleCtrlC). With a dialog open it is Esc, so it closes or cancels
+		// the dialog the way Esc does, and never reaches quit.
+		if msg.Type == tea.KeyCtrlC {
+			if !m.dialogOpen() {
+				return m.handleCtrlC()
+			}
+			m.disarmExit()
+			msg = tea.KeyMsg{Type: tea.KeyEsc}
+		}
+		// Ctrl+T todo panel: intercepts keys while open.
+		if m.showTodo {
 			switch msg.Type {
 			case tea.KeyEsc, tea.KeyCtrlT:
 				m.showTodo = false
@@ -884,9 +909,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil // swallow other keys while panel is open
 		}
-		// Ctrl+O log viewer: intercepts navigation/scroll keys while open. Ctrl+C
-		// falls through so it can still interrupt/quit.
-		if m.showLogs && msg.Type != tea.KeyCtrlC {
+		// Ctrl+O log viewer: intercepts navigation/scroll keys while open.
+		if m.showLogs {
 			jobs := m.unifiedJobs()
 			if m.logOpenID == "" {
 				// LIST mode
@@ -937,23 +961,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, vpCmd
 		}
 		// The /login dialogs own ordinary keys while open, like the model
-		// picker below; Ctrl+C falls through to interrupt-or-quit.
-		if m.loginWait.active && msg.Type != tea.KeyCtrlC {
+		// picker below.
+		if m.loginWait.active {
 			if msg.Type == tea.KeyEsc {
 				m.cancelLoginWait()
 				m.updateViewport()
 			}
 			return m, nil
 		}
-		if m.loginForm.active && msg.Type != tea.KeyCtrlC {
+		if m.loginForm.active {
 			return m.handleLoginFormKey(msg)
 		}
-		if m.providerPicker.active && msg.Type != tea.KeyCtrlC {
+		if m.providerPicker.active {
 			return m.handleProviderPickerKey(msg)
 		}
-		// The picker owns ordinary keys while open. Ctrl+C deliberately falls
-		// through to the application's existing interrupt-or-quit path.
-		if m.modelPicker.active && msg.Type != tea.KeyCtrlC {
+		// The picker owns ordinary keys while open.
+		if m.modelPicker.active {
 			switch msg.Type {
 			case tea.KeyEsc:
 				m.modelPicker.close()
@@ -1030,11 +1053,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return m, nil
 					}
 				}
-				// Swallow every other key in choice mode, but let Ctrl+C fall
-				// through to the normal interrupt/quit handling below.
-				if msg.Type != tea.KeyCtrlC {
-					return m, nil
-				}
+				// Swallow every other key in choice mode.
+				return m, nil
 			} else if msg.Type == tea.KeyEsc {
 				// Edit mode: Esc cancels back to choice mode without denying.
 				m.approvalEditing = false
@@ -1087,26 +1107,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.Type == tea.KeyEnter {
 				return m.resolveResumePick()
 			}
-			if msg.Type != tea.KeyCtrlC {
-				return m, nil
-			}
+			return m, nil
 		}
 		switch msg.Type {
-		case tea.KeyCtrlC:
-			// First Ctrl+C on an in-flight turn interrupts the request but keeps
-			// the session open; a second Ctrl+C (or Ctrl+C while idle) exits.
-			if m.isWorking() && !m.interruptArmed {
-				if m.session != nil {
-					m.session.Interrupt()
-				}
-				m.interruptArmed = true
-				m.status = "Interrupting… (Ctrl+C again to exit)"
-				return m, nil
-			}
-			return m.quit()
-
 		case tea.KeyEsc:
-			return m.quit()
+			return m.handleEsc()
 
 		case tea.KeyEnd:
 			// Only jump when the composer is empty — bubbles' textarea binds End
@@ -1290,6 +1295,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			input := strings.TrimSpace(m.textarea.Value())
 			if input == "" {
+				// Enter on an empty composer releases a queue an interrupt
+				// held. While a run is live the queue drains at its next
+				// boundary; otherwise it is sent now.
+				if m.queueHeld && len(m.queue)+len(m.redispatch) > 0 {
+					m.queueHeld = false
+					if m.session != nil && m.session.RunLive() {
+						m.updateViewport()
+						return m, nil
+					}
+					cmd := m.flushQueueAsTurn()
+					m.updateViewport()
+					return m, cmd
+				}
 				return m, nil
 			}
 
@@ -1453,6 +1471,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateViewport()
 		return m, nil
 
+	case exitDisarmMsg:
+		if msg.seq == m.exitSeq && m.exitArmed {
+			m.disarmExit()
+			m.updateViewport()
+		}
+		return m, nil
+
 	case responseMsg:
 		// The run returned: it is no longer parked (all background work drained).
 		m.loading = false
@@ -1485,9 +1510,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if errors.Is(msg.err, context.Canceled) {
 				// The run was interrupted: drop any stale turn-level error
 				// lines. An empty final message is not a reply, so without a
-				// cancel the stale error stays visible.
+				// cancel the stale error stays visible. The notice itself is
+				// appended below, once the undelivered follow-ups are back in
+				// the queue it reports on.
 				m.dropTransientErrors()
-				m.appendMessage(ChatMessage{Role: "agent", Content: "interrupted."})
 			} else {
 				// Record the failure in the transcript (not the persistent
 				// banner) and mark it transient: it stays visible until the
@@ -1521,6 +1547,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Follow-ups released into the ended run that it never consumed:
 			// the model never saw them, so re-dispatch them ahead of the queue.
 			m.redispatch = append(m.redispatch, m.session.TakeUndelivered()...)
+		}
+		if msg.err != nil && errors.Is(msg.err, context.Canceled) {
+			m.appendMessage(ChatMessage{Role: "agent", Content: m.interruptNotice()})
+		}
+		// A hold with nothing left to hold is over.
+		if len(m.queue)+len(m.redispatch) == 0 {
+			m.queueHeld = false
 		}
 		// Autosave at this turn boundary so /resume never loses more than the
 		// turn in flight when the process exits uncleanly. Save failures are
@@ -2049,10 +2082,22 @@ func (m *Model) dispatchResolved(input string) tea.Cmd {
 		return nil
 	case slash.KindGoalSet:
 		m.session.SetGoal(action.Text)
-		m.appendMessage(ChatMessage{Role: "agent", Content: theme.Goal + " Goal set: " + action.Text + "\nI'll pursue it on your next message, re-checking until it's met. Press Ctrl+C or /goal clear to stop."})
+		m.appendMessage(ChatMessage{Role: "agent", Content: theme.Goal + " Goal set: " + action.Text + "\nI'll pursue it on your next message, re-checking until it's met. Ctrl+C pauses it; /goal clear drops it."})
+		return nil
+	case slash.KindGoalResume:
+		if m.session.ResumeGoal() {
+			m.appendMessage(ChatMessage{Role: "agent", Content: theme.Goal + " Goal resumed: " + m.session.Goal() + "\nI'll pursue it on your next message."})
+		} else if m.session.Goal() != "" {
+			m.appendMessage(ChatMessage{Role: "agent", Content: "The goal is not paused."})
+		} else {
+			m.appendMessage(ChatMessage{Role: "agent", Content: "No goal to resume. Use /goal <text> to set one."})
+		}
 		return nil
 	case slash.KindGoalShow:
 		if g := m.session.Goal(); g != "" {
+			if m.session.GoalPaused() {
+				g += " (paused · /goal resume)"
+			}
 			m.appendMessage(ChatMessage{Role: "agent", Content: theme.Goal + " Current goal: " + g})
 		} else {
 			m.appendMessage(ChatMessage{Role: "agent", Content: "No goal set. Use /goal <text> to set one."})
@@ -3051,7 +3096,7 @@ func (m Model) footerRows() []render.FooterRow {
 		rows = append(rows, row)
 	}
 	if m.session != nil {
-		if row, ok := goalFooterRow(m.session.Goal()); ok {
+		if row, ok := goalFooterRow(m.session.Goal(), m.session.GoalPaused()); ok {
 			rows = append(rows, row)
 		}
 		if row, ok := todoFooterRow(m.session.TodoList()); ok {
@@ -3366,6 +3411,8 @@ func (m Model) View() string {
 // helpLine returns the context-appropriate help string.
 func (m Model) helpLine() string {
 	switch {
+	case m.hint != "":
+		return m.hint
 	case m.showTodo:
 		return theme.ScrollKeys + " scroll · esc/ctrl+t close"
 	case m.showLogs && m.logOpenID != "":
@@ -3400,6 +3447,8 @@ func (m Model) helpLine() string {
 		return theme.LoginWaitHint
 	case m.parked:
 		return "enter add a follow-up · ctrl+c interrupt · ctrl+o logs"
+	case strings.TrimSpace(m.textarea.Value()) == "" && len(m.queue) > 0 && m.queueHeld:
+		return theme.HintQueueHeld
 	case strings.TrimSpace(m.textarea.Value()) == "" && len(m.queue) > 0:
 		return "↑↓ pick · ^e edit · ^x delete"
 	default:

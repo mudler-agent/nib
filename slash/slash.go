@@ -44,7 +44,8 @@ const (
 	cmdLoopList = "list"
 
 	// /goal sub-verbs
-	cmdGoalClear = "clear"
+	cmdGoalClear  = "clear"
+	cmdGoalResume = "resume"
 
 	// /model sub-verbs
 	cmdModelReset = "reset"
@@ -73,6 +74,7 @@ const (
 	KindGoalSet                // set/replace the session goal (Text)
 	KindGoalShow               // show the current goal
 	KindGoalClear              // clear the current goal
+	KindGoalResume             // resume a goal an interrupt paused
 	KindAttach                 // stage/list/clear file attachments
 	KindModelList              // list available models
 	KindModelPick              // pick a model from the available models
@@ -289,7 +291,7 @@ func resolveLoop(rest string) Action {
 }
 
 // resolveGoal maps the /goal subcommands: "/goal <text>" sets, "/goal" shows,
-// "/goal clear" clears.
+// "/goal clear" clears, "/goal resume" resumes a goal an interrupt paused.
 func resolveGoal(rest string) Action {
 	rest = strings.TrimSpace(rest)
 	switch rest {
@@ -297,6 +299,8 @@ func resolveGoal(rest string) Action {
 		return Action{Kind: KindGoalShow}
 	case cmdGoalClear:
 		return Action{Kind: KindGoalClear}
+	case cmdGoalResume:
+		return Action{Kind: KindGoalResume}
 	}
 	return Action{Kind: KindGoalSet, Text: rest}
 }

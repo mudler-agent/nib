@@ -704,7 +704,7 @@ func cliKindName(k slash.Kind) string {
 	switch k {
 	case slash.KindLoopStart, slash.KindLoopStop, slash.KindLoopList:
 		return "/loop"
-	case slash.KindGoalSet, slash.KindGoalShow, slash.KindGoalClear:
+	case slash.KindGoalSet, slash.KindGoalShow, slash.KindGoalClear, slash.KindGoalResume:
 		return "/goal"
 	case slash.KindResume:
 		return "/resume"
