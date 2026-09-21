@@ -12,6 +12,9 @@ import (
 	"github.com/mudler/nib/types"
 )
 
+// seededCreated is the Created stamp every seeded record carries.
+var seededCreated = time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
+
 // seedSession writes one recorded session into the store applySessionIdentity
 // reads, rooted at the same BaseDir the caller passes through types.Config.
 func seedSession(t *testing.T, baseDir, id string) {
@@ -20,6 +23,7 @@ func seedSession(t *testing.T, baseDir, id string) {
 	err := store.Save(chat.SessionRecord{
 		ID:       id,
 		Title:    "seeded",
+		Created:  seededCreated,
 		Updated:  time.Now(),
 		Messages: []openai.ChatCompletionMessage{{Role: "user", Content: "hi"}},
 	})
@@ -63,6 +67,9 @@ func TestResumeWithSessionIDLoadsThatSession(t *testing.T) {
 	}
 	if cfg.ResumeSessionTitle != "seeded" {
 		t.Fatalf("title = %q, want seeded", cfg.ResumeSessionTitle)
+	}
+	if !cfg.ResumeSessionCreated.Equal(seededCreated) {
+		t.Fatalf("created = %v, want %v", cfg.ResumeSessionCreated, seededCreated)
 	}
 }
 

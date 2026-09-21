@@ -121,6 +121,9 @@ func bootDetail(m *Model, e bootScriptEntry) string {
 		if len(sid) > 8 {
 			sid = sid[:8]
 		}
+		if len(m.cfg.InitialHistory) > 0 {
+			return fmt.Sprintf("resumed :: %s", sid)
+		}
 		return fmt.Sprintf("new :: %s", sid)
 	}
 	return e.dt

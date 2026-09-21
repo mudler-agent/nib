@@ -640,5 +640,6 @@ func applyResumeFlag(cfg *types.Config, id string, all bool) error {
 	cfg.InitialHistory = rec.Messages
 	cfg.ResumeSessionID = rec.ID
 	cfg.ResumeSessionTitle = rec.Title
+	cfg.ResumeSessionCreated = rec.Created
 	return nil
 }

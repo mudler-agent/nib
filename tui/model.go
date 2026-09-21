@@ -721,6 +721,17 @@ func NewModel(ctx context.Context, cfg types.Config, height int, shellJobs *wizm
 	if m.sessionID == "" {
 		m.sessionID = newSessionID()
 	}
+	// A --resume'd session already seeds the model from cfg.InitialHistory
+	// (chat.NewSession); show the user the same conversation, as applyResume
+	// does for /resume. Without this the screen started empty and the resumed
+	// session looked like a fresh one.
+	if len(cfg.InitialHistory) > 0 {
+		if !cfg.ResumeSessionCreated.IsZero() {
+			m.sessionCreated = cfg.ResumeSessionCreated
+		}
+		m.appendMessage(restoredTranscript(cfg.InitialHistory)...)
+		m.appendMessage(ChatMessage{Role: "agent", Content: fmt.Sprintf(theme.ResumeRestored, len(cfg.InitialHistory))})
+	}
 	m.completion.setRegistries(cfg.Commands, cfg.Skills, cfg.Agents)
 	m.completion.setSettingsConfig(cfg)
 	return m
@@ -1471,6 +1482,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.boot != nil {
 			m.boot.markReady(&m)
+			// A resumed session already has a conversation to show; the
+			// boot log would hide it until the first message is sent.
+			if len(m.messages) > 0 {
+				m.boot.collapsed = true
+				m.updateViewport()
+			}
 		}
 		// Reload durable cron loops persisted from a previous session.
 		if n, err := m.loops.Load(m.loopsPath); err == nil && n > 0 {

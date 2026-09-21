@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -18,6 +19,8 @@ import (
 	"github.com/mudler/nib/chat"
 	"github.com/mudler/nib/theme"
 	"github.com/mudler/nib/tui/render"
+	"github.com/mudler/nib/tui/render/inline"
+	"github.com/mudler/nib/types"
 )
 
 type failingDeleteStore struct {
@@ -684,5 +687,106 @@ func TestBuildResumeDialogArmedShowsConfirmHint(t *testing.T) {
 	d = buildResumeDialog(list, false)
 	if d.Hint != theme.HelpResume {
 		t.Errorf("unarmed Hint = %q, want %q", d.Hint, theme.HelpResume)
+	}
+}
+
+// TestStartupResumeShowsTheTranscript: `nib --resume` resolves the record
+// before the TUI exists and hands it over through cfg. The model was already
+// seeded from cfg.InitialHistory, but the screen stayed empty and the boot
+// line said "new", so a resumed session looked like a fresh one. The startup
+// path has to show what /resume shows, and keep the record's Created stamp.
+func TestStartupResumeShowsTheTranscript(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	created := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
+	m := NewModel(ctx, types.Config{
+		BaseDir: t.TempDir(),
+		InitialHistory: []openai.ChatCompletionMessage{
+			{Role: "user", Content: "remember 41"},
+			{Role: "assistant", Content: "noted: 41"},
+		},
+		ResumeSessionID:      "pinned-id",
+		ResumeSessionTitle:   "remembered",
+		ResumeSessionCreated: created,
+	}, 40, nil, inline.New())
+
+	var roles []string
+	for _, msg := range m.messages {
+		roles = append(roles, msg.Role)
+	}
+	if want := []string{"user", "assistant", "agent"}; strings.Join(roles, ",") != strings.Join(want, ",") {
+		t.Fatalf("startup transcript roles = %v, want %v", roles, want)
+	}
+	if m.messages[0].Content != "remember 41" || m.messages[1].Content != "noted: 41" {
+		t.Errorf("startup transcript lost its content: %+v", m.messages[:2])
+	}
+	if want := fmt.Sprintf(theme.ResumeRestored, 2); m.messages[2].Content != want {
+		t.Errorf("restored notice = %q, want %q", m.messages[2].Content, want)
+	}
+	if !m.sessionCreated.Equal(created) {
+		t.Errorf("sessionCreated = %v, want the record's %v", m.sessionCreated, created)
+	}
+	if got := bootDetail(&m, bootScriptEntry{ev: "session"}); !strings.HasPrefix(got, "resumed ::") {
+		t.Errorf("boot session line = %q, want it to say resumed", got)
+	}
+}
+
+// TestStartupWithPinnedIDOnlyStaysFresh: --session-id without a record to
+// load (a supervisor's create call) is a fresh session under a known id.
+func TestStartupWithPinnedIDOnlyStaysFresh(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	m := NewModel(ctx, types.Config{BaseDir: t.TempDir(), ResumeSessionID: "pinned-id"}, 40, nil, inline.New())
+	if len(m.messages) != 0 {
+		t.Errorf("fresh pinned session shows messages: %+v", m.messages)
+	}
+	if got := bootDetail(&m, bootScriptEntry{ev: "session"}); !strings.HasPrefix(got, "new ::") {
+		t.Errorf("boot session line = %q, want it to say new", got)
+	}
+}
+
+// TestStartupResumeShowsTheTranscriptOnceReady: the boot log owns the body
+// until it collapses, and it used to collapse only on the first sent message,
+// so a restored transcript stayed hidden behind it. A resumed session has a
+// conversation to show as soon as it is ready.
+func TestStartupResumeShowsTheTranscriptOnceReady(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	m := NewModel(ctx, types.Config{
+		BaseDir: t.TempDir(),
+		InitialHistory: []openai.ChatCompletionMessage{
+			{Role: "user", Content: "remember 41"},
+			{Role: "assistant", Content: "noted: 41"},
+		},
+		ResumeSessionID: "pinned-id",
+	}, 40, nil, inline.New())
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	updated, _ = updated.(Model).Update(sessionReadyMsg{})
+	m = updated.(Model)
+
+	if !m.boot.collapsed {
+		t.Fatal("boot log still covers the restored transcript after READY")
+	}
+	out := m.View()
+	for _, want := range []string{"remember 41", "noted: 41"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("restored transcript is not on screen: %q missing from\n%s", want, out)
+		}
+	}
+}
+
+// TestFreshStartupKeepsTheBootLog: without a transcript the boot log stays
+// up after READY until the first message, as before.
+func TestFreshStartupKeepsTheBootLog(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	m := NewModel(ctx, types.Config{BaseDir: t.TempDir()}, 40, nil, inline.New())
+	updated, _ := m.Update(sessionReadyMsg{})
+	if updated.(Model).boot.collapsed {
+		t.Fatal("fresh session collapsed its boot log before any message")
 	}
 }

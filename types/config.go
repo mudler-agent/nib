@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"text/template"
+	"time"
 
 	"github.com/Masterminds/sprig/v3"
 	openai "github.com/sashabaranov/go-openai"
@@ -245,6 +246,10 @@ type Config struct {
 	// the YAML config.
 	ResumeSessionID    string `yaml:"-"`
 	ResumeSessionTitle string `yaml:"-"`
+	// ResumeSessionCreated is the loaded record's Created stamp, so the
+	// autosave keeps it instead of re-dating the session to this run. Zero
+	// for a fresh session. Set at runtime by --resume only.
+	ResumeSessionCreated time.Time `yaml:"-"`
 	// WorkingDir, when non-empty, is the directory host tools (bash, filesystem)
 	// operate in. Runtime-only; empty means the process cwd (legacy behavior).
 	WorkingDir string `yaml:"-"`
