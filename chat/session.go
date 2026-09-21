@@ -2043,7 +2043,7 @@ func (s *Session) ToolCount() int {
 		"schedule_wakeup",
 		"cron", "cron_list", "cron_delete",
 		"read_image", "transcribe_audio", "read_video",
-		"memory", "index",
+		"memory", "index", "todo_write",
 	}
 	for _, name := range builtins {
 		if s.toolEnabled(name) && !(name == "ask_user" && s.AutoApprove()) {
