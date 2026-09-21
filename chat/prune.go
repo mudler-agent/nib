@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 
+	"github.com/mudler/nib/codeindex"
 	"github.com/mudler/nib/types"
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -59,8 +61,13 @@ func indexToolCalls(msgs []openai.ChatCompletionMessage) map[string]toolCallInfo
 // same path no longer matches what is on disk.
 var invalidatingTools = map[string]bool{"edit": true, "write": true}
 
-// staleReadIDs returns the tool_call_ids of read results a later edit or write
-// invalidated.
+// pathObservingTools are the tools whose result describes a file as it was when
+// the call ran, so an edit or write of that file makes the result wrong. An
+// index result carries line ranges, and an edit shifts them.
+var pathObservingTools = map[string]bool{"read": true, "index": true}
+
+// staleReadIDs returns the tool_call_ids of read and index results a later edit
+// or write invalidated.
 //
 // This rule is about correctness before tokens. Once a file has been edited, an
 // earlier read of it is not merely large, it is WRONG — and a model reasoning
@@ -99,7 +106,7 @@ func staleReadIDs(msgs []openai.ChatCompletionMessage, calls map[string]toolCall
 			continue
 		}
 		info, ok := calls[m.ToolCallID]
-		if !ok || info.name != "read" || info.path == "" {
+		if !ok || !pathObservingTools[info.name] || info.path == "" {
 			continue
 		}
 		// Strictly after: tool calls issued in the SAME assistant message run
@@ -124,10 +131,19 @@ func staleReadIDs(msgs []openai.ChatCompletionMessage, calls map[string]toolCall
 // A later read covers an earlier one only when its line range contains the
 // earlier range. As in staleReadIDs, the later call must be in a later assistant
 // message.
+//
+// A read that returned the file's outline covers nothing: it has no range, but
+// it holds none of the file's lines (see isOutlineRead).
 func supersededReadIDs(msgs []openai.ChatCompletionMessage, calls map[string]toolCallInfo) map[string]bool {
+	outlines := make(map[string]bool)
+	for _, m := range msgs {
+		if m.Role == "tool" && isOutlineRead(m.Content) {
+			outlines[m.ToolCallID] = true
+		}
+	}
 	byPath := make(map[string][]toolCallInfo)
-	for _, info := range calls {
-		if info.name == "read" && info.path != "" {
+	for id, info := range calls {
+		if info.name == "read" && info.path != "" && !outlines[id] {
 			p := filepath.Clean(info.path)
 			byPath[p] = append(byPath[p], info)
 		}
@@ -150,6 +166,20 @@ func supersededReadIDs(msgs []openai.ChatCompletionMessage, calls map[string]too
 		}
 	}
 	return out
+}
+
+// isOutlineRead reports whether a read result is the outline the read tool
+// returns in place of a large source file (mcp/filesystem.go outlineRead). The
+// result arrives as the MCP JSON envelope of readFileOutput, so a body that is
+// not JSON is never an outline.
+func isOutlineRead(content string) bool {
+	if !strings.Contains(content, `"outline"`) {
+		return false
+	}
+	var r struct {
+		Outline bool `json:"outline"`
+	}
+	return json.Unmarshal([]byte(content), &r) == nil && r.Outline
 }
 
 // readCovers reports whether read a returns every line that read b returns.
@@ -197,17 +227,102 @@ const (
 //
 // An empty detail renders the budget wording: a caller with no reason to give
 // still produces a complete sentence rather than a gap.
+//
+// A clause can carry the file's outline after an outlineSep (see
+// attachOutlines). The outline follows the bracketed line, so the stub is still
+// a function of the stored clause alone.
 func prunedStub(name, path, detail string) string {
+	detail, outline, _ := strings.Cut(detail, outlineSep)
 	if detail == "" {
 		detail = detailBudget
 	}
-	if detail == detailSuperseded {
-		return fmt.Sprintf("[%s %s — %s]", name, path, detail)
+	var stub string
+	switch {
+	case detail == detailSuperseded:
+		stub = fmt.Sprintf("[%s %s — %s]", name, path, detail)
+	case path != "":
+		stub = fmt.Sprintf("[%s %s — %s; re-read for current contents]", name, path, detail)
+	default:
+		stub = fmt.Sprintf("[%s — %s; re-read if needed]", name, detail)
 	}
-	if path != "" {
-		return fmt.Sprintf("[%s %s — %s; re-read for current contents]", name, path, detail)
+	if outline != "" {
+		stub += "\nOutline when dropped (line ranges in []; read one part back with offset and limit):\n" + outline
 	}
-	return fmt.Sprintf("[%s — %s; re-read if needed]", name, detail)
+	return stub
+}
+
+// outlineSep separates a stub clause from the outline stored with it. The
+// clauses are fixed phrases with no newline, so the first newline is the split.
+const outlineSep = "\n"
+
+// maxStubOutlineBytes caps the outline a stub carries. A stub exists to free
+// space, so an outline of a very large file is cut rather than kept whole.
+const maxStubOutlineBytes = 4096
+
+// attachOutlines adds the file's outline to the stubs of newly dropped reads,
+// and returns the tokens the outlines add back.
+//
+// Without it a dropped read leaves only "re-read for current contents", and the
+// model reads the whole file again to recover what it held. With the outline,
+// the model still knows what the file contains and where, and can read back
+// only the part it needs.
+//
+// It rewrites both the stub in out and the clause in newly, which the caller
+// stores. The outline is computed once, at the transition, and after that is
+// part of the stored clause: re-computing it from disk on every call would
+// change the stub whenever the file changed and move the prompt prefix.
+//
+// Only budget and stale reads get an outline. A superseded read's lines are in
+// a later read already. A read that returned an outline has nothing more to
+// give, and an outline no smaller than the result it replaces frees nothing.
+// outlineOf returns "" when the file cannot be indexed.
+func attachOutlines(msgs, out []openai.ChatCompletionMessage, newly []stubbedResult, outlineOf func(path string) string) int {
+	if len(newly) == 0 {
+		return 0
+	}
+	calls := indexToolCalls(msgs)
+	pos := make(map[string]int, len(msgs))
+	for i, m := range msgs {
+		if m.Role == "tool" && m.ToolCallID != "" {
+			pos[m.ToolCallID] = i
+		}
+	}
+	added := 0
+	for k, n := range newly {
+		info := calls[n.id]
+		i, ok := pos[n.id]
+		if !ok || info.name != "read" || info.path == "" ||
+			(n.detail != detailBudget && n.detail != detailStale) ||
+			isOutlineRead(msgs[i].Content) {
+			continue
+		}
+		outline := capOutline(outlineOf(info.path))
+		if outline == "" {
+			continue
+		}
+		detail := n.detail + outlineSep + outline
+		stub := prunedStub(info.name, info.path, detail)
+		if len(stub) >= len(msgs[i].Content) {
+			continue
+		}
+		added += tokensOf(stub) - tokensOf(out[i].Content)
+		out[i].Content = stub
+		newly[k].detail = detail
+	}
+	return added
+}
+
+// capOutline cuts an outline to maxStubOutlineBytes at a line boundary.
+func capOutline(outline string) string {
+	outline = strings.TrimRight(outline, "\n")
+	if len(outline) <= maxStubOutlineBytes {
+		return outline
+	}
+	cut := strings.LastIndexByte(outline[:maxStubOutlineBytes], '\n')
+	if cut < 0 {
+		cut = maxStubOutlineBytes
+	}
+	return outline[:cut] + "\n... (outline cut; index the file for the rest)"
 }
 
 // stubbedResult is one tool result this call newly replaced with a stub: its id
@@ -343,6 +458,8 @@ func (s *Session) pruneMessages(msgs []openai.ChatCompletionMessage) []openai.Ch
 	}
 	promptTokens := prunedViewTokens(msgs, s.prunedIDs)
 	out, newly, freed := pruneToolOutputs(msgs, effectivePruning(s.pruning, promptTokens, window, threshold), s.prunedIDs)
+	freed -= attachOutlines(msgs, out, newly, s.stubOutline)
+	freed = max(freed, 0)
 	for _, n := range newly {
 		s.prunedIDs[n.id] = n.detail
 	}
@@ -356,6 +473,16 @@ func (s *Session) pruneMessages(msgs []openai.ChatCompletionMessage) []openai.Ch
 		s.callbacks.OnPruneDone(len(newly), freed)
 	}
 	return out
+}
+
+// stubOutline returns the codeindex outline of a file a dropped read named, or
+// "" when the file cannot be indexed.
+func (s *Session) stubOutline(path string) string {
+	outline, err := codeindex.Index(resolveWorkspacePath(s.workingDir, path))
+	if err != nil {
+		return ""
+	}
+	return outline
 }
 
 // prunedViewTokens estimates the prompt that is actually sent: msgs with every

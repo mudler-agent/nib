@@ -14,6 +14,7 @@ func TestIsReadOnly(t *testing.T) {
 		{"read tool", "read", `{"path":"/etc/hosts"}`, true},
 		{"grep tool", "grep", `{"pat":"x"}`, true},
 		{"glob tool", "glob", `{"pat":"*.go"}`, true},
+		{"index tool", "index", `{"path":"main.go"}`, true},
 		{"cron_list", "cron_list", `{}`, true},
 		// mutating built-in tools
 		{"write tool", "write", `{"path":"x","content":"y"}`, false},

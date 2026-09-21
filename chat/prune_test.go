@@ -932,3 +932,101 @@ func TestPruneLeavesSupersededReadsAloneBelowHighWater(t *testing.T) {
 		t.Fatalf("nothing should be stubbed below high water, got %+v", newly)
 	}
 }
+
+// A whole read of a large source file returns the outline, not the lines
+// (mcp/filesystem.go outlineRead). It has no range, so without a check it
+// "covers" every earlier ranged read of the file, and the sweep drops those
+// reads as redundant although the outline holds none of their lines.
+func TestOutlineReadSupersedesNothing(t *testing.T) {
+	outline := `{"content":"[3000 lines, too large to return whole...]","total_lines":3000,"outline":true,"success":true}`
+	msgs := []openai.ChatCompletionMessage{
+		callMsg("mid", "read", `{"path":"a.go","offset":50,"limit":20}`), bigResult("mid", 10),
+		callMsg("whole", "read", `{"path":"a.go"}`), resultMsg("whole", outline),
+	}
+	if got := supersededReadIDs(msgs, indexToolCalls(msgs)); len(got) != 0 {
+		t.Fatalf("an outline read superseded %v", got)
+	}
+
+	// The outline itself is covered by a later whole read that returned lines.
+	msgs = append(msgs, callMsg("again", "read", `{"path":"a.go"}`), bigResult("again", 10))
+	if got := supersededReadIDs(msgs, indexToolCalls(msgs)); !got["whole"] || !got["mid"] {
+		t.Fatalf("a later whole read should supersede the outline and the range, got %v", got)
+	}
+}
+
+// An index result lists line ranges. After an edit to the file those ranges
+// are wrong, the same way an earlier read's lines are.
+func TestStaleReadIDsCoversIndexResults(t *testing.T) {
+	msgs := []openai.ChatCompletionMessage{
+		callMsg("i1", "index", `{"path":"a.go"}`), resultMsg("i1", "Function: F() [3-5]\n"),
+		callMsg("e1", "edit", `{"path":"a.go","old":"x","new":"y"}`), resultMsg("e1", "ok"),
+	}
+	if !staleReadIDs(msgs, indexToolCalls(msgs))["i1"] {
+		t.Fatal("index result not stale after an edit of the same file")
+	}
+}
+
+// A dropped read keeps the file's outline in its stub, so the model still
+// knows what the file holds and where, and can read one part of it back
+// instead of the whole file.
+func TestAttachOutlinesAddsOutlineToDroppedReads(t *testing.T) {
+	msgs := []openai.ChatCompletionMessage{
+		callMsg("b", "read", `{"path":"a.go"}`), bigResult("b", 500),
+		callMsg("s", "read", `{"path":"a.go","offset":3}`), bigResult("s", 500),
+		callMsg("x", "read", `{"path":"a.txt"}`), bigResult("x", 500),
+		callMsg("g", "grep", `{"pat":"x"}`), bigResult("g", 500),
+	}
+	calls := indexToolCalls(msgs)
+	newly := []stubbedResult{{"b", detailBudget}, {"s", detailSuperseded}, {"x", detailStale}, {"g", detailBudget}}
+	out := make([]openai.ChatCompletionMessage, len(msgs))
+	copy(out, msgs)
+	for i, m := range out {
+		if m.Role == "tool" {
+			info := calls[m.ToolCallID]
+			for _, n := range newly {
+				if n.id == m.ToolCallID {
+					out[i].Content = prunedStub(info.name, info.path, n.detail)
+				}
+			}
+		}
+	}
+	outlineOf := func(p string) string {
+		if p == "a.go" {
+			return "Function: F() [3-5]\n"
+		}
+		return ""
+	}
+
+	added := attachOutlines(msgs, out, newly, outlineOf)
+
+	if !strings.Contains(out[1].Content, "Function: F() [3-5]") || !strings.HasPrefix(out[1].Content, "[read a.go — "+detailBudget) {
+		t.Fatalf("budget stub has no outline: %q", out[1].Content)
+	}
+	// The stored clause must re-render the same text byte for byte on the next
+	// call, or the prompt prefix moves.
+	if prunedStub("read", "a.go", newly[0].detail) != out[1].Content {
+		t.Fatalf("stored clause does not reproduce the stub:\n%q\n%q", prunedStub("read", "a.go", newly[0].detail), out[1].Content)
+	}
+	if strings.Contains(out[3].Content, "Function") {
+		t.Fatalf("superseded stub got an outline; a later read already holds the file: %q", out[3].Content)
+	}
+	if strings.Contains(out[5].Content, "Outline") || strings.Contains(out[7].Content, "Outline") {
+		t.Fatal("outline attached where no outline exists")
+	}
+	if added <= 0 {
+		t.Fatalf("added tokens = %d, want > 0", added)
+	}
+}
+
+// An outline that is no smaller than the output it replaces saves nothing.
+func TestAttachOutlinesSkipsOutlineLargerThanResult(t *testing.T) {
+	msgs := []openai.ChatCompletionMessage{
+		callMsg("b", "read", `{"path":"a.go"}`), resultMsg("b", "tiny"),
+	}
+	out := []openai.ChatCompletionMessage{msgs[0], resultMsg("b", prunedStub("read", "a.go", detailBudget))}
+	newly := []stubbedResult{{"b", detailBudget}}
+	attachOutlines(msgs, out, newly, func(string) string { return strings.Repeat("Function: F() [1]\n", 50) })
+	if newly[0].detail != detailBudget || strings.Contains(out[1].Content, "Function") {
+		t.Fatalf("outline larger than the result was attached: %q", out[1].Content)
+	}
+}

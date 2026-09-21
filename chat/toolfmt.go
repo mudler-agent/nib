@@ -36,6 +36,7 @@ var toolFormatters = map[string]func(map[string]any) string{
 	"bash_job_output":  func(a map[string]any) string { return "job output " + argStr(a, "job_id") },
 	"bash_job_kill":    func(a map[string]any) string { return "kill job " + argStr(a, "job_id") },
 	"read":             fmtRead,
+	"index":            func(a map[string]any) string { return "index " + argStr(a, "path") },
 	"write":            func(a map[string]any) string { return "write " + argStr(a, "path") },
 	"edit":             fmtEdit,
 	"glob":             func(a map[string]any) string { return "glob " + argStr(a, "pat") + " in " + argStrOr(a, "path", ".") },

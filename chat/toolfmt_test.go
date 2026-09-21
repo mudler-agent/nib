@@ -86,6 +86,7 @@ func TestFormatToolCall_KnownTools(t *testing.T) {
 		{"bash_job_kill", "bash_job_kill", `{"job_id":"bg-2"}`, "kill job bg-2"},
 		{"read", "read", `{"path":"main.go"}`, "read main.go"},
 		{"read range", "read", `{"path":"main.go","offset":10,"limit":20}`, "read main.go  (lines 10–30)"},
+		{"index", "index", `{"path":"main.go"}`, "index main.go"},
 		{"write", "write", `{"path":"out.txt","content":"hi"}`, "write out.txt"},
 		{"edit", "edit", `{"path":"a.go","old":"foo","new":"bar"}`, "edit a.go\n  foo → bar"},
 		{"glob", "glob", `{"pat":"**/*.go"}`, "glob **/*.go in ."},

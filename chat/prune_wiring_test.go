@@ -2,6 +2,8 @@ package chat
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -213,5 +215,36 @@ func TestSessionPruneMessagesScalesOnTheSentPromptNotTheRawFragment(t *testing.T
 		if m.Role == "tool" && strings.HasPrefix(m.ToolCallID, "new") && m.Content != msgs[i].Content {
 			t.Errorf("%s was stubbed although the prompt sent is ~15%% of the window", m.ToolCallID)
 		}
+	}
+}
+
+// The outline wiring: a read the session drops keeps the real file's outline,
+// resolved against the workspace, and the stub stays the same on the next call
+// even after the file changes on disk.
+func TestSessionPruneMessagesKeepsOutlineOfDroppedRead(t *testing.T) {
+	dir := t.TempDir()
+	src := "package a\n\nfunc Parse() error {\n\treturn nil\n}\n"
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := &Session{workingDir: dir, pruning: types.ToolOutputPruningConfig{
+		HighWaterTokens: 1000, LowWaterTokens: 1, MinResultTokens: 1,
+	}}
+	msgs := []openai.ChatCompletionMessage{
+		callMsg("c1", "read", `{"path":"a.go"}`), bigResult("c1", 9000),
+		callMsg("c2", "read", `{"path":"b.go"}`), bigResult("c2", 9000),
+		{Role: "user", Content: "next"},
+	}
+
+	out := s.pruneMessages(msgs)
+	if !strings.Contains(out[1].Content, "Function: Parse() error [3-5]") {
+		t.Fatalf("dropped read has no outline: %q", out[1].Content)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("package a\n\nfunc Other() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out2 := s.pruneMessages(msgs); out2[1].Content != out[1].Content {
+		t.Fatalf("stub changed with the file on disk:\n%q\n%q", out[1].Content, out2[1].Content)
 	}
 }

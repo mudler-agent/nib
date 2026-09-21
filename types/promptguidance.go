@@ -90,12 +90,24 @@ func toolGuidance(builtinTools []string) string {
 		paragraphs = append(paragraphs, p)
 	}
 
+	// index comes before read because it gates it: the outline is how the
+	// model decides whether a file deserves a read at all. The read paragraph
+	// used to say "read a file once, in full" with no exception, and since it
+	// came last and spoke more firmly, the model never called index.
 	if index {
-		paragraphs = append(paragraphs, "index returns a compact skeleton of a source file — imports, types, functions, and their line ranges — without the full source. Use it to understand a file's structure before reading it, or to decide which section of a large file to read.")
+		paragraphs = append(paragraphs, "index returns a compact outline of a source file — imports, types, functions, and their line ranges — for a fraction of what reading it costs. Before reading a source file you have not seen, index it first and use the outline to decide whether it is worth reading at all: when you are looking for where something lives, index the candidate files and read only the ones that matter. When a file is relevant, the outline also tells you which lines hold the part you need.")
 	}
 
 	if read {
-		paragraphs = append(paragraphs, "read returns the whole file by default. Read a file once, in full, rather than requesting line ranges and re-reading it; offset and limit are there for a file too large to read in one call. Do not re-read a file you have already read in this conversation unless you have changed it.")
+		p := "read returns the whole file by default. "
+		if index {
+			p += "When an outline shows you need only one function or type of a large file, read only the lines it gave, with offset and limit. Otherwise read a file once, in full, rather than requesting line ranges and re-reading it."
+		} else {
+			p += "Read a file once, in full, rather than requesting line ranges and re-reading it; offset and limit are there for a file too large to read in one call."
+		}
+		p += " A source file too large to return whole comes back as its outline instead; read the lines you need from it with offset and limit."
+		p += " Do not re-read a file you have already read in this conversation unless you have changed it."
+		paragraphs = append(paragraphs, p)
 	}
 
 	if grep {

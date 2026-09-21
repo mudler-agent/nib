@@ -9,6 +9,7 @@ var readOnlyTools = map[string]bool{
 	"read":             true,
 	"grep":             true,
 	"glob":             true,
+	"index":            true,
 	"bash_jobs":        true,
 	"bash_job_output":  true,
 	"agent_logs":       true,

@@ -240,3 +240,35 @@ func TestToolGuidanceWithoutFileToolsOmitsTheParagraph(t *testing.T) {
 		t.Fatalf("the act-don't-narrate rule is unconditional and must render exactly once:\n%s", got)
 	}
 }
+
+// index shipped with guidance that the read paragraph right after it undid:
+// "read a file once, in full" told the model never to take the outline-first
+// path, and traces showed index was never called. The guidance must present
+// index as the step that decides whether a file is worth reading at all, and
+// the read paragraph must leave room for reading only the part the outline
+// pointed at.
+func TestToolGuidanceStepsThroughIndexBeforeRead(t *testing.T) {
+	got := (&Config{Prompt: "BASE"}).GetPrompt()
+
+	for _, want := range []string{
+		"index it first",
+		"decide whether it is worth reading at all",
+		"read only the lines",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("index guidance missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Index(got, "index it first") > strings.Index(got, "whole file by default") {
+		t.Fatalf("index guidance must come before the read paragraph it qualifies:\n%s", got)
+	}
+}
+
+// Without index exposed, the read paragraph must not point at a tool the model
+// does not have.
+func TestReadGuidanceOmitsIndexWhenNotExposed(t *testing.T) {
+	got := toolGuidance([]string{"read", "grep"})
+	if strings.Contains(got, "index") {
+		t.Fatalf("guidance names index, which is not exposed:\n%s", got)
+	}
+}
