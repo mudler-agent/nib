@@ -34,6 +34,7 @@ var toolFormatters = map[string]func(map[string]any) string{
 	"bash_background":  fmtBashBackground,
 	"bash_jobs":        func(map[string]any) string { return "list shell jobs" },
 	"bash_job_output":  func(a map[string]any) string { return "job output " + argStr(a, "job_id") },
+	"bash_job_wait":    func(a map[string]any) string { return "wait for job " + argStr(a, "job_id") },
 	"bash_job_kill":    func(a map[string]any) string { return "kill job " + argStr(a, "job_id") },
 	"read":             fmtRead,
 	"index":            func(a map[string]any) string { return "index " + argStr(a, "path") },

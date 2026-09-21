@@ -12,6 +12,7 @@ var readOnlyTools = map[string]bool{
 	"index":            true,
 	"bash_jobs":        true,
 	"bash_job_output":  true,
+	"bash_job_wait":    true,
 	"agent_logs":       true,
 	"check_agent":      true,
 	"get_agent_result": true,

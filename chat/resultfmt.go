@@ -31,6 +31,7 @@ var toolResultFormatters = map[string]func(any) string{
 	"read":            fmtReadResult,
 	"bash":            fmtBashResult,
 	"bash_job_output": fmtBashResult, // bgOutputResult has the same stdout/stderr/exit_code shape
+	"bash_job_wait":   fmtBashResult,
 	"load_skill":      fmtLoadSkillResult,
 }
 

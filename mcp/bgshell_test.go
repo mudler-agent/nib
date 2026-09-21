@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -249,5 +250,117 @@ func TestLaunchEmptyDirUsesProcessCwd(t *testing.T) {
 	sj := NewShellJobs() // no dir → current behavior
 	if sj.mgr.dir != "" {
 		t.Fatalf("default manager dir = %q, want empty", sj.mgr.dir)
+	}
+}
+
+func TestLockedBufferKeepsTail(t *testing.T) {
+	var w lockedBuffer
+	w.Write([]byte(strings.Repeat("a", bgMaxOutput)))
+	w.Write([]byte("TAIL"))
+	got := w.String()
+	if !strings.HasSuffix(got, "TAIL") {
+		t.Fatal("the rolling buffer must keep the newest output")
+	}
+	if !strings.HasPrefix(got, "…[earlier output truncated]") {
+		t.Fatal("dropped output should be marked")
+	}
+}
+
+func TestLockedBufferPageOffsetsSurviveRolling(t *testing.T) {
+	var w lockedBuffer
+	w.Write([]byte("0123456789"))
+	p, start, total := w.page(3, 4)
+	if p != "3456" || start != 3 || total != 10 {
+		t.Fatalf("page = %q, %d, %d; want 3456, 3, 10", p, start, total)
+	}
+	w.Write([]byte(strings.Repeat("x", bgMaxOutput)))
+	// Byte 3 is gone now: the page starts at the oldest byte still kept.
+	_, start, total = w.page(3, 4)
+	if start != 10 || total != 10+bgMaxOutput {
+		t.Fatalf("start = %d, total = %d; want 10 and %d", start, total, 10+bgMaxOutput)
+	}
+	// The last page reaches exactly the end.
+	p, start, _ = w.page(total-5, 0)
+	if p != "xxxxx" || start != total-5 {
+		t.Fatalf("tail page = %q at %d", p, start)
+	}
+}
+
+func TestLockedBufferPageKeepsRunesWhole(t *testing.T) {
+	var w lockedBuffer
+	w.Write([]byte("aé€b"))     // 1 + 2 + 3 + 1 bytes
+	p, start, _ := w.page(2, 3) // starts inside é
+	if p != "€" || start != 3 {
+		t.Fatalf("page = %q at %d; want € at 3", p, start)
+	}
+	p, _, _ = w.page(0, 4) // would end inside €
+	if p != "aé" {
+		t.Fatalf("page = %q; want aé", p)
+	}
+}
+
+func TestPruneForgetsOldFinishedJobs(t *testing.T) {
+	m := newBgJobManager()
+	now := time.Now()
+	old := &bgJob{id: "old", done: true, ended: now.Add(-bgJobTTL - time.Minute), doneCh: make(chan struct{})}
+	recent := &bgJob{id: "recent", done: true, started: now.Add(-2 * bgJobTTL), ended: now.Add(-time.Minute), doneCh: make(chan struct{})}
+	running := &bgJob{id: "running", started: now.Add(-2 * bgJobTTL), doneCh: make(chan struct{})}
+	m.jobs = map[string]*bgJob{"old": old, "recent": recent, "running": running}
+
+	m.prune(now)
+
+	if _, ok := m.jobs["old"]; ok {
+		t.Fatal("a job that ended past the TTL was kept")
+	}
+	if _, ok := m.jobs["recent"]; !ok {
+		t.Fatal("a long job that just ended was pruned; age must count from its end")
+	}
+	if _, ok := m.jobs["running"]; !ok {
+		t.Fatal("a running job was pruned")
+	}
+}
+
+func TestPruneCapsFinishedJobs(t *testing.T) {
+	m := newBgJobManager()
+	now := time.Now()
+	m.jobs = map[string]*bgJob{}
+	for i := 0; i < bgMaxJobs+5; i++ {
+		id := "j" + strconv.Itoa(i)
+		m.jobs[id] = &bgJob{id: id, done: true, ended: now.Add(time.Duration(i) * time.Second), doneCh: make(chan struct{})}
+	}
+	m.prune(now.Add(time.Hour - bgJobTTL))
+	if len(m.jobs) != bgMaxJobs {
+		t.Fatalf("kept %d jobs, want %d", len(m.jobs), bgMaxJobs)
+	}
+	if _, ok := m.jobs["j0"]; ok {
+		t.Fatal("the oldest finished job should go first")
+	}
+}
+
+func TestWaitReturnsWhenJobEnds(t *testing.T) {
+	m := newBgJobManager()
+	j := m.launch(context.Background(), "sleep 0.2; echo done", false)
+	start := time.Now()
+	got, ok := m.wait(context.Background(), j.id, 10*time.Second)
+	if !ok || time.Since(start) > 5*time.Second {
+		t.Fatalf("wait ok=%v after %s; want an early return when the job ends", ok, time.Since(start))
+	}
+	if done, _, _ := got.snapshot(); !done {
+		t.Fatal("job not done after wait returned")
+	}
+}
+
+func TestWaitStopsOnCancel(t *testing.T) {
+	m := newBgJobManager()
+	j := m.launch(context.Background(), "sleep 30", false)
+	defer m.kill(j.id)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if _, ok := m.wait(ctx, j.id, time.Minute); !ok {
+		t.Fatal("job not found")
+	}
+	if time.Since(start) > 5*time.Second {
+		t.Fatal("wait ignored the cancelled context; Ctrl+C could not stop it")
 	}
 }
