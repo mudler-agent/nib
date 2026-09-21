@@ -58,14 +58,17 @@ func (r *Registry) Save(path string) error {
 	return nil
 }
 
-// setCreated overwrites the Created timestamp of the job with the given id.
-// Used by Load to preserve original creation times across a restart.
-func (r *Registry) setCreated(id string, created time.Time) {
+// restore puts back the stored Created timestamp and Paused flag of the job
+// with the given id. Used by Load, so a restart keeps both.
+func (r *Registry) restore(id string, created time.Time, paused bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for i := range r.jobs {
 		if r.jobs[i].ID == id {
-			r.jobs[i].Created = created
+			if !created.IsZero() {
+				r.jobs[i].Created = created
+			}
+			r.jobs[i].Paused = paused
 			return
 		}
 	}
@@ -95,9 +98,7 @@ func (r *Registry) Load(path string) (int, error) {
 		if err != nil {
 			continue // drop jobs that no longer parse or can never fire
 		}
-		if !j.Created.IsZero() {
-			r.setCreated(added.ID, j.Created)
-		}
+		r.restore(added.ID, j.Created, j.Paused)
 		loaded++
 	}
 	return loaded, nil

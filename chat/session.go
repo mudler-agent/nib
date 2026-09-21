@@ -1294,6 +1294,30 @@ func (s *Session) toolOptions(turnCtx context.Context, goal, mainModel string) [
 			return "No scheduler available."
 		})))
 	}
+	if s.toolEnabled("cron_pause") {
+		opts = append(opts, cogito.WithTools(cronPauseToolDefinition(func(id string) string {
+			if s.callbacks.OnCronPause != nil {
+				return s.callbacks.OnCronPause(id)
+			}
+			return "No scheduler available."
+		})))
+	}
+	if s.toolEnabled("cron_resume") {
+		opts = append(opts, cogito.WithTools(cronResumeToolDefinition(func(id string) string {
+			if s.callbacks.OnCronResume != nil {
+				return s.callbacks.OnCronResume(id)
+			}
+			return "No scheduler available."
+		})))
+	}
+	if s.toolEnabled("cron_trigger") {
+		opts = append(opts, cogito.WithTools(cronTriggerToolDefinition(func(id string) string {
+			if s.callbacks.OnCronTrigger != nil {
+				return s.callbacks.OnCronTrigger(id)
+			}
+			return "No scheduler available."
+		})))
+	}
 
 	// Media understanding tools, gated by the allowlist. Each delegates to a
 	// specialist client with the tool's dedicated model and scopes the path to
@@ -2213,7 +2237,7 @@ func (s *Session) ToolCount() int {
 		"spawn_agent",
 		"ask_user", "agent_logs",
 		"schedule_wakeup",
-		"cron", "cron_list", "cron_delete",
+		"cron", "cron_list", "cron_delete", "cron_pause", "cron_resume", "cron_trigger",
 		"read_image", "transcribe_audio", "read_video",
 		"memory", "index", "todo_write",
 	}

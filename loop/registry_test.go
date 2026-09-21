@@ -73,3 +73,55 @@ func TestRegistryAddRejectsBadExpr(t *testing.T) {
 		t.Fatal("expected error for bad expr")
 	}
 }
+
+func TestRegistryPauseSkipsFiresAndResumeSkipsMissedSlots(t *testing.T) {
+	now := tm("2026-06-06 10:00")
+	r := NewRegistry()
+	r.SetClock(func() time.Time { return now })
+	job, _ := r.Add("*/5 * * * *", "/foo", true, false)
+
+	if !r.Pause(job.ID) {
+		t.Fatal("pause: job not found")
+	}
+	now = tm("2026-06-06 10:20")
+	if due := r.Due(); len(due) != 0 {
+		t.Fatalf("a paused job fired: %+v", due)
+	}
+	if len(r.List()) != 1 {
+		t.Fatal("a paused job must stay registered")
+	}
+
+	if !r.Resume(job.ID) {
+		t.Fatal("resume: job not found")
+	}
+	// The slots missed while paused do not fire at once.
+	if due := r.Due(); len(due) != 0 {
+		t.Fatalf("resume fired a missed slot: %+v", due)
+	}
+	now = tm("2026-06-06 10:25")
+	if due := r.Due(); len(due) != 1 {
+		t.Fatalf("resumed job did not fire at its next slot: %+v", due)
+	}
+}
+
+func TestRegistryPauseResumeGetUnknownID(t *testing.T) {
+	r := NewRegistry()
+	if r.Pause("nope") || r.Resume("nope") {
+		t.Fatal("pause/resume reported success for an unknown id")
+	}
+	if _, ok := r.Get("nope"); ok {
+		t.Fatal("get found an unknown id")
+	}
+}
+
+func TestRegistryResumeOfRunningJobKeepsSchedule(t *testing.T) {
+	now := tm("2026-06-06 10:00")
+	r := NewRegistry()
+	r.SetClock(func() time.Time { return now })
+	job, _ := r.Add("*/5 * * * *", "/foo", true, false)
+	now = tm("2026-06-06 10:05")
+	r.Resume(job.ID) // not paused: must not push the due slot away
+	if due := r.Due(); len(due) != 1 {
+		t.Fatalf("resume of an active job moved its schedule: %+v", due)
+	}
+}

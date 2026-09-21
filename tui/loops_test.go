@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -151,5 +152,48 @@ func TestLoopsFooterRow(t *testing.T) {
 	}
 	if row.Kind != render.FooterLoops {
 		t.Fatalf("expected FooterLoops kind, got %v", row.Kind)
+	}
+}
+
+func TestListLoopsMarksPaused(t *testing.T) {
+	m := newLoopTestModel()
+	j, _ := m.loops.Add("*/5 * * * *", "/a", true, false)
+	m.loops.Pause(j.ID)
+	if got := m.listLoops(); !strings.Contains(got, "(paused)") {
+		t.Fatalf("listLoops = %q, want the paused job marked", got)
+	}
+}
+
+// cron_trigger mid-turn must queue the prompt, not start a second turn.
+func TestCronFireQueuesDuringTurn(t *testing.T) {
+	m := newLoopTestModel()
+	m.loading = true
+	got, _ := m.Update(cronFireMsg("/report"))
+	m = got.(Model)
+	if len(m.queue) != 1 || m.queue[0] != "/report" {
+		t.Fatalf("queue = %v, want the triggered prompt queued", m.queue)
+	}
+}
+
+// A durable job that fires is saved at once, so a restart cannot fire the
+// same slot again.
+func TestLoopTickSavesAfterDurableFire(t *testing.T) {
+	m := newLoopTestModel()
+	m.loopsPath = filepath.Join(t.TempDir(), "loops.json")
+	now := time.Date(2026, 6, 6, 10, 0, 0, 0, time.Local)
+	m.loops.SetClock(func() time.Time { return now })
+	if _, err := m.loops.Add("*/5 * * * *", "/a", false, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.loops.Save(m.loopsPath); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(5 * time.Minute)
+	got, _ := m.Update(loopTickMsg{})
+	m = got.(Model)
+
+	r := loop.NewRegistry()
+	if n, err := r.Load(m.loopsPath); err != nil || n != 0 {
+		t.Fatalf("reloaded %d jobs (err %v); the fired one-shot must be gone from disk", n, err)
 	}
 }

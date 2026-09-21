@@ -175,6 +175,15 @@ func (m *Model) stopLoop(id string) string {
 	return fmt.Sprintf("Stopped %d loop(s).", n+sp)
 }
 
+// loopLine renders one cron job as "id · expr · prompt", marking a paused one.
+func loopLine(j loop.Job) string {
+	paused := ""
+	if j.Paused {
+		paused = " (paused)"
+	}
+	return fmt.Sprintf("%s · %s%s · %q", j.ID, j.Expr, paused, j.Prompt)
+}
+
 // listLoops renders active loops for the user.
 func (m *Model) listLoops() string {
 	jobs := m.loops.List()
@@ -183,7 +192,7 @@ func (m *Model) listLoops() string {
 	}
 	var b strings.Builder
 	for _, j := range jobs {
-		fmt.Fprintf(&b, "%s · %s · %q\n", j.ID, j.Expr, j.Prompt)
+		b.WriteString(loopLine(j) + "\n")
 	}
 	if m.selfPaced > 0 {
 		fmt.Fprintf(&b, "%d self-paced loop(s) (model-driven)\n", m.selfPaced)

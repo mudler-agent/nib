@@ -329,6 +329,7 @@ type Model struct {
 	askRequestChan  chan chat.AskRequest
 	askResponseChan chan string
 	wakeupChan      chan chat.WakeupRequest
+	cronFireChan    chan string    // prompts of cron jobs run now via cron_trigger
 	parkChan        chan parkEvent // park/resume signals from the live run
 	compactChan     chan [2]int    // {before, after} token counts from auto-compaction
 	pruneChan       chan [2]int    // {results, freedTokens} from tool-output pruning
@@ -672,6 +673,7 @@ func NewModel(ctx context.Context, cfg types.Config, height int, shellJobs *wizm
 		askRequestChan:     make(chan chat.AskRequest),
 		askResponseChan:    make(chan string),
 		wakeupChan:         make(chan chat.WakeupRequest, 8),
+		cronFireChan:       make(chan string, 8),
 		parkChan:           make(chan parkEvent, 16),
 		compactChan:        make(chan [2]int, 4),
 		pruneChan:          make(chan [2]int, 4),
@@ -819,7 +821,7 @@ func (m Model) initSession() tea.Cmd {
 				}
 				var b strings.Builder
 				for _, j := range jobs {
-					fmt.Fprintf(&b, "%s · %s · %q\n", j.ID, j.Expr, j.Prompt)
+					b.WriteString(loopLine(j) + "\n")
 				}
 				return strings.TrimRight(b.String(), "\n")
 			},
@@ -829,6 +831,34 @@ func (m Model) initSession() tea.Cmd {
 					return "Cancelled " + id
 				}
 				return "No such loop: " + id
+			},
+			OnCronPause: func(id string) string {
+				if m.loops.Pause(id) {
+					_ = m.loops.Save(m.loopsPath)
+					return "Paused " + id
+				}
+				return "No such loop: " + id
+			},
+			OnCronResume: func(id string) string {
+				if m.loops.Resume(id) {
+					_ = m.loops.Save(m.loopsPath)
+					return "Resumed " + id
+				}
+				return "No such loop: " + id
+			},
+			OnCronTrigger: func(id string) string {
+				j, ok := m.loops.Get(id)
+				if !ok {
+					return "No such loop: " + id
+				}
+				// Hand the prompt to the UI loop, which queues it behind the
+				// current turn like any cron fire (see dispatchLoop).
+				select {
+				case m.cronFireChan <- j.Prompt:
+					return "Queued " + id + " to run after this turn."
+				default:
+					return "Could not run " + id + " now (too many pending)."
+				}
 			},
 			OnParked: func(reply string) {
 				select {
@@ -1427,7 +1457,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.appendMessage(ChatMessage{Role: "agent", Content: fmt.Sprintf("Reloaded %d durable loop(s).", n)})
 		}
 		// Start listening for callbacks
-		cmds = append(cmds, m.listenStatus(), m.listenReasoningEvents(), m.listenToolRequest(), m.listenToolResult(), m.listenAskRequest(), m.listenAgentEvents(), m.shellTick(), m.loopTick(), m.listenWakeup(), m.listenPark(), m.listenCompact(), m.listenPrune())
+		cmds = append(cmds, m.listenStatus(), m.listenReasoningEvents(), m.listenToolRequest(), m.listenToolResult(), m.listenAskRequest(), m.listenAgentEvents(), m.shellTick(), m.loopTick(), m.listenWakeup(), m.listenCronFire(), m.listenPark(), m.listenCompact(), m.listenPrune())
 
 	case bootTickMsg:
 		if m.boot != nil {
@@ -1702,10 +1732,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case loopTickMsg:
+		durableFired := false
 		for _, j := range m.loops.Due() {
+			durableFired = durableFired || j.Durable
 			if c := m.dispatchLoop(j.Prompt); c != nil {
 				cmds = append(cmds, c)
 			}
+		}
+		// Due already advanced or removed what fired. Save it now, so a
+		// restart cannot fire the same durable slot again.
+		if durableFired {
+			_ = m.loops.Save(m.loopsPath)
 		}
 		if !m.quitting {
 			cmds = append(cmds, m.loopTick())
@@ -1727,6 +1764,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			tea.Tick(d, func(time.Time) tea.Msg { return wakeupFireMsg{prompt: prompt, gen: gen, poll: poll} }),
 			m.listenWakeup(),
 		)
+
+	case cronFireMsg:
+		if c := m.dispatchLoop(string(msg)); c != nil {
+			cmds = append(cmds, c)
+		}
+		cmds = append(cmds, m.listenCronFire())
 
 	case wakeupFireMsg:
 		// A stale tick — a cancelled self-paced loop, or a poll whose background
@@ -2344,6 +2387,20 @@ type wakeupFireMsg struct {
 }
 
 // listenWakeup waits for the agent to schedule a wake-up.
+// cronFireMsg carries the prompt of a cron job run now via cron_trigger.
+type cronFireMsg string
+
+func (m Model) listenCronFire() tea.Cmd {
+	return func() tea.Msg {
+		select {
+		case p := <-m.cronFireChan:
+			return cronFireMsg(p)
+		case <-m.ctx.Done():
+			return nil
+		}
+	}
+}
+
 func (m Model) listenWakeup() tea.Cmd {
 	return func() tea.Msg {
 		select {

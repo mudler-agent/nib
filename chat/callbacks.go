@@ -145,6 +145,11 @@ type Callbacks struct {
 	OnCronList func() string
 	// OnCronDelete cancels a cron job by id and returns a confirmation.
 	OnCronDelete func(id string) string
+	// OnCronPause, OnCronResume and OnCronTrigger pause, resume, or run now
+	// the cron job with the given id, and return a confirmation.
+	OnCronPause   func(id string) string
+	OnCronResume  func(id string) string
+	OnCronTrigger func(id string) string
 	// OnCompactDone is called after the conversation is compacted, with the
 	// approximate token counts before and after. Optional.
 	OnCompactDone func(before, after int)

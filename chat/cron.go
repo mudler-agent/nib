@@ -76,3 +76,36 @@ func cronDeleteToolDefinition(del func(string) string) cogito.ToolDefinitionInte
 		"Cancel a cron job previously scheduled with the cron tool, by id.",
 	)
 }
+
+// --- cron_pause / cron_resume / cron_trigger ---
+
+// cronIDTool runs fn on the job id it is given. It backs the cron tools that
+// act on one existing job.
+type cronIDTool struct{ fn func(string) string }
+
+func (t *cronIDTool) Run(args map[string]any) (string, any, error) {
+	id, _ := args["id"].(string)
+	if t.fn == nil {
+		return "No scheduler available.", nil, nil
+	}
+	return t.fn(id), nil, nil
+}
+
+func cronIDToolDefinition(name, description string, fn func(string) string) cogito.ToolDefinitionInterface {
+	return cogito.NewToolDefinition[map[string]any](&cronIDTool{fn: fn}, cronDeleteArgs{}, name, description)
+}
+
+func cronPauseToolDefinition(pause func(string) string) cogito.ToolDefinitionInterface {
+	return cronIDToolDefinition("cron_pause",
+		"Pause a cron job by id: it stops firing but stays registered. Resume it with cron_resume.", pause)
+}
+
+func cronResumeToolDefinition(resume func(string) string) cogito.ToolDefinitionInterface {
+	return cronIDToolDefinition("cron_resume",
+		"Resume a cron job paused with cron_pause. It fires at its next scheduled time; slots missed while paused are skipped.", resume)
+}
+
+func cronTriggerToolDefinition(trigger func(string) string) cogito.ToolDefinitionInterface {
+	return cronIDToolDefinition("cron_trigger",
+		"Run a cron job's prompt now, by id, without changing its schedule. The prompt runs after the current turn.", trigger)
+}

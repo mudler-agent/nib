@@ -16,6 +16,7 @@ type Job struct {
 	Prompt    string    `json:"prompt"`
 	Recurring bool      `json:"recurring"`
 	Durable   bool      `json:"durable"`
+	Paused    bool      `json:"paused,omitempty"`
 	Created   time.Time `json:"created"`
 
 	sched Schedule  `json:"-"`
@@ -94,8 +95,57 @@ func (r *Registry) Delete(id string) bool {
 	return false
 }
 
+// Get returns a copy of the job with the given id.
+func (r *Registry) Get(id string) (Job, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, j := range r.jobs {
+		if j.ID == id {
+			return j, true
+		}
+	}
+	return Job{}, false
+}
+
+// Pause stops the job from firing until Resume; it stays registered.
+// Returns whether the job exists.
+func (r *Registry) Pause(id string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.jobs {
+		if r.jobs[i].ID == id {
+			r.jobs[i].Paused = true
+			return true
+		}
+	}
+	return false
+}
+
+// Resume lets a paused job fire again. Its next fire is recomputed from now,
+// so the slots it missed while paused do not fire at once. Returns whether
+// the job exists.
+func (r *Registry) Resume(id string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.jobs {
+		if r.jobs[i].ID == id {
+			if r.jobs[i].Paused {
+				r.jobs[i].Paused = false
+				if next, ok := r.jobs[i].sched.Next(r.now()); ok {
+					r.jobs[i].next = next
+				}
+			}
+			return true
+		}
+	}
+	return false
+}
+
 // Due returns the jobs whose next-fire time has arrived (<= now), advancing
-// recurring jobs to their next slot and removing fired one-shots.
+// recurring jobs to their next slot and removing fired one-shots. Paused
+// jobs are skipped. The registry changes before the caller dispatches, so
+// a caller that saves right after Due fires each durable slot at most once,
+// even if the process dies mid-dispatch.
 func (r *Registry) Due() []Job {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -103,6 +153,10 @@ func (r *Registry) Due() []Job {
 	var due []Job
 	kept := r.jobs[:0]
 	for _, j := range r.jobs {
+		if j.Paused {
+			kept = append(kept, j)
+			continue
+		}
 		if !j.next.After(now) {
 			due = append(due, j)
 			if j.Recurring {

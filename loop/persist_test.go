@@ -96,3 +96,20 @@ func TestLoadMissingFileIsEmpty(t *testing.T) {
 		t.Fatalf("missing file: n=%d err=%v", n, err)
 	}
 }
+
+func TestLoadKeepsPaused(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "loops.json")
+	r := NewRegistry()
+	job, _ := r.Add("*/5 * * * *", "/foo", true, true)
+	r.Pause(job.ID)
+	if err := r.Save(path); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	r2 := NewRegistry()
+	if n, err := r2.Load(path); err != nil || n != 1 {
+		t.Fatalf("load = %d, %v", n, err)
+	}
+	if jobs := r2.List(); !jobs[0].Paused {
+		t.Fatal("a paused job came back active after a restart")
+	}
+}
