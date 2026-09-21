@@ -136,6 +136,7 @@ const (
 	FooterShell
 	FooterLoops
 	FooterGoal
+	FooterTodo
 )
 
 // FooterRow is one line of the footer's job-status area (active sub-agent

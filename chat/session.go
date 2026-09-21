@@ -100,6 +100,11 @@ type Session struct {
 	goal     string
 	goalDone bool
 
+	// todoList is the ephemeral in-memory todo list (todo_write tool). It is
+	// not persisted — it lives for the session and is cleared when the session
+	// ends. Mirrors maki's design: the model sends the full list on every call.
+	todoList *TodoList
+
 	// shellJobs lets the pending-work predicate keep the run parked while a
 	// backgrounded shell command is still running (cogito only knows about
 	// sub-agents). May be nil (e.g. headless CLI without a job registry).
@@ -501,6 +506,7 @@ func NewSession(ctx context.Context, cfg types.Config, callbacks Callbacks, tran
 		cfgServers:           map[string]types.MCPServer{},
 		configurator:         manage.NewIn(cfg.BaseDir),
 		memoryStore:          NewMemoryStore(filepath.Join(plugin.BaseDirIn(cfg.BaseDir), "memory")),
+		todoList:             NewTodoList(),
 		tracer:               tracer,
 		traceDir:             cfg.TraceDir,
 		provenanceClassifier: classifier,
@@ -885,6 +891,12 @@ func (s *Session) ClearGoal() {
 	s.runMu.Unlock()
 }
 
+// TodoList returns the session's ephemeral todo list (may be nil if the session
+// was constructed without one, though in practice it is always set).
+func (s *Session) TodoList() *TodoList {
+	return s.todoList
+}
+
 // beginTurn starts a per-turn cancellable context derived from the session
 // context and stores its cancel func so Interrupt can cancel just this turn.
 func (s *Session) beginTurn() context.Context {
@@ -1202,6 +1214,13 @@ func (s *Session) toolOptions(turnCtx context.Context, goal, mainModel string) [
 	// notes that survive compaction and model restarts.
 	if s.toolEnabled("memory") {
 		opts = append(opts, cogito.WithTools(memoryToolDefinition(s.memoryStore)))
+	}
+
+	// Wire the ephemeral todo list so the assistant can plan and track
+	// multi-step work within the current session (replace-all semantics,
+	// like maki).
+	if s.toolEnabled("todo_write") {
+		opts = append(opts, cogito.WithTools(todoWriteToolDefinition(s.todoList)))
 	}
 
 	// Wire the tree-sitter index tool so the assistant can skeletonize source
@@ -2024,7 +2043,7 @@ func (s *Session) ToolCount() int {
 		"schedule_wakeup",
 		"cron", "cron_list", "cron_delete",
 		"read_image", "transcribe_audio", "read_video",
-		"memory", "index",
+		"memory", "index", "todo_write",
 	}
 	for _, name := range builtins {
 		if s.toolEnabled(name) && !(name == "ask_user" && s.AutoApprove()) {

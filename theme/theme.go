@@ -36,6 +36,7 @@ var (
 	Arrow          = "→"  // tool-call / edit / mapping arrow
 	Loop           = "↻"  // recurring-loop footer marker
 	Goal           = "◎"  // active-goal footer marker
+	Todo           = "◐"  // todo-list footer marker
 	ShellJob       = "▷"  // shell-jobs footer marker
 	ScrollKeys     = "↑↓" // up/down navigation hint
 	ReasoningGlyph = "✻"  // marks a block of model thinking/reasoning
@@ -100,6 +101,7 @@ func applyGlyphProfile() {
 		Arrow, ShellJob, ScrollKeys = "->", ">", "up/dn"
 		Loop = "~"
 		Goal = "*"
+		Todo = "o"
 		ReasoningGlyph = "*"
 		NewOutputGlyph = "v"
 		HairlineGlyph = "-"
@@ -114,6 +116,7 @@ func applyGlyphProfile() {
 	Arrow, ShellJob, ScrollKeys = "→", "▷", "↑↓"
 	Loop = "↻"
 	Goal = "◎"
+	Todo = "◐"
 	ReasoningGlyph = "✻"
 	NewOutputGlyph = "↓"
 	HairlineGlyph = "─"
