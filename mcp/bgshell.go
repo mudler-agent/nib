@@ -506,7 +506,7 @@ func registerBackgroundShellTools(srvCtx context.Context, server *mcp.Server, mg
 		Name:        "bash_jobs",
 		Description: "List shell jobs (background or backgrounded) and their status (running/completed/failed).",
 	}, func(_ context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, bgListOutput, error) {
-		var out bgListOutput
+		out := bgListOutput{Jobs: []bgJobInfo{}}
 		for _, j := range mgr.ordered() {
 			out.Jobs = append(out.Jobs, bgJobInfo{JobID: j.id, Script: j.script, Status: j.status()})
 		}

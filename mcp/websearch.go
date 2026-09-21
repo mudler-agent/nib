@@ -143,7 +143,7 @@ func parseDDGResults(body string, limit int) ([]webSearchResult, error) {
 		return nil, err
 	}
 
-	var out []webSearchResult
+	out := []webSearchResult{}
 	var walk func(*html.Node)
 	walk = func(n *html.Node) {
 		if limit > 0 && len(out) >= limit {

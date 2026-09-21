@@ -376,7 +376,7 @@ func globFiles(ctx context.Context, req *mcp.CallToolRequest, input globFilesInp
 		basePath = "."
 	}
 
-	var matches []string
+	matches := []string{}
 
 	// Check if pattern contains ** for recursive matching
 	if strings.Contains(input.Pat, "**") {
@@ -493,7 +493,7 @@ func globFiles(ctx context.Context, req *mcp.CallToolRequest, input globFilesInp
 
 // searchFileForPattern searches a file for regex pattern matches
 func searchFileForPattern(path string, re *regexp.Regexp, maxMatches int) []string {
-	var matches []string
+	matches := []string{}
 
 	file, err := os.Open(path)
 	if err != nil {
@@ -539,7 +539,7 @@ func grepFiles(ctx context.Context, req *mcp.CallToolRequest, input grepFilesInp
 		basePath = "."
 	}
 
-	var matches []string
+	matches := []string{}
 	const maxMatches = 50
 
 	// Walk directory tree
