@@ -18,6 +18,7 @@ import (
 	"github.com/mudler/nib/theme"
 	"github.com/mudler/nib/types"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -640,6 +641,14 @@ func NewModel(ctx context.Context, cfg types.Config, height int, shellJobs *wizm
 
 	vp := viewport.New(80, 10)
 	vp.SetContent("")
+	// Update hands every keystroke to the viewport after the composer, so the
+	// bubbles default (b/u/k up, space/f/d/j down, ctrl+u/ctrl+d half pages,
+	// h/l sideways) scrolled the transcript while the user typed. Keep only
+	// the page keys, which the composer does not use.
+	vp.KeyMap = viewport.KeyMap{
+		PageUp:   key.NewBinding(key.WithKeys("pgup")),
+		PageDown: key.NewBinding(key.WithKeys("pgdown")),
+	}
 
 	s := spinner.New()
 	s.Spinner = spinner.Spinner{Frames: theme.SpinnerFrames(), FPS: spinnerFPS}
