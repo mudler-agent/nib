@@ -1,6 +1,8 @@
 package chat
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/mudler/nib/types"
@@ -172,5 +174,44 @@ func TestSessionPruneMessagesNotifiesOnceOnTransition(t *testing.T) {
 	s.pruneMessages(msgs)
 	if calls != 1 {
 		t.Fatalf("a second pass over the same messages fired another notice (%d total)", calls)
+	}
+}
+
+// Pressure scaling must measure the prompt that is sent, not the raw fragment.
+// The raw fragment keeps the full body of every stubbed result. On a long
+// session it passes the compaction threshold while the prompt sent stays small,
+// so compaction never fires. Measured raw, the marks stayed at their floor for
+// good: the sweep kept one or two reads and the model re-read files in a loop.
+func TestSessionPruneMessagesScalesOnTheSentPromptNotTheRawFragment(t *testing.T) {
+	s := &Session{pruning: types.ToolOutputPruningConfig{
+		HighWaterTokens: 24000, LowWaterTokens: 8000, MinResultTokens: 200,
+	}}
+	s.compaction.MaxContextTokens = 200000
+
+	// 180k tokens of old results that earlier calls already stubbed.
+	var msgs []openai.ChatCompletionMessage
+	for i := 0; i < 30; i++ {
+		id := fmt.Sprintf("old%d", i)
+		msgs = append(msgs, callMsg(id, "read", fmt.Sprintf(`{"path":"old%d.go"}`, i)), bigResult(id, 6000))
+	}
+	s.pruneMessages(msgs) // stubs the old results; nothing is trailing after the next append
+	msgs = append(msgs, openai.ChatCompletionMessage{Role: "user", Content: "go on"})
+	s.pruneMessages(msgs)
+	if len(s.prunedIDs) < 25 {
+		t.Fatalf("setup: expected most old results stubbed, got %d", len(s.prunedIDs))
+	}
+
+	// A working set of five 6k reads: 30k tokens, 15% of the window.
+	for i := 0; i < 5; i++ {
+		id := fmt.Sprintf("new%d", i)
+		msgs = append(msgs, callMsg(id, "read", fmt.Sprintf(`{"path":"new%d.go"}`, i)), bigResult(id, 6000))
+	}
+	msgs = append(msgs, openai.ChatCompletionMessage{Role: "user", Content: "next"})
+
+	out := s.pruneMessages(msgs)
+	for i, m := range out {
+		if m.Role == "tool" && strings.HasPrefix(m.ToolCallID, "new") && m.Content != msgs[i].Content {
+			t.Errorf("%s was stubbed although the prompt sent is ~15%% of the window", m.ToolCallID)
+		}
 	}
 }

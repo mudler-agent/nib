@@ -262,10 +262,8 @@ func pruneToolOutputs(msgs []openai.ChatCompletionMessage, cfg types.ToolOutputP
 // manipulator is called from inside cogito's loop, and nothing here should
 // assume which goroutine that is.
 func (s *Session) pruneMessages(msgs []openai.ChatCompletionMessage) []openai.ChatCompletionMessage {
-	// Compute utilization outside the prunedMu lock: contextWindow takes
-	// modelMu and estimateTokens is O(n), neither of which needs to run
-	// under prunedMu.
-	promptTokens := estimateTokens(msgs)
+	// Read the window and threshold outside the prunedMu lock: both take
+	// modelMu, which must not nest under prunedMu.
 	window := s.contextWindow()
 	threshold := s.compactionConfig().Threshold
 
@@ -273,6 +271,7 @@ func (s *Session) pruneMessages(msgs []openai.ChatCompletionMessage) []openai.Ch
 	if s.prunedIDs == nil {
 		s.prunedIDs = map[string]string{}
 	}
+	promptTokens := prunedViewTokens(msgs, s.prunedIDs)
 	out, newly, freed := pruneToolOutputs(msgs, effectivePruning(s.pruning, promptTokens, window, threshold), s.prunedIDs)
 	for _, n := range newly {
 		s.prunedIDs[n.id] = n.detail
@@ -287,6 +286,37 @@ func (s *Session) pruneMessages(msgs []openai.ChatCompletionMessage) []openai.Ch
 		s.callbacks.OnPruneDone(len(newly), freed)
 	}
 	return out
+}
+
+// prunedViewTokens estimates the prompt that is actually sent: msgs with every
+// result in already replaced by its stub.
+//
+// Pressure scaling must measure this view, not the raw msgs. The raw fragment
+// still holds the full body of every stubbed result, so its size only grows. On
+// a long session it passes the compaction threshold while the prompt sent is a
+// small part of the window. Compaction measures the real prompt and does not
+// fire, so nothing resets the fragment. The marks then stay at their floor for
+// the rest of the session. The sweep keeps only the one or two latest reads, and
+// the model re-reads the files it lost in a loop. Each re-read makes the raw
+// count larger.
+func prunedViewTokens(msgs []openai.ChatCompletionMessage, already map[string]string) int {
+	n := estimateTokens(msgs)
+	if len(already) == 0 {
+		return n
+	}
+	calls := indexToolCalls(msgs)
+	for _, m := range msgs {
+		detail, ok := already[m.ToolCallID]
+		if m.Role != "tool" || !ok {
+			continue
+		}
+		info := calls[m.ToolCallID]
+		if info.name == "" {
+			info.name = "tool"
+		}
+		n -= tokensOf(m.Content) - tokensOf(prunedStub(info.name, info.path, detail))
+	}
+	return max(n, 0)
 }
 
 // pruningMinScale is the floor for pressure-scaled water marks. At the
