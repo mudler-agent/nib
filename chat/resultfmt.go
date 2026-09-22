@@ -231,12 +231,31 @@ func fmtBashResult(v any) string {
 	return ""
 }
 
+// cogito's text for a tool call that failed before it produced a result: the
+// tool's Execute returned an error (an MCP server rejecting the arguments, an
+// MCP result with isError set, a Go error from a built-in tool), or the named
+// tool does not exist. See executeTools in cogito's tools.go.
+const (
+	execErrorPrefix   = "Error running tool: "
+	missingToolPrefix = "Error: tool "
+	missingToolSuffix = " not found"
+)
+
 // ToolOutcome reports whether a tool result is a failure, for marking the
 // call in the transcript. A built-in tool fails when its JSON result carries
 // "success": false or a non-empty "error"; bash also fails on a nonzero exit
-// code, and detail is then "exit N". A result that is not a JSON object (plain
-// text from an MCP tool) is never judged a failure: nothing in it says so.
+// code, and detail is then "exit N". A call cogito could not run at all fails
+// too; its result is cogito's plain-text error (see execErrorPrefix). Any
+// other plain text (a normal MCP tool result) is never judged a failure:
+// nothing in it says so.
+//
+// The check on cogito's text is string matching because that text is the only
+// signal left: cogito keeps the Execute error in its own loop and hands the
+// result callback a ToolStatus with no error field.
 func ToolOutcome(result string) (failed bool, detail string) {
+	if execFailed(result) {
+		return true, ""
+	}
 	var m map[string]any
 	if err := json.Unmarshal([]byte(strings.TrimSpace(result)), &m); err != nil {
 		return false, ""
@@ -251,4 +270,14 @@ func ToolOutcome(result string) (failed bool, detail string) {
 		return true, ""
 	}
 	return false, ""
+}
+
+// execFailed reports whether result is cogito's text for a call it could not
+// run. The prefixes are cogito's exact wording, so a normal result that only
+// mentions an error does not match.
+func execFailed(result string) bool {
+	if strings.HasPrefix(result, execErrorPrefix) {
+		return true
+	}
+	return strings.HasPrefix(result, missingToolPrefix) && strings.HasSuffix(result, missingToolSuffix)
 }

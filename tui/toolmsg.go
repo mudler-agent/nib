@@ -23,7 +23,8 @@ func toolMessage(res chat.ToolResult) ChatMessage {
 		msg.Meta = detail
 		// A built-in tool's failure is its "error" field; the rest of the
 		// envelope (success false, replacements 0) says nothing more. Shell
-		// output has no such field and shows its stdout/stderr instead.
+		// output has no such field and shows its stdout/stderr instead, and a
+		// call cogito could not run shows cogito's plain-text error as is.
 		if e := resultError(res.Result); e != "" {
 			msg.Content = e
 		} else {
