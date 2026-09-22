@@ -236,6 +236,11 @@ type Config struct {
 	// and re-applied on every turn (see Session.SendMessage), so a seeded system
 	// message would duplicate it. Set at runtime, never from the YAML config.
 	InitialHistory []openai.ChatCompletionMessage `yaml:"-"`
+	// InitialGoal and InitialGoalPaused restore a resumed session's /goal
+	// alongside InitialHistory. Set at runtime by --resume and /resume,
+	// never from the YAML config.
+	InitialGoal       string `yaml:"-"`
+	InitialGoalPaused bool   `yaml:"-"`
 	// ResumeSessionID and ResumeSessionTitle, when non-empty, seed the TUI's
 	// own session bookkeeping (Model.sessionID/sessionTitle) alongside
 	// InitialHistory above, so continuing a --resume'd conversation autosaves

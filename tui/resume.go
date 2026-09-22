@@ -57,13 +57,15 @@ func (m *Model) recordSession() {
 	}
 	cwd, _ := os.Getwd()
 	rec := chat.SessionRecord{
-		ID:       m.sessionID,
-		Title:    m.sessionTitle,
-		Cwd:      cwd,
-		Model:    m.session.Model(),
-		Created:  m.sessionCreated,
-		Updated:  time.Now(),
-		Messages: hist,
+		ID:         m.sessionID,
+		Title:      m.sessionTitle,
+		Cwd:        cwd,
+		Model:      m.session.Model(),
+		Created:    m.sessionCreated,
+		Updated:    time.Now(),
+		Messages:   hist,
+		Goal:       m.session.Goal(),
+		GoalPaused: m.session.GoalPaused(),
 	}
 	if err := m.store.Save(rec); err != nil {
 		xlog.Warn("session autosave failed", "id", m.sessionID, "error", err)
@@ -236,6 +238,8 @@ func (m *Model) applyResume(rec chat.SessionRecord) tea.Cmd {
 		m.session.Close()
 	}
 	m.cfg.InitialHistory = rec.Messages
+	m.cfg.InitialGoal = rec.Goal
+	m.cfg.InitialGoalPaused = rec.GoalPaused
 	m.sessionID = rec.ID
 	m.sessionTitle = rec.Title
 	m.sessionCreated = rec.Created

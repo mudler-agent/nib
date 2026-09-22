@@ -641,5 +641,7 @@ func applyResumeFlag(cfg *types.Config, id string, all bool) error {
 	cfg.ResumeSessionID = rec.ID
 	cfg.ResumeSessionTitle = rec.Title
 	cfg.ResumeSessionCreated = rec.Created
+	cfg.InitialGoal = rec.Goal
+	cfg.InitialGoalPaused = rec.GoalPaused
 	return nil
 }

@@ -2186,6 +2186,8 @@ func (m *Model) dispatchResolved(input string) tea.Cmd {
 	case slash.KindGoalClear:
 		if m.session.Goal() != "" {
 			m.session.ClearGoal()
+			// No turn follows to autosave it, so save now.
+			m.recordSession()
 			m.appendMessage(ChatMessage{Role: "agent", Content: "Goal cleared."})
 		} else {
 			m.appendMessage(ChatMessage{Role: "agent", Content: "No goal to clear."})

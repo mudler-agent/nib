@@ -551,6 +551,10 @@ func NewSession(ctx context.Context, cfg types.Config, callbacks Callbacks, tran
 		s.messages = seed
 		s.fragment = cogito.NewFragment(seed...)
 	}
+	// A resumed session carries on with its goal, paused or not. Paused
+	// means nothing without a goal, as in PauseGoal.
+	s.goal = cfg.InitialGoal
+	s.goalPaused = cfg.InitialGoalPaused && cfg.InitialGoal != ""
 	for _, name := range cfg.AllowedTools {
 		s.allowedTools[name] = true
 	}

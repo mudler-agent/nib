@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	openai "github.com/sashabaranov/go-openai"
+
 	"github.com/mudler/nib/chat"
 	"github.com/mudler/nib/tui/render"
 	"github.com/mudler/nib/types"
@@ -49,7 +51,13 @@ func TestGoalFooterRowPaused(t *testing.T) {
 // newGoalModel is a ctrl-c test model with a real (never-run) session.
 func newGoalModel(t *testing.T) Model {
 	t.Helper()
-	s, err := chat.NewSession(context.Background(), types.Config{}, chat.Callbacks{})
+	return newGoalModelWith(t, types.Config{})
+}
+
+// newGoalModelWith is newGoalModel with a session built from cfg.
+func newGoalModelWith(t *testing.T, cfg types.Config) Model {
+	t.Helper()
+	s, err := chat.NewSession(context.Background(), cfg, chat.Callbacks{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -95,5 +103,44 @@ func TestGoalShowAndClearStartNoTurn(t *testing.T) {
 		if cmd := m.dispatchInput(in); cmd != nil || m.loading {
 			t.Fatalf("%s: cmd=%v loading=%v, want no turn", in, cmd, m.loading)
 		}
+	}
+}
+
+// The goal is saved with the session, so a resume can bring it back.
+func TestRecordSessionSavesTheGoal(t *testing.T) {
+	m := newGoalModelWith(t, types.Config{InitialHistory: []openai.ChatCompletionMessage{{Role: "user", Content: "hi"}}})
+	store := chat.NewSessionStore(t.TempDir())
+	m.store = store
+	m.sessionID = "goal-rec"
+	m.session.SetGoal("ship it")
+	m.session.PauseGoal()
+	m.recordSession()
+
+	rec, err := store.Load("goal-rec")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Goal != "ship it" || !rec.GoalPaused {
+		t.Fatalf("saved goal = %q paused = %v, want ship it, paused", rec.Goal, rec.GoalPaused)
+	}
+}
+
+// /goal clear starts no turn, so it saves at once; otherwise a session
+// killed before its next turn would resume with the cleared goal.
+func TestGoalClearSavesTheSession(t *testing.T) {
+	m := newGoalModelWith(t, types.Config{InitialHistory: []openai.ChatCompletionMessage{{Role: "user", Content: "hi"}}})
+	store := chat.NewSessionStore(t.TempDir())
+	m.store = store
+	m.sessionID = "goal-clear"
+	m.session.SetGoal("ship it")
+	m.recordSession()
+
+	m.dispatchInput("/goal clear")
+	rec, err := store.Load("goal-clear")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Goal != "" {
+		t.Fatalf("saved goal = %q after /goal clear, want none", rec.Goal)
 	}
 }

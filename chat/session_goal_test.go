@@ -353,3 +353,26 @@ func TestGoalPauseAccessors(t *testing.T) {
 		t.Fatal("PauseGoal with no goal must not pause")
 	}
 }
+
+// A resumed session gets its goal back from cfg, paused or not, the way it
+// gets its history back from InitialHistory.
+func TestNewSessionRestoresTheGoal(t *testing.T) {
+	s, err := NewSession(context.Background(), types.Config{InitialGoal: "ship it", InitialGoalPaused: true}, Callbacks{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer s.Close()
+	if s.Goal() != "ship it" || !s.GoalPaused() {
+		t.Fatalf("goal = %q paused = %v, want ship it, paused", s.Goal(), s.GoalPaused())
+	}
+
+	// Paused means nothing without a goal.
+	s2, err := NewSession(context.Background(), types.Config{InitialGoalPaused: true}, Callbacks{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer s2.Close()
+	if s2.GoalPaused() {
+		t.Fatal("a session with no goal reports a paused goal")
+	}
+}

@@ -111,3 +111,27 @@ func TestBareResumeWithNothingRecordedPinsNothing(t *testing.T) {
 		t.Fatalf("ResumeSessionID = %q, want empty", cfg.ResumeSessionID)
 	}
 }
+
+// --resume brings the session's goal back with its history.
+func TestResumeRestoresTheGoal(t *testing.T) {
+	base := t.TempDir()
+	store := chat.NewSessionStore(filepath.Join(plugin.BaseDirIn(base), "sessions"))
+	err := store.Save(chat.SessionRecord{
+		ID:         "goal-1",
+		Updated:    time.Now(),
+		Messages:   []openai.ChatCompletionMessage{{Role: "user", Content: "hi"}},
+		Goal:       "ship it",
+		GoalPaused: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := types.Config{BaseDir: base}
+	if err := applySessionIdentity(&cfg, "goal-1", true, false, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.InitialGoal != "ship it" || !cfg.InitialGoalPaused {
+		t.Fatalf("goal = %q paused = %v, want ship it, paused", cfg.InitialGoal, cfg.InitialGoalPaused)
+	}
+}

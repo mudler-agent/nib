@@ -26,6 +26,10 @@ type SessionRecord struct {
 	Created  time.Time                      `json:"created"`
 	Updated  time.Time                      `json:"updated"`
 	Messages []openai.ChatCompletionMessage `json:"messages"`
+	// Goal is the session's /goal when it was saved, and GoalPaused whether
+	// an interrupt had paused it. Resume restores both.
+	Goal       string `json:"goal,omitempty"`
+	GoalPaused bool   `json:"goal_paused,omitempty"`
 }
 
 // SessionStore persists SessionRecords as one JSON file per session under
