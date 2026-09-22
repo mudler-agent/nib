@@ -71,3 +71,17 @@ func TestEmptyStateCopyPresent(t *testing.T) {
 		t.Errorf("EmptySlash %q should mention /", theme.EmptySlash)
 	}
 }
+
+func TestSparkline(t *testing.T) {
+	t.Setenv("NIB_ASCII", "0")
+	if got := theme.Sparkline([]float64{0, 1, 2, 4}); got != "▁▃▅█" {
+		t.Fatalf("Sparkline = %q, want %q", got, "▁▃▅█")
+	}
+	if got := theme.Sparkline([]float64{0, 0}); got != "" {
+		t.Fatalf("Sparkline of zeros = %q, want empty", got)
+	}
+	t.Setenv("NIB_ASCII", "1")
+	if got := theme.Sparkline([]float64{1, 2}); got != "" {
+		t.Fatalf("Sparkline on a restricted terminal = %q, want empty", got)
+	}
+}

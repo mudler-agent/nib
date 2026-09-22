@@ -248,6 +248,9 @@ type Model struct {
 	// fade-ins; updateViewport starts it when a frame has something moving.
 	streamShown int
 	anim        *animClock
+	// speed measures the model's generation rate for the footer gauge (see
+	// speed.go). OnStream records into it from the session's goroutine.
+	speed *speedMeter
 	// revealIdx is the index plus one of a reply still being revealed after
 	// its turn ended (0 for none), and revealText the text it was revealed
 	// with: a transcript rebuild that changed the entry stops the reveal.
@@ -717,6 +720,7 @@ func NewModel(ctx context.Context, cfg types.Config, height int, shellJobs *wizm
 		messages:           []ChatMessage{},
 		ctx:                ctx,
 		anim:               newAnimClock(ctx),
+		speed:              &speedMeter{},
 		cancel:             cancel,
 		maxHeight:          maxH,
 		transports:         transports,
@@ -846,6 +850,12 @@ func (m Model) initSession() tea.Cmd {
 				// later sees is real staleness, not a race on the read
 				// itself. See turnGen's doc.
 				gen := m.currentTurnGen()
+				if ev.Kind == "reasoning" || ev.Kind == "content" {
+					// Timed here, as the chunk arrives, not when Update
+					// gets to it: a burst drained from reasoningChan in one
+					// batch would otherwise read as one instant.
+					m.speed.record(len(ev.Content), time.Now())
+				}
 				switch ev.Kind {
 				case "reasoning":
 					m.reasoningChan <- reasoningEvent{kind: reasoningEventDelta, text: ev.Content, gen: gen}
@@ -3337,6 +3347,7 @@ func (m Model) viewState() render.ViewState {
 		Loading:     m.loading,
 		Status:      status,
 		Spinner:     m.spinner.View(),
+		Speed:       m.liveSpeed(),
 		Reasoning: render.Reasoning{
 			Text:      m.reasoning,
 			Collapsed: m.reasoningCollapsed,
@@ -3973,7 +3984,7 @@ func (m Model) usageBadge() string {
 // first when space is tight.
 //
 // Priority (lowest drops first): mem(20), cpu(40), clock(60), usage(80),
-// context(100). The context badge earns the highest priority because it
+// speed(90), context(100). The context badge earns the highest priority because it
 // predicts auto-compaction and is therefore actionable.
 func (m Model) footerBadges(helpWidth int) string {
 	type badge struct {
@@ -3985,6 +3996,7 @@ func (m Model) footerBadges(helpWidth int) string {
 	// The context badge takes the widest form that fits beside the help line,
 	// falling back to its narrowest when none does; the rest share what is left.
 	usage := m.usageBadge()
+	ctxWidth := 0
 	if forms := m.contextBadges(); len(forms) > 0 {
 		ctx := forms[len(forms)-1]
 		for _, f := range forms {
@@ -3994,6 +4006,16 @@ func (m Model) footerBadges(helpWidth int) string {
 			}
 		}
 		badges = append(badges, badge{ctx, 100})
+		ctxWidth = lipgloss.Width(ctx)
+	}
+	// The speed badge ranks just under the context badge. It takes its full
+	// form when that fits beside the help line and the context badge, and
+	// its narrow form (the session average alone) otherwise.
+	if speed, narrow := m.speedBadges(); speed != "" {
+		if helpWidth+1+ctxWidth+2+lipgloss.Width(speed) > m.width {
+			speed = narrow
+		}
+		badges = append(badges, badge{speed, 90})
 	}
 	if usage != "" {
 		badges = append(badges, badge{usage, 80})
