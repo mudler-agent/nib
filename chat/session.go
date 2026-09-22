@@ -1829,21 +1829,36 @@ func (s *Session) SendMessage(text string, parts ...ContentPart) (string, error)
 			// clearing the conversation, because compaction just did the
 			// equivalent and the retry has already been made — see
 			// contextOverflowRetriedMessage.
+			overflow := isContextOverflow(err)
 			err = humanizeTurnError(err, s.overflowRetries() > 0)
 			if s.callbacks.OnError != nil {
 				s.callbacks.OnError(err)
 			}
-			// Roll back the user message: the turn failed (interrupt, error,
-			// or overflow that survived recovery), so restore the pre-turn
-			// history. The user's message is gone and a retry will not
-			// double-add it. Token usage is kept — the backend billed those
-			// tokens regardless.
+			// An overflow that survived recovery rolls the turn back: the
+			// message may be what does not fit, and keeping it would make
+			// every later turn overflow too. Token usage is kept — the
+			// backend billed those tokens regardless.
+			if overflow {
+				s.historyMu.Lock()
+				s.fragment = preTurnFragment
+				s.messages = preTurnMessages
+				s.historyMu.Unlock()
+				// The rollback dropped the notices too; keep them for the next turn.
+				s.restorePendingNotices(notices)
+				return "", err
+			}
+			// An interrupt or any other error keeps the turn. The transcript
+			// still shows the user's message and nothing re-sends it, so a
+			// rollback left the model answering "go" or "try again" with no
+			// idea what it referred to. Keep what the model already has and
+			// tell it the turn did not finish.
+			note := interruptedTurnNote
+			if turnCtx.Err() == nil {
+				note = failedTurnNote(err)
+			}
 			s.historyMu.Lock()
-			s.fragment = preTurnFragment
-			s.messages = preTurnMessages
+			s.fragment = keepFailedTurn(s.fragment, newFragment, note)
 			s.historyMu.Unlock()
-			// The rollback dropped the notices too; keep them for the next turn.
-			s.restorePendingNotices(notices)
 			return "", err
 		}
 

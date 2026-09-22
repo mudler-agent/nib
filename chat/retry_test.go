@@ -394,7 +394,8 @@ func TestFatalErrorIsNotRetried(t *testing.T) {
 }
 
 // A limit that never clears stops after the retry budget, with a friendly
-// message and the pre-turn history restored.
+// message. The user's message stays in history, as the transcript still shows
+// it, followed by a note that the request failed.
 func TestRateLimitStopsAfterBudget(t *testing.T) {
 	stubRetrySleep(t)
 	s := newRateLimitSession(t, &rateLimitLLM{failures: 1 << 20})
@@ -409,10 +410,9 @@ func TestRateLimitStopsAfterBudget(t *testing.T) {
 	if !strings.Contains(strings.ToLower(err.Error()), "rate-limited") {
 		t.Fatalf("error = %v; want a friendly rate-limit message", err)
 	}
-	for _, m := range s.fragment.Messages {
-		if m.Content == "what changed?" {
-			t.Fatal("the failed turn's user message was left in history; a resend would duplicate it")
-		}
+	msgs := s.fragment.Messages
+	if n := len(msgs); n < 2 || msgs[n-2].Content != "what changed?" || !strings.HasPrefix(msgs[n-1].Content, "[This request failed") {
+		t.Fatalf("history after a failed turn = %+v; want the user message then the failure note", msgs)
 	}
 }
 

@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 
@@ -69,10 +70,11 @@ func newRollbackTestSession(t *testing.T, llm cogito.LLM) *Session {
 	return s
 }
 
-// TestInterruptRollsBackUserMessage proves that interrupting a turn (Ctrl+C)
-// rolls back the user's message from that turn, so ExportHistory shows only
-// completed turns — no orphan user message with no assistant reply.
-func TestInterruptRollsBackUserMessage(t *testing.T) {
+// TestInterruptKeepsUserMessage proves that interrupting a turn (Ctrl+C) keeps
+// the user's message in the history, followed by a note that the turn was
+// interrupted. The transcript still shows the message, so the model must see it
+// too: a follow-up like "go" means nothing without it.
+func TestInterruptKeepsUserMessage(t *testing.T) {
 	llm := newRollbackBlockingLLM()
 	s := newRollbackTestSession(t, llm)
 	defer s.Close()
@@ -109,9 +111,22 @@ func TestInterruptRollsBackUserMessage(t *testing.T) {
 		t.Fatal("second SendMessage should have been interrupted")
 	}
 
-	// After the interrupt, s.fragment is rolled back to the pre-turn state
-	// (Fix 2), and s.fragment.Status must not have been mutated by the
-	// interrupted ExecuteTools run (Fix 1 — deep-copy).
+	if n := len(s.messages); n != 3 || s.messages[2].Role != "user" || s.messages[2].Content != "world" {
+		t.Fatalf("messages after interrupt = %+v, want the interrupted user message last", s.messages)
+	}
+	msgs := s.fragment.Messages
+	if len(msgs) < 2 {
+		t.Fatalf("fragment too short after interrupt: %+v", msgs)
+	}
+	if got := msgs[len(msgs)-2]; got.Role != "user" || got.Content != "world" {
+		t.Errorf("fragment lost the interrupted user message: %+v", msgs)
+	}
+	if got := msgs[len(msgs)-1]; got.Role != "user" || got.Content != interruptedTurnNote {
+		t.Errorf("fragment does not end with the interrupt note: %+v", msgs)
+	}
+
+	// s.fragment.Status must not have been mutated by the interrupted
+	// ExecuteTools run (deep-copy).
 	after := s.fragment.Status
 	if after == nil {
 		t.Fatal("Status should still be non-nil after interrupt")
@@ -158,10 +173,11 @@ type errFake string
 
 func (e errFake) Error() string { return string(e) }
 
-// TestErrorRollsBackUserMessage proves that a non-interrupt error (e.g. LLM
-// failure) also rolls back the user message, so the history stays clean for a
-// retry.
-func TestErrorRollsBackUserMessage(t *testing.T) {
+// TestErrorKeepsUserMessage proves that a failed turn (e.g. the LLM is down)
+// keeps the user's message, followed by a note naming the error. Nothing
+// re-sends the message for the user, so a follow-up like "try again" must still
+// find it in the history.
+func TestErrorKeepsUserMessage(t *testing.T) {
 	llm := &errorLLM{}
 	s := newRollbackTestSession(t, llm)
 	defer s.Close()
@@ -181,15 +197,14 @@ func TestErrorRollsBackUserMessage(t *testing.T) {
 		t.Fatal("SendMessage should have failed")
 	}
 
-	// The user message from the failed turn must NOT be in the history.
-	for i, m := range s.messages {
-		if m.Role == "user" && m.Content == "this will fail" {
-			t.Fatalf("orphan user message from failed turn was not rolled back (message %d)", i)
-		}
+	if n := len(s.messages); n != 3 || s.messages[2].Content != "this will fail" {
+		t.Fatalf("messages after error = %+v, want prior history plus the failed user message", s.messages)
 	}
-
-	// Prior history must be intact.
-	if len(s.messages) != 2 {
-		t.Errorf("message count after error = %d, want 2 (prior history only): %+v", len(s.messages), s.messages)
+	msgs := s.fragment.Messages
+	if got := msgs[len(msgs)-2]; got.Role != "user" || got.Content != "this will fail" {
+		t.Errorf("fragment lost the failed user message: %+v", msgs)
+	}
+	if got := msgs[len(msgs)-1]; got.Role != "user" || !strings.Contains(got.Content, errFakeLLM.Error()) {
+		t.Errorf("fragment does not end with a note naming the error: %+v", msgs)
 	}
 }
