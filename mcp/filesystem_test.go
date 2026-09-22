@@ -3,7 +3,9 @@ package mcp
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -684,6 +686,116 @@ func TestGrepFilesLimit(t *testing.T) {
 
 	if output.Count != 50 {
 		t.Errorf("expected 50 matches (limit), got %d", output.Count)
+	}
+}
+
+// writeTree creates files (path -> content) under root.
+func writeTree(t *testing.T, root string, files map[string]string) {
+	t.Helper()
+	for name, content := range files {
+		full := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func gitInit(t *testing.T, dir string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	if out, err := exec.Command("git", "-C", dir, "init", "-q").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, out)
+	}
+}
+
+// matchedFiles returns the files that grep matched, relative to root.
+func matchedFiles(t *testing.T, root string, output grepFilesOutput) []string {
+	t.Helper()
+	var files []string
+	for _, m := range output.Matches {
+		path := strings.SplitN(m, ":", 2)[0]
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, rel)
+	}
+	sort.Strings(files)
+	return files
+}
+
+// grep searches files that git does not track or ignores: the model may be
+// looking for a build log or a generated file. It skips only .git itself.
+func TestGrepFilesSearchesUntrackedAndIgnoredFiles(t *testing.T) {
+	root := t.TempDir()
+	gitInit(t, root)
+	writeTree(t, root, map[string]string{
+		".gitignore":    "build/\n",
+		"notes.txt":     "needle in notes\n",
+		"build/out.txt": "needle in build\n",
+	})
+	_, output, err := grepFiles(context.Background(), &mcp.CallToolRequest{}, grepFilesInput{Pat: "needle", Path: root})
+	if err != nil || !output.Success {
+		t.Fatalf("grep failed: err=%v output=%+v", err, output)
+	}
+	got := matchedFiles(t, root, output)
+	want := []string{filepath.Join("build", "out.txt"), "notes.txt"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("matched files = %v, want %v", got, want)
+	}
+}
+
+// grep skips VCS and dependency directories.
+func TestGrepFilesSkipsVCSAndDependencyDirs(t *testing.T) {
+	root := t.TempDir()
+	writeTree(t, root, map[string]string{
+		"a.txt":                 "needle\n",
+		"node_modules/pkg/i.js": "needle\n",
+		"sub/.git/objects/x":    "needle\n",
+		"sub/.hg/store":         "needle\n",
+	})
+	_, output, err := grepFiles(context.Background(), &mcp.CallToolRequest{}, grepFilesInput{Pat: "needle", Path: root})
+	if err != nil || !output.Success {
+		t.Fatalf("grep failed: err=%v output=%+v", err, output)
+	}
+	if got := matchedFiles(t, root, output); len(got) != 1 || got[0] != "a.txt" {
+		t.Errorf("matched files = %v, want [a.txt]", got)
+	}
+}
+
+func TestGrepFilesSkipsBinaryFiles(t *testing.T) {
+	root := t.TempDir()
+	writeTree(t, root, map[string]string{
+		"text.txt": "needle\n",
+		"blob.bin": "needle\x00\x01\x02 needle\n",
+	})
+	_, output, err := grepFiles(context.Background(), &mcp.CallToolRequest{}, grepFilesInput{Pat: "needle", Path: root})
+	if err != nil || !output.Success {
+		t.Fatalf("grep failed: err=%v output=%+v", err, output)
+	}
+	if got := matchedFiles(t, root, output); len(got) != 1 || got[0] != "text.txt" {
+		t.Errorf("matched files = %v, want [text.txt]", got)
+	}
+}
+
+// An interrupt cancels the call's context; grep must stop and not keep the
+// run waiting until the whole tree is read.
+func TestGrepFilesStopsWhenCancelled(t *testing.T) {
+	root := t.TempDir()
+	writeTree(t, root, map[string]string{"a.txt": "needle\n"})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, output, err := grepFiles(ctx, &mcp.CallToolRequest{}, grepFilesInput{Pat: "needle", Path: root})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if output.Success || !strings.Contains(output.Error, "canceled") {
+		t.Errorf("want a cancelled result, got %+v", output)
 	}
 }
 

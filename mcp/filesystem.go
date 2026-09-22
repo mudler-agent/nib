@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -525,7 +526,13 @@ func globFiles(ctx context.Context, req *mcp.CallToolRequest, input globFilesInp
 	}, nil
 }
 
-// searchFileForPattern searches a file for regex pattern matches
+// binarySniffLen is how much of a file grep reads to tell text from binary,
+// the same heuristic git and ripgrep use: a NUL byte in the head.
+const binarySniffLen = 8000
+
+// searchFileForPattern searches a text file for regex pattern matches. A
+// binary file (weights, fixtures, objects) has no lines worth matching and
+// can be gigabytes, so it is skipped.
 func searchFileForPattern(path string, re *regexp.Regexp, maxMatches int) []string {
 	matches := []string{}
 
@@ -535,7 +542,12 @@ func searchFileForPattern(path string, re *regexp.Regexp, maxMatches int) []stri
 	}
 	defer file.Close()
 
-	scanner := bufio.NewScanner(file)
+	reader := bufio.NewReader(file)
+	if head, _ := reader.Peek(binarySniffLen); bytes.IndexByte(head, 0) >= 0 {
+		return matches
+	}
+
+	scanner := bufio.NewScanner(reader)
 	lineNum := 1
 	for scanner.Scan() {
 		if len(matches) >= maxMatches {
@@ -551,6 +563,48 @@ func searchFileForPattern(path string, re *regexp.Regexp, maxMatches int) []stri
 	}
 
 	return matches
+}
+
+// grepSkipDirs are directories grep does not enter: VCS metadata and
+// dependency trees, which are large and never what the model is looking for.
+var grepSkipDirs = map[string]bool{
+	".git": true, ".hg": true, ".svn": true, "node_modules": true,
+}
+
+// grepCandidates calls visit for each file grep searches under basePath and
+// stops when visit returns false or ctx is done. It walks the whole tree,
+// ignored and untracked files included, but not grepSkipDirs.
+func grepCandidates(ctx context.Context, basePath string, visit func(path string) bool) error {
+	info, err := os.Stat(basePath)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		visit(basePath)
+		return ctx.Err()
+	}
+
+	return filepath.WalkDir(basePath, func(path string, d os.DirEntry, err error) error {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		if err != nil {
+			return nil // Skip errors
+		}
+		if d.IsDir() {
+			if path != basePath && grepSkipDirs[d.Name()] {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		if !visit(path) {
+			return filepath.SkipAll
+		}
+		return nil
+	})
 }
 
 // grepFiles searches files for regex pattern
@@ -576,27 +630,9 @@ func grepFiles(ctx context.Context, req *mcp.CallToolRequest, input grepFilesInp
 	matches := []string{}
 	const maxMatches = 50
 
-	// Walk directory tree
-	err = filepath.WalkDir(basePath, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil // Skip errors
-		}
-
-		// Skip directories
-		if d.IsDir() {
-			return nil
-		}
-
-		// Limit matches
-		if len(matches) >= maxMatches {
-			return filepath.SkipAll
-		}
-
-		// Process file and search for matches
-		fileMatches := searchFileForPattern(path, re, maxMatches-len(matches))
-		matches = append(matches, fileMatches...)
-
-		return nil
+	err = grepCandidates(ctx, basePath, func(path string) bool {
+		matches = append(matches, searchFileForPattern(path, re, maxMatches-len(matches))...)
+		return len(matches) < maxMatches
 	})
 
 	if err != nil {
@@ -655,7 +691,7 @@ func StartFileSystemMCPServer(ctx context.Context, transport mcp.Transport, root
 	// Add tool for grep file search
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "grep",
-		Description: "Search files for regex pattern, returns up to 50 matches",
+		Description: "Search files for regex pattern, returns up to 50 matches. Skips binary files and .git, .hg, .svn and node_modules directories",
 	}, fs.grep)
 
 	// Run the server
