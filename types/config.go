@@ -557,6 +557,14 @@ func (c *Config) GetPrompt() string {
 	fmt.Fprintf(&b, "`%s mcp list` and `%s mcp test <name>` show and verify them. ", prog, prog)
 	fmt.Fprintf(&b, "Servers added this way become available on the next %s session.", prog)
 
+	// Self-knowledge: tell the model what it is and that it can read its own
+	// documentation via the self_read tool. Appended unconditionally, after
+	// tool guidance, so it reaches every session including ones with a custom
+	// prompt. The version/harness identity is injected by the Session (which
+	// has access to internal.Version) — see chat.Session.Reload.
+	b.WriteString("\n\n")
+	b.WriteString(selfKnowledgeSuffix(prog))
+
 	return b.String()
 }
 

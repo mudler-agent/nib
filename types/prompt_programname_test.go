@@ -40,11 +40,12 @@ func TestPromptNamesTheEmbeddingProgram(t *testing.T) {
 // checked, not just the substitution.
 func TestPromptMCPParagraphReadsCorrectlyForATwoWordName(t *testing.T) {
 	cfg := Config{Prompt: "p", ProgramName: "local-ai chat"}
-	const want = "\n\nYou can register additional MCP servers from the command line: " +
+	want := "\n\nYou can register additional MCP servers from the command line: " +
 		"`local-ai chat mcp add <name> -- <command> [args...]` for a local server, or " +
 		"`local-ai chat mcp add <name> --url <url> [--transport http|sse]` for a remote one; " +
 		"`local-ai chat mcp list` and `local-ai chat mcp test <name>` show and verify them. " +
-		"Servers added this way become available on the next local-ai chat session."
+		"Servers added this way become available on the next local-ai chat session." +
+		"\n\n" + selfKnowledgeSuffix("local-ai chat")
 	if got := cfg.GetPrompt(); !strings.HasSuffix(got, want) {
 		t.Fatalf("the MCP paragraph does not read as intended:\n got  %q\n want %q",
 			got[max(0, len(got)-len(want)-40):], want)
@@ -66,7 +67,7 @@ func TestPromptDefaultsToNib(t *testing.T) {
 	if !strings.Contains(empty, "`nib mcp add <name> -- <command> [args...]`") {
 		t.Fatalf("standalone stopped naming nib:\n%s", empty)
 	}
-	if !strings.HasSuffix(empty, "become available on the next nib session.") {
+	if !strings.HasSuffix(empty, "read the documentation first, then answer.") {
 		t.Fatalf("standalone tail changed:\n%s", empty)
 	}
 }

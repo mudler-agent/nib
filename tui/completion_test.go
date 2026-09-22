@@ -21,8 +21,8 @@ func sampleRegistries() ([]types.CommandConfig, []types.Skill, []types.AgentType
 func TestBuildAndFilter(t *testing.T) {
 	cmds, skills, agents := sampleRegistries()
 	items := buildCompItems(cmds, skills, agents)
-	if len(items) != 15 {
-		t.Fatalf("want 15 items, got %d", len(items))
+	if len(items) != 16 {
+		t.Fatalf("want 16 items, got %d", len(items))
 	}
 	got := filterComp(items, "rev")
 	if len(got) != 2 {

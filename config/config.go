@@ -32,6 +32,12 @@ Current directory: {{.CurrentDirectory}}
 Current user: {{.CurrentUser}}
 `
 
+// ConfigPaths returns the list of config file paths to try, in order of priority.
+// Exported for /about.
+func ConfigPaths() []string {
+	return configPaths()
+}
+
 // configPaths returns the list of config file paths to try, in order of priority
 func configPaths() []string {
 	var paths []string

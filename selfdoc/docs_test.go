@@ -1,0 +1,37 @@
+package selfdoc
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestEmbeddedReadme(t *testing.T) {
+	got := EmbeddedReadme()
+	if len(got) == 0 {
+		t.Fatal("EmbeddedReadme() returned empty string")
+	}
+	if len(got) < 100 {
+		t.Fatalf("EmbeddedReadme() suspiciously short: %d bytes", len(got))
+	}
+}
+
+func TestEmbeddedReadmeContainsKeySections(t *testing.T) {
+	got := EmbeddedReadme()
+	checks := []string{
+		"## Quickstart",
+		"## Configuration",
+		"## Plugins",
+		"## Skills",
+	}
+	for _, want := range checks {
+		if !strings.Contains(got, want) {
+			t.Errorf("EmbeddedReadme() missing %q", want)
+		}
+	}
+}
+
+func TestEmbeddedReadmeNotZeroValue(t *testing.T) {
+	if EmbeddedReadme() == "" {
+		t.Fatal("embeddedReadme is empty — go:embed failed or README.md is missing")
+	}
+}

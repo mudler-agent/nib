@@ -46,7 +46,16 @@ func StartTransports(ctx context.Context, cfg types.Config, shellJobs *ShellJobs
 		}
 	}()
 
-	transports := []mcp.Transport{bashMCPServerClient, filesystemMCPServerClient, webMCPServerClient}
+	// Start the selfdoc MCP server (self_read tool). It exposes nib's
+	// embedded README.md so the agent can answer questions about itself.
+	selfDocServerTransport, selfDocClient := mcp.NewInMemoryTransports()
+	go func() {
+		if err := StartSelfDocMCPServer(ctx, selfDocServerTransport); err != nil && !errors.Is(err, context.Canceled) {
+			fmt.Fprintf(os.Stderr, "Selfdoc MCP server error: %v\n", err)
+		}
+	}()
+
+	transports := []mcp.Transport{bashMCPServerClient, filesystemMCPServerClient, webMCPServerClient, selfDocClient}
 
 	// Start the computer_use MCP server only when desktop control is armed
 	// (opt-in). It proxies to the cua-driver over stdio.
