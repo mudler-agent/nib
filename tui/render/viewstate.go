@@ -236,10 +236,14 @@ type ViewState struct {
 	Loading     bool
 	Status      string
 	Spinner     string
-	Reasoning   Reasoning
-	Dialogs     []Dialog
-	Help        string
-	Badges      string
+	// Speed is the live generation rate, already rendered, shown after the
+	// status on the working indicator line; "" when the model is not
+	// generating right now.
+	Speed     string
+	Reasoning Reasoning
+	Dialogs   []Dialog
+	Help      string
+	Badges    string
 
 	// HUD live telemetry for the footer.
 	Clock string

@@ -109,6 +109,9 @@ func (Base) Reasoning(v ViewState, w int) string {
 	}
 	var b strings.Builder
 	b.WriteString(Loader(v.Spinner, v.Status))
+	if v.Speed != "" {
+		b.WriteString(" " + theme.SepStyle.Render(theme.Sep) + " " + v.Speed)
+	}
 	b.WriteString("\n")
 	if strings.TrimSpace(v.Reasoning.Text) != "" {
 		r := v.Reasoning

@@ -79,3 +79,28 @@ func Fading(style lipgloss.Style, arriving float64) lipgloss.Style {
 	}
 	return style.Foreground(FadeInk(ink, arriving))
 }
+
+// sparkBars are the eighth-block bars a sparkline is drawn with.
+var sparkBars = []rune("▁▂▃▄▅▆▇█")
+
+// Sparkline draws values as a row of bars scaled to the largest of them.
+// It returns "" on a terminal that cannot draw eighth blocks (see
+// RestrictedGlyphs), or when every value is 0.
+func Sparkline(values []float64) string {
+	if RestrictedGlyphs() {
+		return ""
+	}
+	var top float64
+	for _, v := range values {
+		top = math.Max(top, v)
+	}
+	if top <= 0 {
+		return ""
+	}
+	out := make([]rune, len(values))
+	for i, v := range values {
+		n := int(math.Round(math.Max(0, v) / top * float64(len(sparkBars)-1)))
+		out[i] = sparkBars[n]
+	}
+	return string(out)
+}
