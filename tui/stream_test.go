@@ -657,7 +657,7 @@ func TestStaleBoundaryDoesNotRepaintPreviousThinking(t *testing.T) {
 	}
 
 	// Turn N+1's own trace still streams normally.
-	next, _ = cur.Update(reasoningEventsMsg{{kind: reasoningEventDelta, text: "turn two thinking", gen: 1}})
+	next, _ = cur.Update(reasoningEventsMsg{{kind: reasoningEventDelta, text: "turn two thinking", gen: cur.currentTurnGen()}})
 	if got := next.(Model).reasoning; got != "turn two thinking" {
 		t.Fatalf("reasoning = %q, want %q", got, "turn two thinking")
 	}
@@ -696,5 +696,36 @@ func TestRefreshContextTokensOnlyRunsDuringATurn(t *testing.T) {
 	m.refreshContextTokens()
 	if m.contextTokens != 4242 {
 		t.Fatalf("contextTokens = %d after a zero reading, want it untouched", m.contextTokens)
+	}
+}
+
+// TestBoundaryAfterTurnEndDoesNotReappearNextTurn is the window the check on
+// dispatch alone leaves open: turn N's step boundary is sent before the run
+// returns, but reaches Update AFTER responseMsg cleared the box and BEFORE
+// turn N+1 dispatches. The generation has not moved yet, so the boundary
+// looked current and wrote turn N's thinking into the hidden box, where the
+// next turn showed it until its own first token. responseMsg and parkMsg now
+// move the generation too, so an event stamped by the ended turn is dropped.
+func TestBoundaryAfterTurnEndDoesNotReappearNextTurn(t *testing.T) {
+	for name, end := range map[string]tea.Msg{
+		"response": responseMsg{content: "turn one reply"},
+		"park":     parkMsg{parked: true, reply: "turn one reply"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := Model{
+				viewport:  viewport.New(80, 20),
+				textarea:  textarea.New(),
+				width:     80,
+				loading:   true,
+				presenter: testPresenter(),
+				turnGen:   new(atomic.Int32),
+			}
+			next, _ := m.Update(end)
+			next, _ = next.(Model).Update(reasoningEventsMsg{{kind: reasoningEventBoundary, text: "turn one thinking", gen: 0}})
+			cur := next.(Model)
+			if cur.reasoning != "" {
+				t.Fatalf("reasoning = %q after the turn ended, want empty (shown again next turn)", cur.reasoning)
+			}
+		})
 	}
 }

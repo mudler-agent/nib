@@ -86,9 +86,9 @@ func (m *Model) appendMessage(msgs ...ChatMessage) {
 	m.messages = append(m.messages, msgs...)
 }
 
-// bumpTurnGen marks the start of a genuinely new turn dispatch (see
-// turnGen's doc) — called from sendMessage/sendWithAttachmentsCmd,
-// synchronously, before either returns its Cmd. A nil turnGen (a bare
+// bumpTurnGen marks a turn boundary (see turnGen's doc) — called from
+// sendMessage/sendWithAttachmentsCmd, synchronously, before either returns
+// its Cmd, and from responseMsg/parkMsg when a turn ends. A nil turnGen (a bare
 // Model{} literal in a test not exercising generations) makes this a no-op
 // rather than a panic.
 func (m Model) bumpTurnGen() {
@@ -264,13 +264,17 @@ type Model struct {
 	// initSession snapshot included — still shares, the same reason
 	// reasoningChan itself works as a hand-off despite value-receiver Update.
 	//
-	// Bumped exactly where a new turn actually dispatches: sendMessage and
+	// Bumped where a new turn dispatches: sendMessage and
 	// sendWithAttachmentsCmd (see bumpTurnGen), synchronously, before either
 	// returns its Cmd — so the bump happens-before that Cmd's goroutine ever
 	// runs, which is happens-before any OnStream call the NEW turn produces.
-	// Injecting into an already-live parked run (releaseQueueFront) does NOT
-	// bump it: that's the same underlying SendMessage call continuing, not a
-	// new turn.
+	// Also bumped where a turn ends (responseMsg, and parkMsg when the run
+	// parks): an event the turn sent just before it returned can reach
+	// Update after that reset, and with the old generation it would write
+	// the ended turn's thinking into the hidden box for the next turn to
+	// show. Injecting into a parked run (releaseQueueFront) does not bump
+	// it; the resumed run stamps its events after the park's bump, so they
+	// carry the current generation.
 	turnGen *atomic.Int32
 	// selfPaced counts active self-paced loops (for the footer). 0 or 1 in
 	// practice. Incremented on /loop <prompt>; reset to 0 by /loop stop. Note: it
@@ -807,7 +811,7 @@ func (m Model) initSession() tea.Cmd {
 				// racy against the exact problem this exists to prevent. This
 				// read happens-before SendMessage returns (same goroutine),
 				// which happens-before responseMsg reaches Update, which is
-				// the only place turnGen next moves — so a mismatch Update
+				// where turnGen next moves — so a mismatch Update
 				// later sees is real staleness, not a race on the read
 				// itself. See turnGen's doc.
 				gen := m.currentTurnGen()
@@ -1559,6 +1563,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = ""
 		m.reasoning = ""
 		m.reasoningResetPending = false
+		// The turn is over: move the generation now, not only at the next
+		// dispatch. A boundary or delta this turn sent just before it
+		// returned can still be in flight, and with the old generation it
+		// would pass the check in Update and write this turn's thinking
+		// into the hidden box, where the next turn would show it.
+		m.bumpTurnGen()
 		// Snapshot the in-progress streamed message's index, if any, BEFORE
 		// appendMessage below (blocked-attachment notices) has a chance to
 		// clear streamingActive as its own side effect. append only grows
@@ -1676,6 +1686,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.interruptArmed = false
 			m.reasoning = ""
 			m.reasoningResetPending = false
+			// Same as responseMsg: events this step sent before it parked
+			// must not land in the box after this reset.
+			m.bumpTurnGen()
 			if m.isWorking() {
 				m.status = "Working in the background — type to add a follow-up"
 			} else {
