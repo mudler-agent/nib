@@ -523,7 +523,7 @@ func TestStreamingAssistantContentRendersPlainUntilFinalized(t *testing.T) {
 	}
 
 	next, _ := m.Update(content("**bold"))
-	mid := next.(Model)
+	mid := drainStreamReveal(t, next.(Model))
 	if out := mid.viewport.View(); !strings.Contains(out, "**bold") {
 		t.Fatalf("mid-stream viewport does not show raw markdown markers: %q", out)
 	}

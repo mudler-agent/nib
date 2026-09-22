@@ -133,6 +133,7 @@ func (m *Model) appendStreamedContent(delta string) {
 	}
 	m.appendMessage(ChatMessage{Role: "assistant", Content: delta})
 	m.streamingActive = true
+	m.streamShown = 0
 }
 
 // Model represents the TUI state
@@ -231,6 +232,11 @@ type Model struct {
 	// doc for why one can race past a turn boundary) could mutate an
 	// unrelated message instead of being safely dropped.
 	streamingActive bool
+	// streamShown is how many bytes of the streaming tail are drawn so far
+	// (see typewriter.go). streamTicking is true while a streamTickMsg is
+	// pending, so only one reveal tick is in flight.
+	streamShown   int
+	streamTicking bool
 	// wakeupGen invalidates pending reminder/self-paced wake-up ticks: a fired
 	// tea.Tick is honored only if its captured gen still matches. Bumped by
 	// /loop stop to cancel a self-paced loop. Poll wake-ups ride pollGen instead.
@@ -1909,6 +1915,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.appendStreamedContent(ev.text)
 			}
 		}
+		if cmd := m.startStreamReveal(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 		m.updateViewport()
 		// Continue listening for more reasoning events
 		cmds = append(cmds, m.listenReasoningEvents())
@@ -2015,6 +2024,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.releaseQueueFront()
 		// Continue listening for more tool results
 		cmds = append(cmds, m.listenToolResult())
+
+	case streamTickMsg:
+		m.streamTicking = false
+		if m.streamBacklog() {
+			m.advanceStreamReveal()
+			m.updateViewport()
+			if cmd := m.startStreamReveal(); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
 
 	case spinner.TickMsg:
 		m.spinner, cmd = m.spinner.Update(msg)
@@ -3357,7 +3376,7 @@ func (m *Model) updateViewport() {
 				// the turn ends and this message is reconciled/finalized
 				// (responseMsg/parkMsg), at which point it is no longer the
 				// streaming tail and gets the full glamour pass below.
-				rendered = render.Wrap(msg.Content, mdWidth)
+				rendered = render.Wrap(m.visibleStreamContent(msg.Content), mdWidth)
 			} else {
 				rendered = renderMarkdownWith(m.markdownFor(mdWidth), msg.Content, mdWidth)
 			}
