@@ -85,9 +85,10 @@ func TestReasoningDeltaTailsWhenCollapsed(t *testing.T) {
 
 // TestReasoningBoundaryResetsStreamAccumulation is the precedence test: a
 // step-boundary OnReasoning write is authoritative for the step that just
-// ended, but it must NOT become a prefix that the next step's streamed
-// deltas get appended onto — otherwise every step after the first would
-// duplicate the previous step's complete text.
+// ended — it is what the step folds into the transcript as — but it must NOT
+// become a prefix that the next step's streamed deltas get appended onto —
+// otherwise every step after the first would duplicate the previous step's
+// complete text.
 func TestReasoningBoundaryResetsStreamAccumulation(t *testing.T) {
 	m := Model{
 		viewport:  viewport.New(80, 20),
@@ -106,8 +107,11 @@ func TestReasoningBoundaryResetsStreamAccumulation(t *testing.T) {
 
 	// Step 1 ends: OnReasoning fires with the complete, authoritative block.
 	next, _ = next.(Model).Update(boundary("STEP1-COMPLETE"))
-	if got := next.(Model).reasoning; got != "STEP1-COMPLETE" {
-		t.Fatalf("post-boundary reasoning = %q, want %q", got, "STEP1-COMPLETE")
+	if got := thoughts(next.(Model)); len(got) != 1 || got[0] != "STEP1-COMPLETE" {
+		t.Fatalf("post-boundary thoughts = %q, want [STEP1-COMPLETE]", got)
+	}
+	if got := next.(Model).reasoning; got != "" {
+		t.Fatalf("post-boundary live box = %q, want empty (folded into the transcript)", got)
 	}
 	if !next.(Model).reasoningResetPending {
 		t.Fatal("boundary must arm reasoningResetPending for the next step's first delta")
@@ -125,12 +129,26 @@ func TestReasoningBoundaryResetsStreamAccumulation(t *testing.T) {
 	if got := next.(Model).reasoning; got != "xyz" {
 		t.Fatalf("second delta after boundary = %q, want %q", got, "xyz")
 	}
+	if got := thoughts(next.(Model)); len(got) != 1 {
+		t.Fatalf("thoughts = %q, want step 2 still live, not folded", got)
+	}
+}
+
+// thoughts returns the folded thought entries in the transcript, in order.
+func thoughts(m Model) []string {
+	var out []string
+	for _, msg := range m.messages {
+		if msg.Role == "thought" {
+			out = append(out, msg.Content)
+		}
+	}
+	return out
 }
 
 // TestConsecutiveBoundariesWithNoDeltaBetween: two step-boundary events with
 // no delta in between (e.g. two tool-selection steps in a row that streamed
-// no reasoning) must leave the SECOND boundary's text showing — not a mix of
-// both, and not stuck on the first. Delivered as one batch, exactly as
+// no reasoning) fold into two separate thoughts, in order — not a mix of
+// both, and not the second overwriting the first. Delivered as one batch, exactly as
 // listenReasoningEvents would hand them to Update after draining two queued
 // boundary events.
 func TestConsecutiveBoundariesWithNoDeltaBetween(t *testing.T) {
@@ -147,9 +165,8 @@ func TestConsecutiveBoundariesWithNoDeltaBetween(t *testing.T) {
 	}
 	next, _ := m.Update(batch)
 
-	got := next.(Model).reasoning
-	if got != "STEP2-COMPLETE" {
-		t.Fatalf("reasoning = %q, want %q (the later boundary must win, not a mix of both)", got, "STEP2-COMPLETE")
+	if got := thoughts(next.(Model)); len(got) != 2 || got[0] != "STEP1-COMPLETE" || got[1] != "STEP2-COMPLETE" {
+		t.Fatalf("thoughts = %q, want [STEP1-COMPLETE STEP2-COMPLETE]", got)
 	}
 	// A delta right after must start fresh from STEP2's text, not append.
 	next2, _ := next.(Model).Update(delta("more"))
@@ -509,12 +526,12 @@ func TestParkMsgReconcilesStreamedReplyWithoutDuplicating(t *testing.T) {
 	}
 }
 
-// TestStreamingAssistantContentRendersPlainUntilFinalized: partial markdown
-// (an unclosed bold run here) must not be pushed through glamour mid-stream —
-// re-rendering an incomplete document can render wrong — so the raw markers
-// should still be visible in the viewport while streaming. Once responseMsg
-// finalizes the reply, the SAME text renders as real markdown (markers gone).
-func TestStreamingAssistantContentRendersPlainUntilFinalized(t *testing.T) {
+// TestStreamingUnclosedMarkdownRendersOnceClosed: an unclosed bold run is not
+// markdown yet, so while it streams its markers stay visible as text. Once
+// responseMsg finalizes the reply with the closed run, the markers are gone.
+// (Complete blocks render as markdown while streaming — see
+// TestStreamingRenderMatchesFinalRender.)
+func TestStreamingUnclosedMarkdownRendersOnceClosed(t *testing.T) {
 	m := Model{
 		viewport:  viewport.New(80, 20),
 		width:     80,
@@ -523,7 +540,7 @@ func TestStreamingAssistantContentRendersPlainUntilFinalized(t *testing.T) {
 	}
 
 	next, _ := m.Update(content("**bold"))
-	mid := next.(Model)
+	mid := drainStreamReveal(t, next.(Model))
 	if out := mid.viewport.View(); !strings.Contains(out, "**bold") {
 		t.Fatalf("mid-stream viewport does not show raw markdown markers: %q", out)
 	}
@@ -657,7 +674,7 @@ func TestStaleBoundaryDoesNotRepaintPreviousThinking(t *testing.T) {
 	}
 
 	// Turn N+1's own trace still streams normally.
-	next, _ = cur.Update(reasoningEventsMsg{{kind: reasoningEventDelta, text: "turn two thinking", gen: 1}})
+	next, _ = cur.Update(reasoningEventsMsg{{kind: reasoningEventDelta, text: "turn two thinking", gen: cur.currentTurnGen()}})
 	if got := next.(Model).reasoning; got != "turn two thinking" {
 		t.Fatalf("reasoning = %q, want %q", got, "turn two thinking")
 	}
@@ -696,5 +713,36 @@ func TestRefreshContextTokensOnlyRunsDuringATurn(t *testing.T) {
 	m.refreshContextTokens()
 	if m.contextTokens != 4242 {
 		t.Fatalf("contextTokens = %d after a zero reading, want it untouched", m.contextTokens)
+	}
+}
+
+// TestBoundaryAfterTurnEndDoesNotReappearNextTurn is the window the check on
+// dispatch alone leaves open: turn N's step boundary is sent before the run
+// returns, but reaches Update AFTER responseMsg cleared the box and BEFORE
+// turn N+1 dispatches. The generation has not moved yet, so the boundary
+// looked current and wrote turn N's thinking into the hidden box, where the
+// next turn showed it until its own first token. responseMsg and parkMsg now
+// move the generation too, so an event stamped by the ended turn is dropped.
+func TestBoundaryAfterTurnEndDoesNotReappearNextTurn(t *testing.T) {
+	for name, end := range map[string]tea.Msg{
+		"response": responseMsg{content: "turn one reply"},
+		"park":     parkMsg{parked: true, reply: "turn one reply"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := Model{
+				viewport:  viewport.New(80, 20),
+				textarea:  textarea.New(),
+				width:     80,
+				loading:   true,
+				presenter: testPresenter(),
+				turnGen:   new(atomic.Int32),
+			}
+			next, _ := m.Update(end)
+			next, _ = next.(Model).Update(reasoningEventsMsg{{kind: reasoningEventBoundary, text: "turn one thinking", gen: 0}})
+			cur := next.(Model)
+			if cur.reasoning != "" {
+				t.Fatalf("reasoning = %q after the turn ended, want empty (shown again next turn)", cur.reasoning)
+			}
+		})
 	}
 }

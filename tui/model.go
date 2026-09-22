@@ -56,6 +56,9 @@ type ChatMessage struct {
 	Meta   string
 	Status render.ToolStatus
 	Diff   *textdiff.Diff
+	// arrived is when the entry joined the transcript; its chrome fades in
+	// from it (see arriving). Zero means drawn at full ink.
+	arrived time.Time
 }
 
 type sessionStore interface {
@@ -83,12 +86,18 @@ func (c ChatMessage) bodyless() bool {
 // other append here means that tail is no longer a live streaming target.
 func (m *Model) appendMessage(msgs ...ChatMessage) {
 	m.streamingActive = false
+	now := time.Now()
+	for i := range msgs {
+		if msgs[i].arrived.IsZero() {
+			msgs[i].arrived = now
+		}
+	}
 	m.messages = append(m.messages, msgs...)
 }
 
-// bumpTurnGen marks the start of a genuinely new turn dispatch (see
-// turnGen's doc) — called from sendMessage/sendWithAttachmentsCmd,
-// synchronously, before either returns its Cmd. A nil turnGen (a bare
+// bumpTurnGen marks a turn boundary (see turnGen's doc) — called from
+// sendMessage/sendWithAttachmentsCmd, synchronously, before either returns
+// its Cmd, and from responseMsg/parkMsg when a turn ends. A nil turnGen (a bare
 // Model{} literal in a test not exercising generations) makes this a no-op
 // rather than a panic.
 func (m Model) bumpTurnGen() {
@@ -133,6 +142,9 @@ func (m *Model) appendStreamedContent(delta string) {
 	}
 	m.appendMessage(ChatMessage{Role: "assistant", Content: delta})
 	m.streamingActive = true
+	m.streamShown = 0
+	m.streamStart = time.Now()
+	m.revealIdx, m.revealText = 0, ""
 }
 
 // Model represents the TUI state
@@ -231,6 +243,25 @@ type Model struct {
 	// doc for why one can race past a turn boundary) could mutate an
 	// unrelated message instead of being safely dropped.
 	streamingActive bool
+	// streamShown is how many bytes of the revealed reply are drawn so far
+	// (see typewriter.go). anim is the clock that drives the reveal and the
+	// fade-ins; updateViewport starts it when a frame has something moving.
+	streamShown int
+	anim        *animClock
+	// revealIdx is the index plus one of a reply still being revealed after
+	// its turn ended (0 for none), and revealText the text it was revealed
+	// with: a transcript rebuild that changed the entry stops the reveal.
+	revealIdx  int
+	revealText string
+	// streamStart is when the streaming reply began; the cursor's pulse is
+	// timed from it.
+	streamStart time.Time
+	// stepThought is the index plus one of the thought entry the current
+	// step's reasoning folded into (see thought.go), 0 for none.
+	// reasoningSince is when the live trace got its first streamed text,
+	// which times the "thought for 4s" summary.
+	stepThought    int
+	reasoningSince time.Time
 	// wakeupGen invalidates pending reminder/self-paced wake-up ticks: a fired
 	// tea.Tick is honored only if its captured gen still matches. Bumped by
 	// /loop stop to cancel a self-paced loop. Poll wake-ups ride pollGen instead.
@@ -258,13 +289,17 @@ type Model struct {
 	// initSession snapshot included — still shares, the same reason
 	// reasoningChan itself works as a hand-off despite value-receiver Update.
 	//
-	// Bumped exactly where a new turn actually dispatches: sendMessage and
+	// Bumped where a new turn dispatches: sendMessage and
 	// sendWithAttachmentsCmd (see bumpTurnGen), synchronously, before either
 	// returns its Cmd — so the bump happens-before that Cmd's goroutine ever
 	// runs, which is happens-before any OnStream call the NEW turn produces.
-	// Injecting into an already-live parked run (releaseQueueFront) does NOT
-	// bump it: that's the same underlying SendMessage call continuing, not a
-	// new turn.
+	// Also bumped where a turn ends (responseMsg, and parkMsg when the run
+	// parks): an event the turn sent just before it returned can reach
+	// Update after that reset, and with the old generation it would write
+	// the ended turn's thinking into the hidden box for the next turn to
+	// show. Injecting into a parked run (releaseQueueFront) does not bump
+	// it; the resumed run stamps its events after the park's bump, so they
+	// carry the current generation.
 	turnGen *atomic.Int32
 	// selfPaced counts active self-paced loops (for the footer). 0 or 1 in
 	// practice. Incremented on /loop <prompt>; reset to 0 by /loop stop. Note: it
@@ -448,6 +483,10 @@ type Model struct {
 	// width-bound and expensive to build). At most a couple of distinct
 	// widths exist in practice (one per message-prefix width).
 	mdRenderers map[int]*glamour.TermRenderer
+	// mdCache holds rendered markdown by width and source (see
+	// renderMarkdown). The transcript is redrawn on every spinner and reveal
+	// tick, and without it each frame ran glamour on every assistant message.
+	mdCache map[mdKey]string
 
 	// Channels for async communication with callbacks
 	statusChan       chan string
@@ -677,6 +716,7 @@ func NewModel(ctx context.Context, cfg types.Config, height int, shellJobs *wizm
 		footerCache:        &footerCache{},
 		messages:           []ChatMessage{},
 		ctx:                ctx,
+		anim:               newAnimClock(ctx),
 		cancel:             cancel,
 		maxHeight:          maxH,
 		transports:         transports,
@@ -698,6 +738,7 @@ func NewModel(ctx context.Context, cfg types.Config, height int, shellJobs *wizm
 		compactChan:        make(chan [2]int, 4),
 		pruneChan:          make(chan [2]int, 4),
 		mdRenderers:        make(map[int]*glamour.TermRenderer),
+		mdCache:            make(map[mdKey]string),
 		loops:              loop.NewRegistry(),
 		loopsPath:          filepath.Join(".nib", "loops.json"),
 		// Rooted at the per-user BaseDir (~/.config/nib by default, the same
@@ -747,7 +788,7 @@ func (m Model) Init() tea.Cmd {
 	if m.boot != nil {
 		cmds = append(cmds, m.boot.nextBootCmd())
 	}
-	cmds = append(cmds, m.hudTick())
+	cmds = append(cmds, m.hudTick(), m.listenAnim())
 	return tea.Batch(cmds...)
 }
 
@@ -801,7 +842,7 @@ func (m Model) initSession() tea.Cmd {
 				// racy against the exact problem this exists to prevent. This
 				// read happens-before SendMessage returns (same goroutine),
 				// which happens-before responseMsg reaches Update, which is
-				// the only place turnGen next moves — so a mismatch Update
+				// where turnGen next moves — so a mismatch Update
 				// later sees is real staleness, not a race on the read
 				// itself. See turnGen's doc.
 				gen := m.currentTurnGen()
@@ -1551,8 +1592,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.parked = false
 		m.interruptArmed = false
 		m.status = ""
-		m.reasoning = ""
+		m.endThoughtStep()
 		m.reasoningResetPending = false
+		// The turn is over: move the generation now, not only at the next
+		// dispatch. A boundary or delta this turn sent just before it
+		// returned can still be in flight, and with the old generation it
+		// would pass the check in Update and write this turn's thinking
+		// into the hidden box, where the next turn would show it.
+		m.bumpTurnGen()
 		// Snapshot the in-progress streamed message's index, if any, BEFORE
 		// appendMessage below (blocked-attachment notices) has a chance to
 		// clear streamingActive as its own side effect. append only grows
@@ -1596,11 +1643,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// authoritative final text — self-healing against any dropped
 				// delta — instead of appending it a second time.
 				m.messages[streamIdx].Content = msg.content
+				m.revealAfterTurn(streamIdx, true)
 			case content != m.lastParkedReply:
 				// Skip the final reply when it duplicates the text already surfaced
 				// at the park gate (a run that parked and returned with the same
 				// answer, with nothing streamed since).
 				m.appendMessage(ChatMessage{Role: "assistant", Content: msg.content})
+				m.revealAfterTurn(len(m.messages)-1, false)
 			}
 			// A reply arrived (even one that duplicates the text already
 			// surfaced at the park gate): the run recovered, so drop any
@@ -1661,15 +1710,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case streamIdx >= 0 && reply != "":
 				m.messages[streamIdx].Content = reply
 				m.lastParkedReply = reply
+				m.revealAfterTurn(streamIdx, true)
 			case streamIdx < 0 && reply != "" && reply != m.lastParkedReply:
 				m.appendMessage(ChatMessage{Role: "assistant", Content: reply})
 				m.lastParkedReply = reply
+				m.revealAfterTurn(len(m.messages)-1, false)
 			}
 			m.parked = true
 			m.loading = false
 			m.interruptArmed = false
-			m.reasoning = ""
+			m.endThoughtStep()
 			m.reasoningResetPending = false
+			// Same as responseMsg: events this step sent before it parked
+			// must not land in the box after this reset.
+			m.bumpTurnGen()
 			if m.isWorking() {
 				m.status = "Working in the background — type to add a follow-up"
 			} else {
@@ -1877,11 +1931,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if ev.gen != m.currentTurnGen() {
 					continue
 				}
-				m.reasoning = ev.text
 				// This step just ended: its complete text is authoritative,
-				// but the NEXT step's streamed deltas are a fresh trace, not
-				// a continuation of this one. Mark the next delta to start
-				// over rather than append (see reasoningResetPending's doc).
+				// so it replaces what streamed, and the step folds into the
+				// transcript (see thought.go). The NEXT step's streamed
+				// deltas are a fresh trace, not a continuation of this one.
+				// Mark the next delta to start over rather than append (see
+				// reasoningResetPending's doc).
+				if th := m.stepThoughtEntry(); th != nil {
+					th.Content = ev.text
+					m.reasoning = ""
+				} else {
+					m.reasoning = ev.text
+				}
+				m.endThoughtStep()
 				m.reasoningResetPending = true
 			case reasoningEventDelta:
 				// A delta stamped with an older generation than the one
@@ -1896,6 +1958,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.reasoning = ""
 					m.reasoningResetPending = false
 				}
+				// More thinking after this step's answer already started:
+				// it belongs to the entry the step folded into.
+				if th := m.stepThoughtEntry(); th != nil {
+					th.Content += ev.text
+					continue
+				}
+				if m.reasoning == "" {
+					m.reasoningSince = time.Now()
+				}
 				m.reasoning += ev.text
 			case reasoningEventContentDelta:
 				// Same staleness check as reasoningEventDelta above, and for
@@ -1905,6 +1976,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// appendStreamedContent's doc and the orphan-bubble test).
 				if ev.gen != m.currentTurnGen() {
 					continue
+				}
+				// The answer starts: the thinking that led to it folds
+				// into the transcript, above the reply.
+				if m.loading && ev.text != "" {
+					m.foldReasoning()
 				}
 				m.appendStreamedContent(ev.text)
 			}
@@ -2015,6 +2091,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.releaseQueueFront()
 		// Continue listening for more tool results
 		cmds = append(cmds, m.listenToolResult())
+
+	case animTickMsg:
+		m.advanceAnimation()
+		m.updateViewport()
+		cmds = append(cmds, m.listenAnim())
 
 	case spinner.TickMsg:
 		m.spinner, cmd = m.spinner.Update(msg)
@@ -3041,13 +3122,18 @@ func (m *Model) sameAgentMsg(idx int, agentID string) bool {
 // recorded earlier in the session should not keep showing.
 func (m *Model) dropTransientErrors() {
 	kept := m.messages[:0]
-	for _, msg := range m.messages {
+	reveal := m.revealIdx
+	for i, msg := range m.messages {
 		if msg.Role == "error" && msg.Transient {
+			if i < m.revealIdx-1 {
+				reveal-- // the revealed reply moves up with the rest
+			}
 			continue
 		}
 		kept = append(kept, msg)
 	}
 	m.messages = kept
+	m.revealIdx = reveal
 }
 
 // updateViewportFollow re-renders and pins the viewport to the bottom. Use it
@@ -3340,7 +3426,7 @@ func (m *Model) updateViewport() {
 
 		switch msg.Role {
 		case "user":
-			sb.WriteString(presenter.Message(render.Message{Role: render.RoleUser, Content: msg.Content}, prevRole, contentWidth))
+			sb.WriteString(presenter.Message(render.Message{Role: render.RoleUser, Content: msg.Content, Arriving: m.arriving(msg)}, prevRole, contentWidth))
 			prevRole = render.RoleUser
 		case "assistant":
 			// Markdown is width-cached model state (glamour), not something a
@@ -3348,24 +3434,20 @@ func (m *Model) updateViewport() {
 			// prefix will leave for content, matching its own prefix exactly.
 			mdWidth := presenter.ContentWidth(render.RoleAssistant, contentWidth)
 			var rendered string
-			if m.streamingActive && i == len(m.messages)-1 {
-				// This message is still receiving live content deltas.
-				// Re-running glamour on every delta would re-parse an
-				// incomplete document each frame (wasted work) and can render
-				// visibly wrong mid-token (an unclosed code fence, a
-				// half-written list) — so show the growing text plain until
-				// the turn ends and this message is reconciled/finalized
-				// (responseMsg/parkMsg), at which point it is no longer the
-				// streaming tail and gets the full glamour pass below.
-				rendered = render.Wrap(msg.Content, mdWidth)
+			if target, ok := m.revealTarget(); ok && i == target {
+				// This message is still receiving live content deltas:
+				// render it block by block, so it looks the same as the
+				// final glamour pass below and nothing jumps when the turn
+				// ends (see renderStreaming).
+				rendered = m.renderStreaming(m.visibleStreamContent(msg.Content), mdWidth)
 			} else {
-				rendered = renderMarkdownWith(m.markdownFor(mdWidth), msg.Content, mdWidth)
+				rendered = m.renderMarkdown(msg.Content, mdWidth)
 			}
-			sb.WriteString(presenter.Message(render.Message{Role: render.RoleAssistant, Content: rendered}, prevRole, contentWidth))
+			sb.WriteString(presenter.Message(render.Message{Role: render.RoleAssistant, Content: rendered, Arriving: m.arriving(msg)}, prevRole, contentWidth))
 			prevRole = render.RoleAssistant
 		case "agent":
 			mdWidth := presenter.ContentWidth(render.RoleAgent, contentWidth)
-			rendered := renderMarkdownWith(m.markdownFor(mdWidth), msg.Content, mdWidth)
+			rendered := m.renderMarkdown(msg.Content, mdWidth)
 			sb.WriteString(presenter.Message(render.Message{
 				Role:    render.RoleAgent,
 				Content: rendered,
@@ -3394,8 +3476,15 @@ func (m *Model) updateViewport() {
 			}, prevRole, contentWidth))
 			prevRole = render.RoleTool
 		case "error":
-			sb.WriteString(presenter.Message(render.Message{Role: render.RoleError, Content: msg.Content}, prevRole, contentWidth))
+			sb.WriteString(presenter.Message(render.Message{Role: render.RoleError, Content: msg.Content, Arriving: m.arriving(msg)}, prevRole, contentWidth))
 			prevRole = render.RoleError
+		case "thought":
+			// ctrl+r expands the live box and the folded thoughts together:
+			// one switch for "show the thinking in full".
+			sb.WriteString(render.Thought(msg.Content, msg.Meta, !m.reasoningCollapsed, m.arriving(msg), contentWidth))
+			// Not a user or assistant entry: the reply after it keeps its
+			// label on inline, as after a tool block.
+			prevRole = render.RoleAgent
 		}
 	}
 
@@ -3440,6 +3529,9 @@ func (m *Model) updateViewport() {
 	} else {
 		m.viewport.SetYOffset(offset)
 	}
+	// This frame has a reveal or a fade in progress: keep the clock running
+	// for the next one (it stops itself once a frame has nothing moving).
+	m.anim.want(m.animating())
 }
 
 // View renders the TUI.

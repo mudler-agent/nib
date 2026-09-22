@@ -66,6 +66,7 @@ var (
 	Check          = "✓"  // tool call succeeded
 	DiffGap        = "⋯"  // elided unchanged lines between two diff hunks
 	NoticeGlyph    = "∙"  // housekeeping notice (context pruned / compacted)
+	StreamCursor   = "▍"  // end of a reply that is still streaming
 
 	// RadioOn/RadioOff mark a single-select ask_user option; CheckOn/CheckOff
 	// mark a multi-select one. Cursor marks whichever row is highlighted,
@@ -76,6 +77,9 @@ var (
 	CheckOn  = "◼"
 	CheckOff = "◻"
 	Cursor   = "▸"
+	// Folded and Unfolded mark a folded thought line that ctrl+r expands.
+	Folded   = "▸"
+	Unfolded = "▾"
 )
 
 // spinnerFrames animates the working indicator. Braille cells read as a smooth
@@ -132,9 +136,11 @@ func applyGlyphProfile() {
 		Check = "ok"
 		DiffGap = "..."
 		NoticeGlyph = "-"
+		StreamCursor = "_"
 		RadioOn, RadioOff = "(*)", "( )"
 		CheckOn, CheckOff = "[x]", "[ ]"
 		Cursor = ">"
+		Folded, Unfolded = ">", "v"
 		return
 	}
 	PromptGlyph, ApprovalGutter, SubAgent = "›", "▏", "↳"
@@ -150,9 +156,11 @@ func applyGlyphProfile() {
 	Check = "✓"
 	DiffGap = "⋯"
 	NoticeGlyph = "∙"
+	StreamCursor = "▍"
 	RadioOn, RadioOff = "◉", "○"
 	CheckOn, CheckOff = "◼", "◻"
 	Cursor = "▸"
+	Folded, Unfolded = "▸", "▾"
 }
 
 // Styles. Bold is reserved for the brand mark and the active approval keys.

@@ -165,6 +165,11 @@ const (
 	ReasoningExpand   = "ctrl+r expand"
 	ReasoningCollapse = "ctrl+r collapse"
 
+	// Folded thought copy: the dim line the live reasoning box leaves in the
+	// transcript once the answer starts (see ThoughtSummary).
+	ThoughtLabel = "thought"
+	ThoughtFor   = "thought for "
+
 	// ask_user dialog copy (Phase 3 Task 11). HelpAsk is the footer help line
 	// while a question is pending; the AskHint* lines sit beneath the option
 	// list itself and, unlike HelpAsk, always mention the free-text escape
