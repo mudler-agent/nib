@@ -35,9 +35,14 @@ const (
 // it at a two-cell indent — the diff when the message carries one, otherwise
 // the text output. It is the same on both surfaces, so it lives here rather
 // than in each presenter.
+//
+// A block that is still arriving (m.Arriving) fades its inks in: the mark,
+// the dim detail and meta, and the dim output. The verb and a failure's
+// output use the terminal's own foreground, which has no ink to fade from,
+// and a diff keeps its tints, which carry its meaning.
 func ToolBlock(m Message, w int) string {
 	var b strings.Builder
-	b.WriteString(ToolHeader(m.Label, m.Meta, m.AgentID, m.Status, w))
+	b.WriteString(toolHeader(m.Label, m.Meta, m.AgentID, m.Status, m.Arriving, w))
 	b.WriteString("\n")
 	bodyW := w - lipgloss.Width(toolIndent)
 	if m.Diff != nil && len(m.Diff.Lines) > 0 {
@@ -49,7 +54,7 @@ func ToolBlock(m Message, w int) string {
 	if strings.TrimSpace(m.Content) == "" {
 		return b.String()
 	}
-	style := theme.ToolOutput
+	style := theme.Fading(theme.ToolOutput, m.Arriving)
 	if m.Status == ToolStatusFailed {
 		// A failure's output is what the user needs to read next; do not dim it.
 		style = lipgloss.NewStyle()
@@ -68,18 +73,24 @@ func ToolBlock(m Message, w int) string {
 // instead dims the "$" and shows the command itself at full strength, since
 // the command is what the user scans for.
 func ToolHeader(label, meta, agentID string, status ToolStatus, w int) string {
+	return toolHeader(label, meta, agentID, status, 0, w)
+}
+
+// toolHeader is ToolHeader for a block that is arriving (see ToolBlock).
+func toolHeader(label, meta, agentID string, status ToolStatus, arriving float64, w int) string {
+	fade := func(s lipgloss.Style) lipgloss.Style { return theme.Fading(s, arriving) }
 	var mark string
 	switch status {
 	case ToolStatusOK:
-		mark = theme.ToolOK.Render(theme.Check)
+		mark = fade(theme.ToolOK).Render(theme.Check)
 	case ToolStatusFailed:
-		mark = theme.ToolFailed.Render(theme.Cross)
+		mark = fade(theme.ToolFailed).Render(theme.Cross)
 	default:
-		mark = theme.Subtle.Render(theme.Sep)
+		mark = fade(theme.Subtle).Render(theme.Sep)
 	}
 	head := mark + " "
 	if agentID != "" {
-		head += theme.Subtle.Render(theme.SubAgent+" "+ShortID(agentID)) + theme.SepStyle.Render(" "+theme.Sep+" ")
+		head += fade(theme.Subtle).Render(theme.SubAgent+" "+ShortID(agentID)) + theme.SepStyle.Render(" "+theme.Sep+" ")
 	}
 	room := w - lipgloss.Width(head)
 	if meta != "" {
@@ -89,16 +100,16 @@ func ToolHeader(label, meta, agentID string, status ToolStatus, w int) string {
 
 	switch {
 	case strings.HasPrefix(label, "$ "):
-		head += theme.ToolDetail.Render("$") + " " + theme.ToolVerb.Render(label[2:])
+		head += fade(theme.ToolDetail).Render("$") + " " + theme.ToolVerb.Render(label[2:])
 	default:
 		verb, rest, _ := strings.Cut(label, " ")
 		head += theme.ToolVerb.Render(verb)
 		if rest != "" {
-			head += " " + theme.ToolDetail.Render(rest)
+			head += " " + fade(theme.ToolDetail).Render(rest)
 		}
 	}
 	if meta != "" {
-		head += "  " + theme.Meta.Render(meta)
+		head += "  " + fade(theme.Meta).Render(meta)
 	}
 	return head
 }

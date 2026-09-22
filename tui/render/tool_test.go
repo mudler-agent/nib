@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 
 	"github.com/mudler/nib/internal/textdiff"
 	"github.com/mudler/nib/theme"
@@ -128,5 +129,28 @@ func TestTruncateLeft(t *testing.T) {
 	}
 	if got := truncateLeft("~/work", 10); got != "~/work" {
 		t.Fatalf("short path changed: %q", got)
+	}
+}
+
+// A tool block that is arriving draws its inks faded, at the same text and
+// width; once in (Arriving 0) it is exactly the settled block.
+func TestToolBlockFadesIn(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	m := Message{Role: RoleTool, Label: "read main.go", Meta: "11 lines", Status: ToolStatusOK, Content: "package main"}
+	settled := ToolBlock(m, 40)
+	m.Arriving = 1
+	arriving := ToolBlock(m, 40)
+	if arriving == settled {
+		t.Fatal("an arriving tool block is drawn at full ink")
+	}
+	if ansi.Strip(arriving) != ansi.Strip(settled) {
+		t.Fatalf("fading changed the text:\n%q\n%q", ansi.Strip(arriving), ansi.Strip(settled))
+	}
+	m.Arriving = 0
+	if got := ToolBlock(m, 40); got != settled {
+		t.Fatal("a block that is fully in differs from the settled block")
 	}
 }
