@@ -62,6 +62,24 @@ func contentPrefix(role render.Role) string {
 	return ""
 }
 
+// fadedPrefix is contentPrefix for an entry that is still arriving: the same
+// chrome, at the same width, in inks faded by arriving (see theme.Fading).
+func fadedPrefix(role render.Role, arriving float64) string {
+	if arriving <= 0 {
+		return contentPrefix(role)
+	}
+	sep := " " + theme.Fading(theme.SepStyle, arriving).Render(theme.Sep) + " "
+	switch role {
+	case render.RoleUser:
+		return theme.Fading(theme.LabelYou, arriving).Render(theme.LabelYouText) + sep
+	case render.RoleAssistant:
+		return theme.Fading(theme.LabelNib, arriving).Render(theme.BrandName) + sep
+	case render.RoleError:
+		return theme.Fading(theme.Error, arriving).Render(theme.Cross) + " "
+	}
+	return contentPrefix(role)
+}
+
 // messagePrefix returns the prefix Message writes for role, given the
 // previously rendered role. Repeating "you ·"/"nib ·" down a run of
 // consecutive same-role messages costs six columns on every line and tells
@@ -78,8 +96,8 @@ func contentPrefix(role render.Role) string {
 // RoleAgent/RoleTool/RoleError keep their own unconditional chrome (the
 // sub-agent marker, the tool body indent, the error cross) unchanged by this
 // task.
-func messagePrefix(role, prev render.Role) string {
-	label := contentPrefix(role)
+func messagePrefix(role, prev render.Role, arriving float64) string {
+	label := fadedPrefix(role, arriving)
 	if prev == role && (role == render.RoleUser || role == render.RoleAssistant) {
 		return strings.Repeat(" ", lipgloss.Width(label))
 	}
@@ -110,12 +128,12 @@ func (presenter) Message(m render.Message, prev render.Role, w int) string {
 	var body string
 	switch m.Role {
 	case render.RoleUser:
-		prefix := messagePrefix(render.RoleUser, prev)
+		prefix := messagePrefix(render.RoleUser, prev, m.Arriving)
 		wrapped := render.Wrap(m.Content, w-lipgloss.Width(prefix))
 		body = render.Prefixed(prefix, wrapped)
 
 	case render.RoleAssistant:
-		body = render.Prefixed(messagePrefix(render.RoleAssistant, prev), m.Content)
+		body = render.Prefixed(messagePrefix(render.RoleAssistant, prev, m.Arriving), m.Content)
 
 	case render.RoleAgent:
 		body = render.Prefixed(agentPrefix(m.AgentID), render.StyledLines(theme.Subtle, m.Content))
@@ -133,7 +151,7 @@ func (presenter) Message(m render.Message, prev render.Role, w int) string {
 		}
 
 	case render.RoleError:
-		prefix := contentPrefix(render.RoleError)
+		prefix := fadedPrefix(render.RoleError, m.Arriving)
 		wrapped := render.Wrap(m.Content, w-lipgloss.Width(prefix))
 		body = render.Prefixed(prefix, wrapped)
 

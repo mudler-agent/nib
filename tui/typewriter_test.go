@@ -1,8 +1,10 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/charmbracelet/x/ansi"
@@ -20,7 +22,7 @@ func drainStreamReveal(t *testing.T, m Model) Model {
 		if i > 1000 {
 			t.Fatal("stream reveal never caught up")
 		}
-		next, _ := m.Update(streamTickMsg{})
+		next, _ := m.Update(animTickMsg{})
 		m = next.(Model)
 	}
 	return m
@@ -51,7 +53,7 @@ func TestStreamRevealDrawsBurstOverSeveralFrames(t *testing.T) {
 	prev := 0
 	frames := 0
 	for m.streamBacklog() {
-		next, _ = m.Update(streamTickMsg{})
+		next, _ = m.Update(animTickMsg{})
 		m = next.(Model)
 		if m.streamShown <= prev {
 			t.Fatalf("frame %d did not advance the reveal (%d -> %d)", frames, prev, m.streamShown)
@@ -67,16 +69,49 @@ func TestStreamRevealDrawsBurstOverSeveralFrames(t *testing.T) {
 	}
 }
 
-// Only one tick is in flight however many deltas arrive before it fires:
-// a second delta sees streamTicking and schedules nothing new.
-func TestStreamRevealKeepsOneTickInFlight(t *testing.T) {
+// A delta leaves something to animate; once the reply is drawn and the new
+// entry has faded in, nothing is, so the clock can sleep.
+func TestAnimatingUntilRevealedAndFadedIn(t *testing.T) {
 	next, _ := streamModel().Update(content("hello"))
 	m := next.(Model)
-	if !m.streamTicking {
-		t.Fatal("first delta did not schedule a reveal tick")
+	if !m.animating() {
+		t.Fatal("a new delta left nothing to animate")
 	}
-	if cmd := m.startStreamReveal(); cmd != nil {
-		t.Fatal("a second reveal tick was scheduled while one is pending")
+	m = drainStreamReveal(t, m)
+	for i := range m.messages {
+		m.messages[i].arrived = time.Now().Add(-time.Second)
+	}
+	if !m.streamingActive || m.animating() {
+		t.Fatalf("streaming=%v animating=%v, want nothing left to animate while caught up", m.streamingActive, m.animating())
+	}
+}
+
+// The clock ticks while wanted and stops once a frame has nothing moving.
+func TestAnimClockTicksOnlyWhileWanted(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c := newAnimClock(ctx)
+	c.want(true)
+	select {
+	case <-c.ticks:
+	case <-time.After(time.Second):
+		t.Fatal("no tick while wanted")
+	}
+	c.want(false)
+	// At most the tick already in flight arrives after that.
+	deadline := time.After(5 * streamRevealInterval)
+	got := 0
+	for {
+		select {
+		case <-c.ticks:
+			got++
+			continue
+		case <-deadline:
+		}
+		break
+	}
+	if got > 1 {
+		t.Fatalf("%d ticks after the clock was stopped, want at most 1", got)
 	}
 }
 
@@ -86,7 +121,7 @@ func TestStreamRevealStopsOnRuneBoundaries(t *testing.T) {
 	next, _ = next.(Model).Update(content(strings.Repeat("héllo wörld 日本語 ", 10)))
 	m := next.(Model)
 	for m.streamBacklog() {
-		next, _ = m.Update(streamTickMsg{})
+		next, _ = m.Update(animTickMsg{})
 		m = next.(Model)
 		shown := m.visibleStreamContent(m.messages[len(m.messages)-1].Content)
 		if !utf8.ValidString(shown) {
@@ -95,17 +130,47 @@ func TestStreamRevealStopsOnRuneBoundaries(t *testing.T) {
 	}
 }
 
-// The end of the turn draws the whole reply at once; a late tick is a no-op.
-func TestStreamRevealFinishesAtTurnEnd(t *testing.T) {
-	next, _ := streamModel().Update(content("partial reply that is long enough to lag"))
-	next, _ = next.(Model).Update(responseMsg{content: "final reply"})
+// The reveal goes on after the turn ends, on the final text, so the end of a
+// fast stream does not land at once; then the entry gets its final render.
+func TestStreamRevealContinuesAfterTurnEnd(t *testing.T) {
+	next, _ := streamModel().Update(content("partial"))
+	next, _ = next.(Model).Update(responseMsg{content: "partial reply that is long enough to take a few frames"})
 	m := next.(Model)
-	if !strings.Contains(m.viewport.View(), "final reply") {
-		t.Fatalf("finalized reply not drawn in full: %q", m.viewport.View())
+	if strings.Contains(m.viewport.View(), "take a few frames") {
+		t.Fatal("rest of the reply drawn at once at turn end")
 	}
-	next, _ = m.Update(streamTickMsg{})
-	if next.(Model).streamTicking {
-		t.Fatal("a tick after the turn ended scheduled another tick")
+	m = drainStreamReveal(t, m)
+	if out := m.viewport.View(); !strings.Contains(out, "take a few frames") || strings.Contains(out, theme.StreamCursor) {
+		t.Fatalf("after the reveal: %q, want the full reply and no cursor", out)
+	}
+	if m.revealIdx != 0 {
+		t.Fatal("reveal not cleared once the reply was fully drawn")
+	}
+}
+
+// A reply that did not stream is revealed too, from its first character.
+func TestNonStreamedReplyIsRevealed(t *testing.T) {
+	next, _ := streamModel().Update(responseMsg{content: "a reply that arrived in one piece, all at once"})
+	m := next.(Model)
+	if strings.Contains(m.viewport.View(), "all at once") {
+		t.Fatal("non-streamed reply drawn at once")
+	}
+	m = drainStreamReveal(t, m)
+	if !strings.Contains(m.viewport.View(), "all at once") {
+		t.Fatalf("non-streamed reply not drawn after its reveal: %q", m.viewport.View())
+	}
+}
+
+// A new entry's chrome fades in; after theme.FadeDuration it is at full ink.
+func TestNewEntryFadesIn(t *testing.T) {
+	m := streamModel()
+	m.appendMessage(ChatMessage{Role: "user", Content: "hi"})
+	if a := m.arriving(m.messages[0]); a <= 0.5 {
+		t.Fatalf("arriving = %v right after append, want close to 1", a)
+	}
+	m.messages[0].arrived = time.Now().Add(-theme.FadeDuration)
+	if a := m.arriving(m.messages[0]); a != 0 {
+		t.Fatalf("arriving = %v after the fade, want 0", a)
 	}
 }
 
@@ -200,7 +265,7 @@ func TestStreamCursorShownOnlyWhileStreaming(t *testing.T) {
 		t.Fatalf("cursor not at the end of the streaming text: %q", m.viewport.View())
 	}
 	n, _ := m.Update(responseMsg{content: "hi there"})
-	if strings.Contains(n.(Model).viewport.View(), theme.StreamCursor) {
+	if strings.Contains(drainStreamReveal(t, n.(Model)).viewport.View(), theme.StreamCursor) {
 		t.Fatal("cursor still drawn after the turn ended")
 	}
 }

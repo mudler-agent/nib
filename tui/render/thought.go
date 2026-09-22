@@ -11,13 +11,13 @@ import (
 // it, drawn the way the live reasoning box draws it. It ends with the blank
 // separator every transcript entry has. Both surfaces draw it the same way,
 // the same as the live box (see Base.Reasoning).
-func Thought(text, summary string, expanded bool, w int) string {
+func Thought(text, summary string, expanded bool, arriving float64, w int) string {
 	var b strings.Builder
 	mark := theme.Folded
 	if expanded {
 		mark = theme.Unfolded
 	}
-	b.WriteString(theme.Subtle.Render(theme.ReasoningGlyph) + " " + theme.Hint.Render(summary+" "+mark) + "\n")
+	b.WriteString(theme.Fading(theme.Gutter, arriving).Render(theme.ReasoningGlyph) + " " + theme.Hint.Render(summary+" "+mark) + "\n")
 	if expanded {
 		for _, line := range strings.Split(strings.TrimRight(Wrap(strings.TrimSpace(text), w-4), "\n"), "\n") {
 			b.WriteString("  " + theme.Subtle.Render(theme.BoxRule) + " " + theme.Reasoning.Render(line) + "\n")

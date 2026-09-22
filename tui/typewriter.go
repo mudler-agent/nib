@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"context"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -28,44 +30,183 @@ const (
 	streamRevealDrainFrames = 8
 )
 
-// streamTickMsg advances the reveal of the streaming reply by one frame.
-type streamTickMsg struct{}
+// animTickMsg advances the animations by one frame: the reveal of a reply,
+// and the fade-in of new entries.
+type animTickMsg struct{}
 
-func streamTick() tea.Cmd {
-	return tea.Tick(streamRevealInterval, func(time.Time) tea.Msg { return streamTickMsg{} })
+// animClock sends animTickMsg every streamRevealInterval while a frame has
+// something moving, and sleeps otherwise, so an idle TUI does not redraw.
+// It runs on its own goroutine and reaches Update through listenAnim, like
+// the session callbacks do through their channels, so no handler has to
+// return a tick Cmd: updateViewport calls want after each frame.
+type animClock struct {
+	wanted atomic.Bool
+	wake   chan struct{}
+	ticks  chan animTickMsg
 }
 
-// streamBacklog reports whether the streaming tail has text not yet shown.
-func (m Model) streamBacklog() bool {
-	return m.streamingActive && len(m.messages) > 0 && m.streamShown < len(m.messages[len(m.messages)-1].Content)
+func newAnimClock(ctx context.Context) *animClock {
+	c := &animClock{wake: make(chan struct{}, 1), ticks: make(chan animTickMsg)}
+	go c.run(ctx)
+	return c
 }
 
-// startStreamReveal returns the tick Cmd when a backlog exists and no tick is
-// already pending. Only one tick is in flight at a time, so bursts of deltas
-// do not multiply the frame rate.
-func (m *Model) startStreamReveal() tea.Cmd {
-	if m.streamTicking || !m.streamBacklog() {
+func (c *animClock) run(ctx context.Context) {
+	for {
+		select {
+		case <-c.wake:
+		case <-ctx.Done():
+			return
+		}
+		for c.wanted.Load() {
+			select {
+			case <-time.After(streamRevealInterval):
+			case <-ctx.Done():
+				return
+			}
+			select {
+			case c.ticks <- animTickMsg{}:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}
+}
+
+// want records whether the last frame had something moving, and wakes the
+// clock when it was asleep. A nil clock (a Model literal in a test) is a
+// no-op: tests send animTickMsg themselves.
+func (c *animClock) want(moving bool) {
+	if c == nil {
+		return
+	}
+	if !moving {
+		c.wanted.Store(false)
+		return
+	}
+	if !c.wanted.Swap(true) {
+		select {
+		case c.wake <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// listenAnim waits for the next animation frame.
+func (m Model) listenAnim() tea.Cmd {
+	if m.anim == nil {
 		return nil
 	}
-	m.streamTicking = true
-	return streamTick()
+	return func() tea.Msg {
+		select {
+		case t := <-m.anim.ticks:
+			return t
+		case <-m.ctx.Done():
+			return nil
+		}
+	}
+}
+
+// animating reports whether another frame would change the screen.
+func (m Model) animating() bool {
+	return m.streamBacklog() || m.fading()
+}
+
+// advanceAnimation moves the reveal one frame forward, and ends a reveal
+// after the turn once all of it is drawn, so the entry goes back to the
+// cached final render.
+func (m *Model) advanceAnimation() {
+	if m.streamBacklog() {
+		m.advanceStreamReveal()
+	}
+	if !m.streamingActive && !m.streamBacklog() {
+		m.revealIdx, m.revealText = 0, ""
+	}
+}
+
+// revealTarget returns the index of the reply being revealed: the streaming
+// tail, or a reply whose turn ended before all of it was drawn.
+func (m Model) revealTarget() (int, bool) {
+	if m.streamingActive && len(m.messages) > 0 {
+		return len(m.messages) - 1, true
+	}
+	i := m.revealIdx - 1
+	if i >= 0 && i < len(m.messages) && m.messages[i].Content == m.revealText {
+		return i, true
+	}
+	return -1, false
+}
+
+// streamBacklog reports whether the revealed reply has text not yet shown.
+func (m Model) streamBacklog() bool {
+	i, ok := m.revealTarget()
+	return ok && m.streamShown < len(m.messages[i].Content)
+}
+
+// revealAfterTurn keeps revealing reply i after its turn ended, so the end of
+// a fast stream, or a reply that did not stream at all, does not land at
+// once. streamed says the reply was streaming, so the part already drawn
+// stays drawn; the final text can differ from what streamed, so the cut is
+// moved back onto a rune boundary.
+func (m *Model) revealAfterTurn(i int, streamed bool) {
+	text := m.messages[i].Content
+	if !streamed {
+		m.streamShown = 0
+		m.streamStart = time.Now()
+	}
+	if m.streamShown > len(text) {
+		m.streamShown = len(text)
+	}
+	for m.streamShown > 0 && m.streamShown < len(text) && !utf8.RuneStart(text[m.streamShown]) {
+		m.streamShown--
+	}
+	if m.streamShown >= len(text) {
+		m.revealIdx, m.revealText = 0, "" // all of it is drawn already
+		return
+	}
+	m.revealIdx, m.revealText = i+1, text
 }
 
 // advanceStreamReveal moves streamShown forward by one frame. It counts in
 // runes and always stops on a rune boundary, so a multi-byte character is
 // never cut in half.
 func (m *Model) advanceStreamReveal() {
-	text := m.messages[len(m.messages)-1].Content
+	i, _ := m.revealTarget()
+	text := m.messages[i].Content
 	hidden := text[m.streamShown:]
 	n := utf8.RuneCountInString(hidden)
 	step := (n + streamRevealDrainFrames - 1) / streamRevealDrainFrames
-	for i := 0; i < step && m.streamShown < len(text); i++ {
+	for j := 0; j < step && m.streamShown < len(text); j++ {
 		_, size := utf8.DecodeRuneInString(text[m.streamShown:])
 		m.streamShown += size
 	}
 }
 
-// visibleStreamContent is the part of the streaming tail to draw this frame.
+// fading reports whether an entry near the end of the transcript is still
+// fading in. Only the last few can be: entries arrive at the end.
+func (m Model) fading() bool {
+	for i := len(m.messages) - 1; i >= 0 && i >= len(m.messages)-8; i-- {
+		if m.arriving(m.messages[i]) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// arriving is how far msg still is from its full ink: 1 when it has just
+// arrived, 0 once theme.FadeDuration has passed.
+func (m Model) arriving(msg ChatMessage) float64 {
+	if msg.arrived.IsZero() {
+		return 0
+	}
+	age := time.Since(msg.arrived)
+	if age >= theme.FadeDuration {
+		return 0
+	}
+	return 1 - float64(age)/float64(theme.FadeDuration)
+}
+
+// visibleStreamContent is the part of the revealed reply to draw this frame.
 func (m Model) visibleStreamContent(content string) string {
 	if m.streamShown >= len(content) {
 		return content

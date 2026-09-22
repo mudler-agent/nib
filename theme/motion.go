@@ -56,13 +56,26 @@ func StreamCursorAt(elapsed time.Duration) string {
 // FadeDuration is how long a new transcript entry takes to reach its full ink.
 const FadeDuration = 240 * time.Millisecond
 
-// FadeIn returns ink as seen at elapsed time since its entry arrived: it
-// eases out from Faint to ink over FadeDuration.
-func FadeIn(ink lipgloss.Color, elapsed time.Duration) lipgloss.Color {
-	if elapsed >= FadeDuration {
+// FadeInk returns ink for an entry that is arriving (1 just arrived, 0 fully
+// in): it eases out from Faint to ink, fast at first and settling gently.
+func FadeInk(ink lipgloss.Color, arriving float64) lipgloss.Color {
+	if arriving <= 0 {
 		return ink
 	}
-	t := float64(elapsed) / float64(FadeDuration)
+	t := 1 - arriving
 	t = 1 - (1-t)*(1-t)*(1-t) // ease-out cubic
 	return Blend(Faint, ink, t)
+}
+
+// Fading returns style with its foreground faded by arriving (see FadeInk).
+// A style with no foreground ink, or an entry fully in, comes back unchanged.
+func Fading(style lipgloss.Style, arriving float64) lipgloss.Style {
+	if arriving <= 0 {
+		return style
+	}
+	ink, ok := style.GetForeground().(lipgloss.Color)
+	if !ok {
+		return style
+	}
+	return style.Foreground(FadeInk(ink, arriving))
 }

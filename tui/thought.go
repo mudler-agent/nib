@@ -31,7 +31,7 @@ func (m *Model) foldReasoning() {
 		took = time.Since(m.reasoningSince)
 	}
 	m.reasoningSince = time.Time{}
-	entry := ChatMessage{Role: "thought", Content: text, Meta: theme.ThoughtSummary(took)}
+	entry := ChatMessage{Role: "thought", Content: text, Meta: theme.ThoughtSummary(took), arrived: time.Now()}
 	if m.streamingActive && len(m.messages) > 0 {
 		tail := len(m.messages) - 1
 		m.messages = append(m.messages[:tail], entry, m.messages[tail])

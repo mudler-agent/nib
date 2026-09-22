@@ -56,6 +56,9 @@ type ChatMessage struct {
 	Meta   string
 	Status render.ToolStatus
 	Diff   *textdiff.Diff
+	// arrived is when the entry joined the transcript; its chrome fades in
+	// from it (see arriving). Zero means drawn at full ink.
+	arrived time.Time
 }
 
 type sessionStore interface {
@@ -83,6 +86,12 @@ func (c ChatMessage) bodyless() bool {
 // other append here means that tail is no longer a live streaming target.
 func (m *Model) appendMessage(msgs ...ChatMessage) {
 	m.streamingActive = false
+	now := time.Now()
+	for i := range msgs {
+		if msgs[i].arrived.IsZero() {
+			msgs[i].arrived = now
+		}
+	}
 	m.messages = append(m.messages, msgs...)
 }
 
@@ -135,6 +144,7 @@ func (m *Model) appendStreamedContent(delta string) {
 	m.streamingActive = true
 	m.streamShown = 0
 	m.streamStart = time.Now()
+	m.revealIdx, m.revealText = 0, ""
 }
 
 // Model represents the TUI state
@@ -233,11 +243,16 @@ type Model struct {
 	// doc for why one can race past a turn boundary) could mutate an
 	// unrelated message instead of being safely dropped.
 	streamingActive bool
-	// streamShown is how many bytes of the streaming tail are drawn so far
-	// (see typewriter.go). streamTicking is true while a streamTickMsg is
-	// pending, so only one reveal tick is in flight.
-	streamShown   int
-	streamTicking bool
+	// streamShown is how many bytes of the revealed reply are drawn so far
+	// (see typewriter.go). anim is the clock that drives the reveal and the
+	// fade-ins; updateViewport starts it when a frame has something moving.
+	streamShown int
+	anim        *animClock
+	// revealIdx is the index plus one of a reply still being revealed after
+	// its turn ended (0 for none), and revealText the text it was revealed
+	// with: a transcript rebuild that changed the entry stops the reveal.
+	revealIdx  int
+	revealText string
 	// streamStart is when the streaming reply began; the cursor's pulse is
 	// timed from it.
 	streamStart time.Time
@@ -701,6 +716,7 @@ func NewModel(ctx context.Context, cfg types.Config, height int, shellJobs *wizm
 		footerCache:        &footerCache{},
 		messages:           []ChatMessage{},
 		ctx:                ctx,
+		anim:               newAnimClock(ctx),
 		cancel:             cancel,
 		maxHeight:          maxH,
 		transports:         transports,
@@ -772,7 +788,7 @@ func (m Model) Init() tea.Cmd {
 	if m.boot != nil {
 		cmds = append(cmds, m.boot.nextBootCmd())
 	}
-	cmds = append(cmds, m.hudTick())
+	cmds = append(cmds, m.hudTick(), m.listenAnim())
 	return tea.Batch(cmds...)
 }
 
@@ -1627,11 +1643,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// authoritative final text — self-healing against any dropped
 				// delta — instead of appending it a second time.
 				m.messages[streamIdx].Content = msg.content
+				m.revealAfterTurn(streamIdx, true)
 			case content != m.lastParkedReply:
 				// Skip the final reply when it duplicates the text already surfaced
 				// at the park gate (a run that parked and returned with the same
 				// answer, with nothing streamed since).
 				m.appendMessage(ChatMessage{Role: "assistant", Content: msg.content})
+				m.revealAfterTurn(len(m.messages)-1, false)
 			}
 			// A reply arrived (even one that duplicates the text already
 			// surfaced at the park gate): the run recovered, so drop any
@@ -1692,9 +1710,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case streamIdx >= 0 && reply != "":
 				m.messages[streamIdx].Content = reply
 				m.lastParkedReply = reply
+				m.revealAfterTurn(streamIdx, true)
 			case streamIdx < 0 && reply != "" && reply != m.lastParkedReply:
 				m.appendMessage(ChatMessage{Role: "assistant", Content: reply})
 				m.lastParkedReply = reply
+				m.revealAfterTurn(len(m.messages)-1, false)
 			}
 			m.parked = true
 			m.loading = false
@@ -1965,9 +1985,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.appendStreamedContent(ev.text)
 			}
 		}
-		if cmd := m.startStreamReveal(); cmd != nil {
-			cmds = append(cmds, cmd)
-		}
 		m.updateViewport()
 		// Continue listening for more reasoning events
 		cmds = append(cmds, m.listenReasoningEvents())
@@ -2075,15 +2092,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Continue listening for more tool results
 		cmds = append(cmds, m.listenToolResult())
 
-	case streamTickMsg:
-		m.streamTicking = false
-		if m.streamBacklog() {
-			m.advanceStreamReveal()
-			m.updateViewport()
-			if cmd := m.startStreamReveal(); cmd != nil {
-				cmds = append(cmds, cmd)
-			}
-		}
+	case animTickMsg:
+		m.advanceAnimation()
+		m.updateViewport()
+		cmds = append(cmds, m.listenAnim())
 
 	case spinner.TickMsg:
 		m.spinner, cmd = m.spinner.Update(msg)
@@ -3110,13 +3122,18 @@ func (m *Model) sameAgentMsg(idx int, agentID string) bool {
 // recorded earlier in the session should not keep showing.
 func (m *Model) dropTransientErrors() {
 	kept := m.messages[:0]
-	for _, msg := range m.messages {
+	reveal := m.revealIdx
+	for i, msg := range m.messages {
 		if msg.Role == "error" && msg.Transient {
+			if i < m.revealIdx-1 {
+				reveal-- // the revealed reply moves up with the rest
+			}
 			continue
 		}
 		kept = append(kept, msg)
 	}
 	m.messages = kept
+	m.revealIdx = reveal
 }
 
 // updateViewportFollow re-renders and pins the viewport to the bottom. Use it
@@ -3409,7 +3426,7 @@ func (m *Model) updateViewport() {
 
 		switch msg.Role {
 		case "user":
-			sb.WriteString(presenter.Message(render.Message{Role: render.RoleUser, Content: msg.Content}, prevRole, contentWidth))
+			sb.WriteString(presenter.Message(render.Message{Role: render.RoleUser, Content: msg.Content, Arriving: m.arriving(msg)}, prevRole, contentWidth))
 			prevRole = render.RoleUser
 		case "assistant":
 			// Markdown is width-cached model state (glamour), not something a
@@ -3417,7 +3434,7 @@ func (m *Model) updateViewport() {
 			// prefix will leave for content, matching its own prefix exactly.
 			mdWidth := presenter.ContentWidth(render.RoleAssistant, contentWidth)
 			var rendered string
-			if m.streamingActive && i == len(m.messages)-1 {
+			if target, ok := m.revealTarget(); ok && i == target {
 				// This message is still receiving live content deltas:
 				// render it block by block, so it looks the same as the
 				// final glamour pass below and nothing jumps when the turn
@@ -3426,7 +3443,7 @@ func (m *Model) updateViewport() {
 			} else {
 				rendered = m.renderMarkdown(msg.Content, mdWidth)
 			}
-			sb.WriteString(presenter.Message(render.Message{Role: render.RoleAssistant, Content: rendered}, prevRole, contentWidth))
+			sb.WriteString(presenter.Message(render.Message{Role: render.RoleAssistant, Content: rendered, Arriving: m.arriving(msg)}, prevRole, contentWidth))
 			prevRole = render.RoleAssistant
 		case "agent":
 			mdWidth := presenter.ContentWidth(render.RoleAgent, contentWidth)
@@ -3459,12 +3476,12 @@ func (m *Model) updateViewport() {
 			}, prevRole, contentWidth))
 			prevRole = render.RoleTool
 		case "error":
-			sb.WriteString(presenter.Message(render.Message{Role: render.RoleError, Content: msg.Content}, prevRole, contentWidth))
+			sb.WriteString(presenter.Message(render.Message{Role: render.RoleError, Content: msg.Content, Arriving: m.arriving(msg)}, prevRole, contentWidth))
 			prevRole = render.RoleError
 		case "thought":
 			// ctrl+r expands the live box and the folded thoughts together:
 			// one switch for "show the thinking in full".
-			sb.WriteString(render.Thought(msg.Content, msg.Meta, !m.reasoningCollapsed, contentWidth))
+			sb.WriteString(render.Thought(msg.Content, msg.Meta, !m.reasoningCollapsed, m.arriving(msg), contentWidth))
 			// Not a user or assistant entry: the reply after it keeps its
 			// label on inline, as after a tool block.
 			prevRole = render.RoleAgent
@@ -3512,6 +3529,9 @@ func (m *Model) updateViewport() {
 	} else {
 		m.viewport.SetYOffset(offset)
 	}
+	// This frame has a reveal or a fade in progress: keep the clock running
+	// for the next one (it stops itself once a frame has nothing moving).
+	m.anim.want(m.animating())
 }
 
 // View renders the TUI.

@@ -81,6 +81,23 @@ func contentPrefix(role render.Role) string {
 	return ""
 }
 
+// fadedPrefix is contentPrefix for an entry that is still arriving: the same
+// chrome, at the same width, in inks faded by arriving (see theme.Fading).
+func fadedPrefix(role render.Role, arriving float64) string {
+	if arriving <= 0 {
+		return contentPrefix(role)
+	}
+	switch role {
+	case render.RoleUser:
+		return theme.Fading(theme.LabelYou, arriving).Render(theme.MsgGutter) + " "
+	case render.RoleAssistant:
+		return theme.Fading(theme.Gutter, arriving).Render(theme.MsgGutter) + " "
+	case render.RoleError:
+		return theme.Fading(theme.Error, arriving).Render(theme.Cross) + " "
+	}
+	return contentPrefix(role)
+}
+
 // gutterLines lays out a block with the gutter prefix repeated on every
 // non-blank line, rather than only on the first line the way render.Prefixed's
 // label layout does — a gutter's whole point is to mark the block as it
@@ -132,12 +149,12 @@ func (presenter) Message(m render.Message, prev render.Role, w int) string {
 	var body string
 	switch m.Role {
 	case render.RoleUser:
-		prefix := contentPrefix(render.RoleUser)
+		prefix := fadedPrefix(render.RoleUser, m.Arriving)
 		wrapped := render.Wrap(m.Content, w-lipgloss.Width(prefix))
 		body = gutterLines(prefix, wrapped)
 
 	case render.RoleAssistant:
-		body = gutterLines(contentPrefix(render.RoleAssistant), m.Content)
+		body = gutterLines(fadedPrefix(render.RoleAssistant, m.Arriving), m.Content)
 
 	case render.RoleAgent:
 		body = render.Prefixed(agentPrefix(m.AgentID), render.StyledLines(theme.Subtle, m.Content))
@@ -155,7 +172,7 @@ func (presenter) Message(m render.Message, prev render.Role, w int) string {
 		}
 
 	case render.RoleError:
-		prefix := contentPrefix(render.RoleError)
+		prefix := fadedPrefix(render.RoleError, m.Arriving)
 		wrapped := render.Wrap(m.Content, w-lipgloss.Width(prefix))
 		body = render.Prefixed(prefix, wrapped)
 

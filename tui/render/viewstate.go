@@ -43,6 +43,10 @@ type Message struct {
 	// looking ahead at the next raw message, which a Presenter never sees, so
 	// it cannot be derived from prev/Role alone.
 	HugNext bool
+	// Arriving is how far the entry still is from its full ink: 1 when it
+	// has just joined the transcript, 0 (the zero value) once it is fully in.
+	// A Presenter fades the entry's chrome by it (see theme.Fading).
+	Arriving float64
 }
 
 // Reasoning is the model's in-progress reasoning trace: the text beneath the
