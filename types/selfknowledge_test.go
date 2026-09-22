@@ -14,8 +14,8 @@ func TestSelfKnowledgeSuffix(t *testing.T) {
 	if !strings.Contains(got, "self_read") {
 		t.Errorf("suffix missing self_read tool mention: %q", got)
 	}
-	if !strings.Contains(got, "documentation") {
-		t.Errorf("suffix missing documentation mention: %q", got)
+	if !strings.Contains(got, "no arguments first") {
+		t.Errorf("suffix missing two-step instruction: %q", got)
 	}
 }
 

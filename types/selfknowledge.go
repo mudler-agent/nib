@@ -26,7 +26,7 @@ func selfKnowledgeSuffix(prog string) string {
 	b.WriteString("call the self_read tool to read ")
 	b.WriteString(prog)
 	b.WriteString("'s embedded documentation. ")
-	b.WriteString("The documentation covers: quickstart, usage, slash commands (/model, /loop, /goal, /compact, /yolo, /skill, /agent, /attach, /resume, /login, /logout, /settings, /endpoint), plugins, skills, MCP servers, configuration, tmux integration, and embedding. ")
+	b.WriteString("Call self_read with no arguments first to list available sections, then call it again with a section name to read that section. ")
 	b.WriteString("Do not guess or fabricate ")
 	b.WriteString(prog)
 	b.WriteString("'s features: read the documentation first, then answer.")
