@@ -128,7 +128,7 @@ const (
 	// CLIHelp is cmd/cli.go's help() output — the CLI's own command list, kept
 	// separate from the TUI's slash-completion popup. /yolo works in CLI mode
 	// (cmd/cli.go's KindYolo case) and belongs here alongside exit/clear/help.
-	CLIHelp = "commands:  exit  ·  clear  ·  help  ·  /yolo"
+	CLIHelp = "commands:  exit  ·  clear  ·  help  ·  /yolo  ·  /about"
 
 	// CLINotAvailable is the CLI dispatch loop's catch-all for a resolved
 	// slash.Action whose Kind has no explicit case there — a %s format string
@@ -237,6 +237,8 @@ const (
 	CompLogoutDesc   = "remove a stored provider login"
 	CompEndpointName = "endpoint"
 	CompEndpointDesc = "switch endpoint"
+	CompAboutName    = "about"
+	CompAboutDesc    = "show version, config paths, and tool inventory"
 
 	// ToolResultNoOutput is fmtBashResult's (chat/resultfmt.go) fallback for a
 	// failed bash/bash_job_output call whose stdout and stderr were both

@@ -13,8 +13,17 @@ else
 	GORELEASER=$(shell which goreleaser)
 endif
 
-build:
+build: sync-readme
 	go build -o nib .
+
+# Sync the embedded README copy. selfdoc/README.md is a plain copy of the root
+# README.md, compiled into the binary via go:embed so the agent can read its own
+# documentation at runtime. Run before build, or via `go generate`.
+.PHONY: sync-readme
+sync-readme:
+	cp README.md selfdoc/README.md
+
+generate: sync-readme
 
 run-docker:
 	docker build -t nib .

@@ -17,6 +17,7 @@ import (
 	"github.com/mudler/nib/auth"
 	"github.com/mudler/nib/endpoint"
 	"github.com/mudler/nib/hooks"
+	"github.com/mudler/nib/internal"
 	"github.com/mudler/nib/llmprovider"
 	"github.com/mudler/nib/llmprovider/copilot"
 	"github.com/mudler/nib/manage"
@@ -2141,6 +2142,10 @@ func (s *Session) Reload(cfg types.Config) error {
 	s.hooks = hooks.New(cfg.Hooks)
 	if cfg.Prompt != "" {
 		s.systemPrompt = cfg.GetPrompt() + s.loadedSkills + s.agentModelGuidance()
+		// Inject the harness/version identity so the model knows what it is.
+		// Appended after GetPrompt() (which already carries the self-knowledge
+		// suffix) so it lands at the end of the system prompt.
+		s.systemPrompt += s.harnessIdentity(cfg)
 	}
 	// Guarded because SetModel writes s.compaction.MaxContextTokens under the
 	// same lock when it re-detects the window for a new model. Reload runs at
@@ -2529,6 +2534,21 @@ func (s *Session) agentModelGuidance() string {
 	}
 	b += "."
 	return b
+}
+
+// harnessIdentity returns the version/harness identity string appended to the
+// system prompt. It tells the model exactly what version of nib it is running
+// as, so it can report this when asked and avoid fabricating version numbers.
+// The version and commit are injected at build time via ldflags (see
+// .goreleaser.yaml); a locally-built binary reports "dev (local build)".
+func (s *Session) harnessIdentity(cfg types.Config) string {
+	prog := types.ProgramNameOr(cfg.ProgramName)
+	v := internal.PrintableVersion()
+	v = strings.TrimSpace(v)
+	if v == "()" || v == "" {
+		v = "dev (local build)"
+	}
+	return fmt.Sprintf("\n\nYou are running as %s %s. When the user asks about your version, report this exactly. Do not fabricate version numbers.", prog, v)
 }
 
 // ModelListTimeout bounds the endpoint lookup behind /model and /models. Both

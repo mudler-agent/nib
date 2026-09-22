@@ -112,7 +112,8 @@ func TestGetPromptNoSkillsNoIndex(t *testing.T) {
 		"`nib mcp add <name> -- <command> [args...]` for a local server, or " +
 		"`nib mcp add <name> --url <url> [--transport http|sse]` for a remote one; " +
 		"`nib mcp list` and `nib mcp test <name>` show and verify them. " +
-		"Servers added this way become available on the next nib session."
+		"Servers added this way become available on the next nib session." +
+		"\n\n" + selfKnowledgeSuffix("nib")
 	if strings.TrimSpace(got) != strings.TrimSpace(want) {
 		t.Fatalf("expected base + tool guidance + MCP fragment only, got:\n%q", got)
 	}

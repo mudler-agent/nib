@@ -35,6 +35,7 @@ const (
 	cmdAttach   = "attach"
 	cmdSettings = "settings"
 	cmdEndpoint = "endpoint"
+	cmdAbout    = "about"
 
 	// /attach sub-verbs
 	cmdAttachClear = "clear"
@@ -86,6 +87,7 @@ const (
 	KindSettings               // list, show, set or unset a config key (SettingKey etc.)
 	KindEndpoint               // switch endpoint (Endpoint empty = open the picker)
 	KindModelReset             // drop the saved model override for the current endpoint
+	KindAbout                  // print version, config paths, and tool inventory
 )
 
 // AttachOp enumerates the /attach sub-operations.
@@ -243,6 +245,8 @@ func Resolve(input string, cmds []types.CommandConfig, skills []types.Skill, age
 		}
 	case cmdEndpoint:
 		return Action{Kind: KindEndpoint, Endpoint: strings.TrimSpace(rest)}
+	case cmdAbout:
+		return Action{Kind: KindAbout}
 	default:
 		c, ok := findCommand(cmds, verb)
 		if !ok {

@@ -56,8 +56,14 @@ func TestSystemPromptSentToTheModelDefaultsToNib(t *testing.T) {
 	if !strings.Contains(got, "`nib mcp add <name> -- <command> [args...]`") {
 		t.Fatalf("standalone system prompt changed:\n%s", got)
 	}
-	if !strings.HasSuffix(strings.TrimRight(got, "\n"), "become available on the next nib session.") {
-		t.Fatalf("standalone system prompt tail changed:\n%s", got)
+	// The system prompt now ends with the harness identity suffix
+	// (version + "do not fabricate version numbers"), appended by
+	// Session.harnessIdentity after GetPrompt's self-knowledge suffix.
+	if !strings.Contains(got, "read the documentation first, then answer.") {
+		t.Fatalf("standalone system prompt missing self-knowledge suffix:\n%s", got)
+	}
+	if !strings.Contains(got, "You are running as nib") {
+		t.Fatalf("standalone system prompt missing harness identity:\n%s", got)
 	}
 }
 

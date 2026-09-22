@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"dario.cat/mergo"
+	"github.com/mudler/nib/builtin"
 	"github.com/mudler/nib/internal"
 	"github.com/mudler/nib/plugin"
 	"github.com/mudler/nib/skill"
@@ -31,6 +32,12 @@ Available sub-agent types:
 Current directory: {{.CurrentDirectory}}
 Current user: {{.CurrentUser}}
 `
+
+// ConfigPaths returns the list of config file paths to try, in order of priority.
+// Exported for /about.
+func ConfigPaths() []string {
+	return configPaths()
+}
 
 // configPaths returns the list of config file paths to try, in order of priority
 func configPaths() []string {
@@ -225,9 +232,15 @@ func LoadWith(o LoadOptions) types.Config {
 	cfg.BaseDir = o.BaseDir
 	root := BaseDirOf(cfg)
 
+	// Merge built-in skills first, so precedence is
+	// built-in defaults < plugins < skill-packs < user. Both skill.Apply
+	// and plugin.Apply skip any skill name already present, so built-ins
+	// are overridden by anything the user configured.
+	builtin.Apply(&cfg)
+
 	// Merge enabled skill-pack skills before plugins, so precedence is
 	// built-in defaults < plugins < skill-packs < user. plugin.Apply skips any
-	// skill name already present (user + packs), so packs win over plugins.
+	// skill name already present (user + packs + built-ins), so packs win over plugins.
 	if err := skill.Apply(&cfg, root); err != nil {
 		fmt.Fprintf(os.Stderr, "nib: skill load: %v\n", err)
 	}

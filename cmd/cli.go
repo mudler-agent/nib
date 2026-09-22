@@ -657,6 +657,9 @@ func RunCLI(ctx context.Context, cfg types.Config, streams Streams, shellJobs *w
 					fmt.Fprintln(errOut, theme.Error.Render(theme.Cross+" "+err.Error()))
 				}
 				fmt.Fprintln(out)
+			case slash.KindAbout:
+				fmt.Fprint(out, AboutText(cfg))
+				continue
 			default:
 				// Any Kind without an explicit case above has no CLI meaning:
 				// /resume has no picker surface here, and /loop and /goal (the
