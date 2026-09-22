@@ -7,8 +7,10 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mudler/nib/theme"
+	"github.com/muesli/termenv"
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -277,5 +279,34 @@ func TestStreamCursorFollowsOpenCode(t *testing.T) {
 	out := ansi.Strip(m.renderStreaming("```go\nfunc main() {", 60))
 	if !strings.Contains(out, "func main() {"+theme.StreamCursor) {
 		t.Fatalf("cursor not after the open code: %q", out)
+	}
+}
+
+// A sub-agent's thread line fades in with its own entry; the lines before
+// it, already in, are not faded again.
+func TestAgentThreadLineFadesInAlone(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	m := streamModel()
+	old := time.Now().Add(-time.Second)
+	run := []ChatMessage{
+		{Role: "agent_tool", AgentID: "a1", Content: "read one.go", arrived: old},
+		{Role: "agent_tool", AgentID: "a1", Content: "read two.go", arrived: old},
+	}
+	var settled strings.Builder
+	m.renderAgentThreadRun(&settled, run, 80, false, false)
+
+	run[1].arrived = time.Now()
+	var arriving strings.Builder
+	m.renderAgentThreadRun(&arriving, run, 80, false, false)
+
+	s, a := strings.Split(settled.String(), "\n"), strings.Split(arriving.String(), "\n")
+	if a[0] != s[0] {
+		t.Fatal("an older thread line was faded again when a new one arrived")
+	}
+	if a[1] == s[1] || ansi.Strip(a[1]) != ansi.Strip(s[1]) {
+		t.Fatalf("the new thread line is not faded, or its text changed: %q", a[1])
 	}
 }

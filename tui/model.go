@@ -3075,25 +3075,35 @@ func (m *Model) renderAgentThreadRun(sb *strings.Builder, run []ChatMessage, con
 	}
 	// Tool labels are capped; results render in full after them.
 	var toolLines []string
-	var results []ChatMessage
+	var tools, results []ChatMessage
 	for _, msg := range run {
 		if msg.Role == "agent_result" {
 			results = append(results, msg)
 			continue
 		}
+		tools = append(tools, msg)
 		toolLines = append(toolLines, msg.Content)
 	}
-	for _, line := range capThreadLines(toolLines, agentThreadInlineCap) {
-		sb.WriteString("   " + theme.Help.Render(clipLine(line, contentWidth-3)))
+	lines := capThreadLines(toolLines, agentThreadInlineCap)
+	capped := len(lines) != len(tools)
+	for j, line := range lines {
+		// Each line fades in with its own entry. The capped lines are the
+		// newest ones; the "… +N earlier" header on top has no entry of its own.
+		var arriving float64
+		if k := len(tools) - (len(lines) - j); k >= 0 && !(capped && j == 0) {
+			arriving = m.arriving(tools[k])
+		}
+		sb.WriteString("   " + theme.Fading(theme.Help, arriving).Render(clipLine(line, contentWidth-3)))
 		sb.WriteString("\n")
 	}
 	for _, r := range results {
+		style := theme.Fading(theme.Subtle, m.arriving(r))
 		wrapped := render.Wrap(r.Content, contentWidth-5)
 		for i, line := range strings.Split(strings.TrimRight(wrapped, "\n"), "\n") {
 			if i == 0 {
-				sb.WriteString("   " + theme.Subtle.Render(theme.Arrow+" "+line))
+				sb.WriteString("   " + style.Render(theme.Arrow+" "+line))
 			} else {
-				sb.WriteString("     " + theme.Subtle.Render(line))
+				sb.WriteString("     " + style.Render(line))
 			}
 			sb.WriteString("\n")
 		}
@@ -3469,6 +3479,8 @@ func (m *Model) updateViewport() {
 				Meta:    msg.Meta,
 				Status:  msg.Status,
 				Diff:    msg.Diff,
+				// Fades in like every other entry (see render.ToolBlock).
+				Arriving: m.arriving(msg),
 				// A one-line tool block (a collapsed read, a bare write) hugs
 				// the tool block after it, so a run of them reads as a list
 				// rather than a column of blank-separated lines.
