@@ -241,6 +241,12 @@ type Model struct {
 	// streamStart is when the streaming reply began; the cursor's pulse is
 	// timed from it.
 	streamStart time.Time
+	// stepThought is the index plus one of the thought entry the current
+	// step's reasoning folded into (see thought.go), 0 for none.
+	// reasoningSince is when the live trace got its first streamed text,
+	// which times the "thought for 4s" summary.
+	stepThought    int
+	reasoningSince time.Time
 	// wakeupGen invalidates pending reminder/self-paced wake-up ticks: a fired
 	// tea.Tick is honored only if its captured gen still matches. Bumped by
 	// /loop stop to cancel a self-paced loop. Poll wake-ups ride pollGen instead.
@@ -1570,7 +1576,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.parked = false
 		m.interruptArmed = false
 		m.status = ""
-		m.reasoning = ""
+		m.endThoughtStep()
 		m.reasoningResetPending = false
 		// The turn is over: move the generation now, not only at the next
 		// dispatch. A boundary or delta this turn sent just before it
@@ -1693,7 +1699,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.parked = true
 			m.loading = false
 			m.interruptArmed = false
-			m.reasoning = ""
+			m.endThoughtStep()
 			m.reasoningResetPending = false
 			// Same as responseMsg: events this step sent before it parked
 			// must not land in the box after this reset.
@@ -1905,11 +1911,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if ev.gen != m.currentTurnGen() {
 					continue
 				}
-				m.reasoning = ev.text
 				// This step just ended: its complete text is authoritative,
-				// but the NEXT step's streamed deltas are a fresh trace, not
-				// a continuation of this one. Mark the next delta to start
-				// over rather than append (see reasoningResetPending's doc).
+				// so it replaces what streamed, and the step folds into the
+				// transcript (see thought.go). The NEXT step's streamed
+				// deltas are a fresh trace, not a continuation of this one.
+				// Mark the next delta to start over rather than append (see
+				// reasoningResetPending's doc).
+				if th := m.stepThoughtEntry(); th != nil {
+					th.Content = ev.text
+					m.reasoning = ""
+				} else {
+					m.reasoning = ev.text
+				}
+				m.endThoughtStep()
 				m.reasoningResetPending = true
 			case reasoningEventDelta:
 				// A delta stamped with an older generation than the one
@@ -1924,6 +1938,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.reasoning = ""
 					m.reasoningResetPending = false
 				}
+				// More thinking after this step's answer already started:
+				// it belongs to the entry the step folded into.
+				if th := m.stepThoughtEntry(); th != nil {
+					th.Content += ev.text
+					continue
+				}
+				if m.reasoning == "" {
+					m.reasoningSince = time.Now()
+				}
 				m.reasoning += ev.text
 			case reasoningEventContentDelta:
 				// Same staleness check as reasoningEventDelta above, and for
@@ -1933,6 +1956,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// appendStreamedContent's doc and the orphan-bubble test).
 				if ev.gen != m.currentTurnGen() {
 					continue
+				}
+				// The answer starts: the thinking that led to it folds
+				// into the transcript, above the reply.
+				if m.loading && ev.text != "" {
+					m.foldReasoning()
 				}
 				m.appendStreamedContent(ev.text)
 			}
@@ -3433,6 +3461,13 @@ func (m *Model) updateViewport() {
 		case "error":
 			sb.WriteString(presenter.Message(render.Message{Role: render.RoleError, Content: msg.Content}, prevRole, contentWidth))
 			prevRole = render.RoleError
+		case "thought":
+			// ctrl+r expands the live box and the folded thoughts together:
+			// one switch for "show the thinking in full".
+			sb.WriteString(render.Thought(msg.Content, msg.Meta, !m.reasoningCollapsed, contentWidth))
+			// Not a user or assistant entry: the reply after it keeps its
+			// label on inline, as after a tool block.
+			prevRole = render.RoleAgent
 		}
 	}
 

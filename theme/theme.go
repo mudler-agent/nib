@@ -77,6 +77,9 @@ var (
 	CheckOn  = "◼"
 	CheckOff = "◻"
 	Cursor   = "▸"
+	// Folded and Unfolded mark a folded thought line that ctrl+r expands.
+	Folded   = "▸"
+	Unfolded = "▾"
 )
 
 // spinnerFrames animates the working indicator. Braille cells read as a smooth
@@ -137,6 +140,7 @@ func applyGlyphProfile() {
 		RadioOn, RadioOff = "(*)", "( )"
 		CheckOn, CheckOff = "[x]", "[ ]"
 		Cursor = ">"
+		Folded, Unfolded = ">", "v"
 		return
 	}
 	PromptGlyph, ApprovalGutter, SubAgent = "›", "▏", "↳"
@@ -156,6 +160,7 @@ func applyGlyphProfile() {
 	RadioOn, RadioOff = "◉", "○"
 	CheckOn, CheckOff = "◼", "◻"
 	Cursor = "▸"
+	Folded, Unfolded = "▸", "▾"
 }
 
 // Styles. Bold is reserved for the brand mark and the active approval keys.
