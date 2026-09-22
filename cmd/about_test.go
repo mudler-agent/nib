@@ -39,8 +39,8 @@ func TestAboutTextContainsSelfReadMention(t *testing.T) {
 	cfg := types.Config{ProgramName: "nib"}
 	got := AboutText(cfg)
 
-	if !strings.Contains(got, "self_read") {
-		t.Errorf("AboutText missing self_read mention: %q", got)
+	if !strings.Contains(got, "about-nib") {
+		t.Errorf("AboutText missing about-nib mention: %q", got)
 	}
 }
 

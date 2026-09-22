@@ -87,7 +87,7 @@ func AboutText(cfg types.Config) string {
 		b.WriteString("\n")
 	}
 
-	b.WriteString("The agent can read its own documentation via the self_read tool.\n")
+	b.WriteString("The agent can read its own documentation by loading the \"about-nib\" skill.\n")
 	b.WriteString("Documentation is embedded in the binary — no network required.\n")
 
 	return b.String()

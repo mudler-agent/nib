@@ -11,11 +11,8 @@ func TestSelfKnowledgeSuffix(t *testing.T) {
 	if !strings.Contains(got, "You are nib") {
 		t.Errorf("suffix missing identity: %q", got)
 	}
-	if !strings.Contains(got, "self_read") {
-		t.Errorf("suffix missing self_read tool mention: %q", got)
-	}
-	if !strings.Contains(got, "no arguments first") {
-		t.Errorf("suffix missing two-step instruction: %q", got)
+	if !strings.Contains(got, "about-nib") {
+		t.Errorf("suffix missing about-nib skill mention: %q", got)
 	}
 }
 
@@ -39,7 +36,7 @@ func TestGetPromptIncludesSelfKnowledge(t *testing.T) {
 	if !strings.Contains(got, "You are nib") {
 		t.Error("GetPrompt() does not include self-knowledge suffix")
 	}
-	if !strings.Contains(got, "self_read") {
-		t.Error("GetPrompt() does not mention self_read tool")
+	if !strings.Contains(got, "about-nib") {
+		t.Error("GetPrompt() does not mention about-nib skill")
 	}
 }
