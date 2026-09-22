@@ -81,3 +81,14 @@ func TestJobsFooterHiddenWhenIdle(t *testing.T) {
 		t.Fatal("a footer row was shown with nothing running")
 	}
 }
+
+// A tool whose Execute returned an error reaches the transcript as cogito's
+// plain-text "Error running tool: ..." result, not a JSON envelope. It must
+// still be marked failed, not shown with a success mark.
+func TestToolMessageExecuteErrorIsMarked(t *testing.T) {
+	result := `Error running tool: calling "tools/call": invalid params: validating "arguments": validating root: unexpected additional properties ["pattern"]`
+	msg := toolMessage(chat.ToolResult{Name: "glob", Result: result})
+	if msg.Status != render.ToolStatusFailed || msg.Content != result {
+		t.Fatalf("got status %v content %q, want a failed block showing the error", msg.Status, msg.Content)
+	}
+}

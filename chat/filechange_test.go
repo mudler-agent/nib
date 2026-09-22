@@ -121,6 +121,10 @@ func TestToolOutcome(t *testing.T) {
 		{`{"stdout":"","exit_code":2,"success":false}`, true, "exit 2"},
 		{`{"stdout":"ok","exit_code":0,"success":true}`, false, ""},
 		{`plain text from an MCP tool`, false, ""},
+		{`Error running tool: calling "tools/call": invalid params`, true, ""},
+		{`Error running tool: tool failed:  no such file`, true, ""},
+		{`Error: tool nope not found`, true, ""},
+		{`Error running tools is a sentence, not cogito's prefix`, false, ""},
 	}
 	for _, c := range cases {
 		failed, detail := ToolOutcome(c.result)
