@@ -509,12 +509,12 @@ func TestParkMsgReconcilesStreamedReplyWithoutDuplicating(t *testing.T) {
 	}
 }
 
-// TestStreamingAssistantContentRendersPlainUntilFinalized: partial markdown
-// (an unclosed bold run here) must not be pushed through glamour mid-stream —
-// re-rendering an incomplete document can render wrong — so the raw markers
-// should still be visible in the viewport while streaming. Once responseMsg
-// finalizes the reply, the SAME text renders as real markdown (markers gone).
-func TestStreamingAssistantContentRendersPlainUntilFinalized(t *testing.T) {
+// TestStreamingUnclosedMarkdownRendersOnceClosed: an unclosed bold run is not
+// markdown yet, so while it streams its markers stay visible as text. Once
+// responseMsg finalizes the reply with the closed run, the markers are gone.
+// (Complete blocks render as markdown while streaming — see
+// TestStreamingRenderMatchesFinalRender.)
+func TestStreamingUnclosedMarkdownRendersOnceClosed(t *testing.T) {
 	m := Model{
 		viewport:  viewport.New(80, 20),
 		width:     80,

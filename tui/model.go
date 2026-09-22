@@ -134,6 +134,7 @@ func (m *Model) appendStreamedContent(delta string) {
 	m.appendMessage(ChatMessage{Role: "assistant", Content: delta})
 	m.streamingActive = true
 	m.streamShown = 0
+	m.streamStart = time.Now()
 }
 
 // Model represents the TUI state
@@ -237,6 +238,9 @@ type Model struct {
 	// pending, so only one reveal tick is in flight.
 	streamShown   int
 	streamTicking bool
+	// streamStart is when the streaming reply began; the cursor's pulse is
+	// timed from it.
+	streamStart time.Time
 	// wakeupGen invalidates pending reminder/self-paced wake-up ticks: a fired
 	// tea.Tick is honored only if its captured gen still matches. Bumped by
 	// /loop stop to cancel a self-paced loop. Poll wake-ups ride pollGen instead.
@@ -458,6 +462,10 @@ type Model struct {
 	// width-bound and expensive to build). At most a couple of distinct
 	// widths exist in practice (one per message-prefix width).
 	mdRenderers map[int]*glamour.TermRenderer
+	// mdCache holds rendered markdown by width and source (see
+	// renderMarkdown). The transcript is redrawn on every spinner and reveal
+	// tick, and without it each frame ran glamour on every assistant message.
+	mdCache map[mdKey]string
 
 	// Channels for async communication with callbacks
 	statusChan       chan string
@@ -708,6 +716,7 @@ func NewModel(ctx context.Context, cfg types.Config, height int, shellJobs *wizm
 		compactChan:        make(chan [2]int, 4),
 		pruneChan:          make(chan [2]int, 4),
 		mdRenderers:        make(map[int]*glamour.TermRenderer),
+		mdCache:            make(map[mdKey]string),
 		loops:              loop.NewRegistry(),
 		loopsPath:          filepath.Join(".nib", "loops.json"),
 		// Rooted at the per-user BaseDir (~/.config/nib by default, the same
@@ -3381,23 +3390,19 @@ func (m *Model) updateViewport() {
 			mdWidth := presenter.ContentWidth(render.RoleAssistant, contentWidth)
 			var rendered string
 			if m.streamingActive && i == len(m.messages)-1 {
-				// This message is still receiving live content deltas.
-				// Re-running glamour on every delta would re-parse an
-				// incomplete document each frame (wasted work) and can render
-				// visibly wrong mid-token (an unclosed code fence, a
-				// half-written list) — so show the growing text plain until
-				// the turn ends and this message is reconciled/finalized
-				// (responseMsg/parkMsg), at which point it is no longer the
-				// streaming tail and gets the full glamour pass below.
-				rendered = render.Wrap(m.visibleStreamContent(msg.Content), mdWidth)
+				// This message is still receiving live content deltas:
+				// render it block by block, so it looks the same as the
+				// final glamour pass below and nothing jumps when the turn
+				// ends (see renderStreaming).
+				rendered = m.renderStreaming(m.visibleStreamContent(msg.Content), mdWidth)
 			} else {
-				rendered = renderMarkdownWith(m.markdownFor(mdWidth), msg.Content, mdWidth)
+				rendered = m.renderMarkdown(msg.Content, mdWidth)
 			}
 			sb.WriteString(presenter.Message(render.Message{Role: render.RoleAssistant, Content: rendered}, prevRole, contentWidth))
 			prevRole = render.RoleAssistant
 		case "agent":
 			mdWidth := presenter.ContentWidth(render.RoleAgent, contentWidth)
-			rendered := renderMarkdownWith(m.markdownFor(mdWidth), msg.Content, mdWidth)
+			rendered := m.renderMarkdown(msg.Content, mdWidth)
 			sb.WriteString(presenter.Message(render.Message{
 				Role:    render.RoleAgent,
 				Content: rendered,

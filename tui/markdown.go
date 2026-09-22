@@ -84,3 +84,31 @@ func nibMarkdownStyle() ansi.StyleConfig {
 		HorizontalRule: ansi.StylePrimitive{Color: &faint, Format: "\n──────\n"},
 	}
 }
+
+// mdKey identifies one rendered markdown string in Model.mdCache.
+type mdKey struct {
+	width  int
+	source string
+}
+
+// mdCacheLimit bounds Model.mdCache. When it is full the cache is cleared,
+// which costs one full re-render, the same as having no cache.
+const mdCacheLimit = 512
+
+// renderMarkdown renders content at width through glamour and caches the
+// result, so a redraw that changes nothing does not run glamour again.
+func (m *Model) renderMarkdown(content string, width int) string {
+	key := mdKey{width: width, source: content}
+	if out, ok := m.mdCache[key]; ok {
+		return out
+	}
+	out := renderMarkdownWith(m.markdownFor(width), content, width)
+	if m.mdCache == nil {
+		m.mdCache = make(map[mdKey]string)
+	}
+	if len(m.mdCache) >= mdCacheLimit {
+		clear(m.mdCache)
+	}
+	m.mdCache[key] = out
+	return out
+}
